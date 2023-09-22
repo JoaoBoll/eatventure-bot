@@ -1,0 +1,5 @@
+pyautogui==0.9.54
+opencv-python==4.8.0.76
+Appium-Python-Client==3.0.0
+imageai==3.0.3
+uiautomator==1.0.2
