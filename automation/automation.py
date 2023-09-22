@@ -17,19 +17,26 @@ class Automation:
         time.sleep(1)
         
         print ('-----------------------------')
+        print ('Procurando investidor!')
+        Automation.clain_investor()
+        print ('-----------------------------')
+        
+        print ('-----------------------------')
         print ('Fechando outras telas!')
         Automation.close_x()
         print ('-----------------------------')
-
+        
         print ('-----------------------------')
         print ('Abrindo Box!')
         Automation.open_box()
         print ('-----------------------------')
 
+        '''
         print ('-----------------------------')
         print ('Procurando icone para próxima cidade!')
         Automation.next_city()
         print ('-----------------------------')
+        '''        
         
         print ('-----------------------------')
         print ('Aplicando upgrades!')
@@ -118,13 +125,13 @@ class Automation:
         if location_arrow:
             x, y = location_arrow
             Utils.click(x,y, "Abrindo upgrade")
-            time.sleep(1)
+            time.sleep(2)
                                     
             capture_and_copy_screenshot()
             time.sleep(1)
             
             Automation.click_up_upgrades()
-            time.sleep(2)
+            time.sleep(1)
             
             x, y = location_arrow
             Utils.click(x,y, "Fechando upgrade")
@@ -148,6 +155,7 @@ class Automation:
             
             capture_and_copy_screenshot()
             time.sleep(2)
+            Automation.close_x()
 
     
     """OK"""
@@ -160,11 +168,14 @@ class Automation:
             
             capture_and_copy_screenshot()
             
-            location_fly = Utils.find_image("./images/fly.png", 5)
-            x, y = location_fly
-            Utils.click(x, y, "Fly!")
+            time.sleep(2)
             
-            time.sleep(10)
+            location_fly = Utils.find_image("./images/fly.png", 5)
+            
+            if location_fly:
+                x, y = location_fly
+                Utils.click(x, y, "Fly!")
+                time.sleep(10)
         else:
             location_next_city = Utils.find_image("./images/build.png", 5)
                         
@@ -218,3 +229,30 @@ class Automation:
                     time.sleep(2)
                 else :
                     break # Sai do loop se não houver mais locations
+                
+    @staticmethod
+    def clain_investor():
+        while True:
+            location_x = Utils.find_image("./images/investor.png", 5)
+        
+            if location_x:
+                x, y = location_x
+                Utils.click(x, y, "Abrindo investidor")
+                time.sleep(1)
+                
+                capture_and_copy_screenshot()
+                time.sleep(2)
+                
+                Automation.claim_reward()
+            else:
+                break
+    
+    def claim_reward():
+        location_open = Utils.find_image("./images/claim.png", 5)
+                        
+        if location_open:
+            x, y = location_open
+            Utils.click(x, y, "Recebendo recompensas")
+            time.sleep(1)
+            capture_and_copy_screenshot()
+            time.sleep(1)

@@ -33,12 +33,14 @@ utils.find_image("images/upgrade_food.png")
 
 
 capture_and_copy_screenshot()
-time.sleep(1)
-UtilsTest.find_image("images/upgrades_arrow.png")
+UtilsTest.find_image("images/claim.png")
+
+
 
 
 '''
 while True:
+time.sleep(1)
     capture_and_copy_screenshot()
     time.sleep(2)
     Automation.up_food()

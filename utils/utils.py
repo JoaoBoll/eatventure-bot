@@ -1,7 +1,6 @@
 import subprocess
 import cv2
 import time
-from uiautomator import Device
 from adb_utils.adb_utils import capture_and_copy_screenshot
 
 class Utils():
@@ -80,5 +79,5 @@ class Utils():
     def click_and_hold(x,y, seconds, message):
         print(message)
         time_seconds = seconds * 1000
-        time.sleep(seconds)        
         subprocess.run(f"adb shell input swipe {x} {y} {x} {y} {time_seconds}", shell=True)
+        time.sleep(seconds)        
