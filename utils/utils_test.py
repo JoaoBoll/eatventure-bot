@@ -38,11 +38,13 @@ class UtilsTest:
                     location = min_loc
                 else:
                     location = max_loc
-
+                    
+                x, y = location
+                print(f"x {x} y {y}")
                             
                 screenshot2 = cv2.resize(cv2.imread(screenshot_path), (0,0), fx=0.6, fy=0.6)
                 botton_right = (location[0] + w, location[1] + h)
-                cv2.rectangle(screenshot2, location, botton_right, 0, 5)  # Vermelho
+                cv2.rectangle(screenshot2, location, botton_right, (0,255,0), 5)  # Vermelho
 
                 # Salve a imagem de saída com os retângulos
                 cv2.imwrite(output_path, screenshot2)

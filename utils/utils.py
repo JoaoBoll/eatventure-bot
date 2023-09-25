@@ -8,14 +8,22 @@ class Utils():
     screenshot_path='./screenshot.png'
     
     def find_image_and_save(icon_path, method_number):
-        location = Utils.find_image_generic(icon_path, method_number, True)
+        location = Utils.find_image_generic(icon_path, method_number, True, 0.9)
         return location
 
     def find_image(icon_path, method_number):
-        location = Utils.find_image_generic(icon_path, method_number, False)
+        location = Utils.find_image_generic(icon_path, method_number, False, 0.9)
         return location
 
-    def find_image_generic(icon_path, method_number, save_image):
+    def find_image_with_threshold(icon_path, method_number, threshold):
+        location = Utils.find_image_generic(icon_path, method_number, False, threshold)
+        return location
+        
+    def find_image_with_threshold_and_save(icon_path, method_number, threshold):
+        location = Utils.find_image_generic(icon_path, method_number, True, threshold)
+        return location
+    
+    def find_image_generic(icon_path, method_number, save_image, threshold):
             # Carrega a captura de tela em escala de cinza
         screenshot =  cv2.imread(Utils.screenshot_path, 0)
 
@@ -43,8 +51,8 @@ class Utils():
         result = cv2.matchTemplate(screenshot, icon, method)
         min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
         
-        threshold = 0.9
         if max_val >= threshold:
+            print (f'Chega aqui {threshold}')
             
             if method in [cv2.TM_SQDIFF, cv2.TM_SQDIFF_NORMED]:
                 location = min_loc
@@ -55,6 +63,8 @@ class Utils():
                         
             print (f'Icone encontrado em: x:{x} y:{y}')
             if save_image:
+                print (f'Chega aqui {save_image}')
+
                 screenshot2 = cv2.imread(Utils.screenshot_path)
                 botton_right = (location[0] + w, location[1] + h)
                 cv2.rectangle(screenshot2, location, botton_right, 0, 5)  # Vermelho

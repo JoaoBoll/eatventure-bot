@@ -7,7 +7,7 @@ import time
 
 # Exemplo de uso:
 while True:
-    Automation.process()
+    Automation.process_alt()
 '''
 Investido:
 '''

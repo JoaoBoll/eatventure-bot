@@ -32,13 +32,13 @@ utils.find_image("images/upgrade_food.png")
 
 
 
-capture_and_copy_screenshot()
-UtilsTest.find_image("images/claim.png")
-
+time.sleep(1)
+UtilsTest.find_image("images/investor_3.jpg")
 
 
 
 '''
+
 while True:
 time.sleep(1)
     capture_and_copy_screenshot()

@@ -18,7 +18,7 @@ class Automation:
         
         print ('-----------------------------')
         print ('Procurando investidor!')
-        Automation.clain_investor()
+        Automation.find_investor()
         print ('-----------------------------')
         
         print ('-----------------------------')
@@ -47,15 +47,60 @@ class Automation:
         print ('Procurando icone up food!')
         Automation.up_food()
         print ('-----------------------------')
-         
-         
-         
+
+    @staticmethod
+    def process_alt():
+        capture_and_copy_screenshot()
+        time.sleep(1)
+        location = None
+        print ('-----------------------------')
+        print ('Procurando investidor!')
+        Automation.find_investor()
+        print ('-----------------------------')
+        
+
+
          
          
          
          
          
     
+    @staticmethod
+    def find_investor():
+        while True:
+            location = Utils.find_image("./images/investor.png", 5)
+        
+            if location:
+                x, y = location
+                Utils.click(x, y, "Abrindo investidor")
+                time.sleep(1)
+                capture_and_copy_screenshot()
+                time.sleep(1)
+                
+                Automation.claim_reward()
+            else:
+                location = Utils.find_image_with_threshold_and_save("./images/investor_2.jpg", 5, 0.8)
+                if location:
+                    x, y = location
+                    Utils.click(x, y, "Abrindo investidor 2")
+                    time.sleep(1)
+                    capture_and_copy_screenshot()
+                    time.sleep(1)
+                
+                    Automation.claim_reward()
+                break
+    
+    def claim_reward():
+        location_open = Utils.find_image("./images/claim.png", 5)
+                        
+        if location_open:
+            x, y = location_open
+            Utils.click(x, y, "Recebendo recompensas")
+            time.sleep(1)
+            capture_and_copy_screenshot()
+            time.sleep(1)
+            
     """OK"""
     @staticmethod
     def open_box():
@@ -97,11 +142,14 @@ class Automation:
 
             Automation.click_up_food()
             
-            time.sleep(2)
             x, y = location_arrow
             y=y+50
-            print (f'x {x} y {y}')
+            
             Utils.click(x,y, "Fechando upgrade")
+            
+            time.sleep(1)
+            capture_and_copy_screenshot()
+            time.sleep(1)
     
     """OK"""
     @staticmethod  
@@ -115,6 +163,8 @@ class Automation:
             
             seconds = 3
             Utils.click_and_hold(x, y, seconds, "Evoluindo")
+           
+
         else:
             print('Não foi encontrado nenhuma comida para evoluir.')            
 
@@ -132,9 +182,6 @@ class Automation:
             
             Automation.click_up_upgrades()
             time.sleep(1)
-            
-            x, y = location_arrow
-            Utils.click(x,y, "Fechando upgrade")
     
     """OK"""
     @staticmethod
@@ -151,12 +198,11 @@ class Automation:
                     x, y = location_upgrade
                     Utils.click(x, y, "Evoluindo")
                 else:
+                    Automation.close_x()
                     break  # Sai do loop se não houver mais location_upgrade
-            
+                
             capture_and_copy_screenshot()
-            time.sleep(2)
-            Automation.close_x()
-
+            time.sleep(1)
     
     """OK"""
     @staticmethod
@@ -229,30 +275,3 @@ class Automation:
                     time.sleep(2)
                 else :
                     break # Sai do loop se não houver mais locations
-                
-    @staticmethod
-    def clain_investor():
-        while True:
-            location_x = Utils.find_image("./images/investor.png", 5)
-        
-            if location_x:
-                x, y = location_x
-                Utils.click(x, y, "Abrindo investidor")
-                time.sleep(1)
-                
-                capture_and_copy_screenshot()
-                time.sleep(2)
-                
-                Automation.claim_reward()
-            else:
-                break
-    
-    def claim_reward():
-        location_open = Utils.find_image("./images/claim.png", 5)
-                        
-        if location_open:
-            x, y = location_open
-            Utils.click(x, y, "Recebendo recompensas")
-            time.sleep(1)
-            capture_and_copy_screenshot()
-            time.sleep(1)
