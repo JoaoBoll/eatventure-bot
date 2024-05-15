@@ -1,5 +1,6 @@
 import subprocess
 import os
+from utils.mesage_utils import MessageUtils as message
 
 # Nome do pacote do aplicativo que estamos controlando
 eat_venture_package = 'com.hwqgrhhjfd.idlefastfood'
@@ -11,7 +12,7 @@ def open_app():
         # cmd: adb shell monkey -p com.hwqgrhhjfd.idlefastfood -c android.intent.category.LAUNCHER 1
         with open(os.devnull, 'w') as null_file:
             subprocess.run(['adb', 'shell', 'monkey', '-p', eat_venture_package, '-c', 'android.intent.category.LAUNCHER', '1'], stdout=null_file, stderr=null_file)
-        print(f'O aplicativo {eat_venture_package} foi aberto com sucesso.')
+        print(f'Eatventure foi aberto com sucesso.')
 
     except Exception as e:
         print(f"Erro ao abrir o aplicativo: {str(e)}")
@@ -35,6 +36,7 @@ def app_is_open():
 
 # Função valida se a tela está em 1° plano.
 def is_screen_in_focus():
+    print("execute")
     try:
         # Execute o comando adb para obter informações sobre a atividade em primeiro plano
         result = subprocess.run(['adb', 'shell', 'dumpsys', 'activity', 'activities'], capture_output=True, text=True)
@@ -64,7 +66,7 @@ def bring_to_foreground():
     except Exception as e:
         print(f"Erro ao trazer a tela do aplicativo para o primeiro plano: {str(e)}")
 
-def capture_and_copy_screenshot(project_folder="./"):
+def capture_and_save_screenshot(project_folder="./"):
     # Nome do arquivo de captura de tela no dispositivo
     screenshot_filename = "/sdcard/screenshot.png"
 
@@ -75,7 +77,7 @@ def capture_and_copy_screenshot(project_folder="./"):
     try:
         subprocess.run(adb_capture_command, shell=False)
     except subprocess.CalledProcessError as e:
-        print(f"Erro ao capturar a tela: {e}")
+        print(f"Erro ao capturar a tela:\n{e}")
         return None
 
     # Caminho para a pasta do projeto onde deseja salvar a captura de tela
@@ -86,12 +88,11 @@ def capture_and_copy_screenshot(project_folder="./"):
 
     # Copia a captura de tela para a pasta do projeto
     try:
-        subprocess.run(adb_pull_command, shell=True)
+        subprocess.run(adb_pull_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
         return project_folder
     except subprocess.CalledProcessError as e:
         print(f"Erro ao copiar a captura de tela: {e}")
         return None
-
 
 def swipe_up(x1, y1, x2, y2, duration=500):
     """
@@ -134,3 +135,36 @@ def press_and_hold(x, y, duration_seconds):
         print(f"Erro ao pressionar e segurar: {str(e)}")
     except Exception as e:
         print(f"Erro inesperado: {str(e)}")
+        
+def press(x, y):
+    try:
+        # Comando adb para pressionar e segurar na tela
+        adb_command = f"adb shell input swipe {x} {y} {x} {y}"
+
+        # Executar o comando adb
+        subprocess.run(adb_command, shell=True, check=True)
+        print(f'Pressionado em ({x}, {y})')
+
+    except subprocess.CalledProcessError as e:
+        print(f"Erro ao pressionar e segurar: {str(e)}")
+    except Exception as e:
+        print(f"Erro inesperado: {str(e)}")
+
+import subprocess
+
+def press_multiple_times(x, y, times):
+    try:
+        # Comando adb para pressionar um ponto específico na tela
+        adb_command = f"adb shell input tap {x} {y}"
+
+        for i in range(times):
+            # Executar o comando adb para pressionar o ponto específico
+            subprocess.run(adb_command, shell=True, check=True)
+
+    except subprocess.CalledProcessError as e:
+        print(f"Erro ao pressionar: {str(e)}")
+    except Exception as e:
+        print(f"Erro inesperado: {str(e)}")
+
+# Exemplo de uso da função
+# press_multiple_times(x, y, times)

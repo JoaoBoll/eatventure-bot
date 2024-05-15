@@ -1,48 +1,15 @@
-import numpy as np
-from adb_utils.adb_utils import capture_and_copy_screenshot
-from utils.utils_test import UtilsTest
-from automation.automation import Automation
-from utils.utils import Utils
+from utils.image_utils import capture_and_save_screenshot
+from globals.variables_start import GlobalsValues
+from enums.cellphone_models import CellphoneModels
+from functions.images_functions import ImagesFunctions as img
+from adb_utils import adb_utils as adb
 import time
+from utils.image_utils import ImageUtils
+import sys
 
-'''
-
-while True:
-    capture_and_copy_screenshot()
-    time.sleep(1.25)
-    
-    location_arrow = Utils.find_image_generic("images/food_upgrade_arrow.png", 5, False)
-    
-    if location_arrow:
-        x, y = location_arrow
-        Utils.click(x,y, "Abrindo upgrade de comida")                        
-        capture_and_copy_screenshot()
-        
-        time.sleep(1)
-        x, y = location_arrow
-        y=y+50
-        print (f'x {x} y {y}')
-        Utils.click(x,y, "Fechando upgrade")
-        
-        capture_and_copy_screenshot()
-utils.find_image("images/upgrade_food.png")
-
-
-'''
-
-
-
+#GlobalsValues.start_items(CellphoneModels.XIAOMI_POCO_X5_PRO)
+capture_and_save_screenshot() 
+GlobalsValues.start_items(CellphoneModels.XIAOMI_POCO_X5_PRO)
+GlobalsValues.set_test_true()
 time.sleep(1)
-UtilsTest.find_image("images/investor_3.jpg")
-
-
-
-'''
-
-while True:
-time.sleep(1)
-    capture_and_copy_screenshot()
-    time.sleep(2)
-    Automation.up_food()
-'''
-
+img.open_box()

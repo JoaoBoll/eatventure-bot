@@ -1,19 +1,60 @@
-import subprocess
-import cv2
 import time
+import sys
 from uiautomator import Device
-from adb_utils.adb_utils import capture_and_copy_screenshot
-from utils.utils import Utils
+from adb_utils.adb_utils import capture_and_save_screenshot, open_app
+from utils.image_utils import ImageUtils
 from utils.utils_test import UtilsTest
+from utils.mesage_utils import MessageUtils as messages
+from globals import globals
+from functions.images_functions import ImagesFunctions as image
 
 class Automation:
     
     screenshot_path='./screenshot.png'
     output_path='screenshot-circle.png'
+    quantInvestSucces=0
+    tentativasDeAchar=0
     
     @staticmethod
     def process():
-        capture_and_copy_screenshot()
+        globals.running_times = globals.running_times + 1
+        image.new_screenshot()
+        time.sleep(0.7)
+
+        # Procura qualquer item para fechar na tela!
+        image.find_close_x()
+
+        # Procurar Investidores
+        image.find_investor()
+        
+        # Abrindo caixas
+        image.open_box()
+        
+        # Aplica upgrades
+        image.up_upgrades()
+        
+        # Evolui pratos
+        image.up_food()
+        
+        # Proxima cidade
+        #image.next_city()
+
+        print ('-----------------------------')
+        
+        # Evolui o nível das comidas
+        #Automation.up_food()
+        
+        # Registre o resultado da busca
+        #if encontrado:
+            #messages.add_item_log("find_close_x", "Encontrou item para fechar")
+        #else:
+            #messages.add_item_log("find_close_x", "Nenhum item para fechar encontrado")
+        
+        
+'''
+    @staticmethod
+    def process():
+        capture_and_save_screenshot()
         time.sleep(1)
         
         print ('-----------------------------')
@@ -31,18 +72,12 @@ class Automation:
         Automation.open_box()
         print ('-----------------------------')
 
-        '''
+        
         print ('-----------------------------')
         print ('Procurando icone para próxima cidade!')
         Automation.next_city()
         print ('-----------------------------')
-        '''        
-        
-        print ('-----------------------------')
-        print ('Aplicando upgrades!')
-        Automation.up_upgrades()
-        print ('-----------------------------')
-        
+
         print ('-----------------------------')
         print ('Procurando icone up food!')
         Automation.up_food()
@@ -50,7 +85,7 @@ class Automation:
 
     @staticmethod
     def process_alt():
-        capture_and_copy_screenshot()
+        capture_and_save_screenshot()
         time.sleep(1)
         location = None
         print ('-----------------------------')
@@ -58,14 +93,6 @@ class Automation:
         Automation.find_investor()
         print ('-----------------------------')
         
-
-
-         
-         
-         
-         
-         
-    
     @staticmethod
     def find_investor():
         while True:
@@ -75,7 +102,7 @@ class Automation:
                 x, y = location
                 Utils.click(x, y, "Abrindo investidor")
                 time.sleep(1)
-                capture_and_copy_screenshot()
+                capture_and_save_screenshot()
                 time.sleep(1)
                 
                 Automation.claim_reward()
@@ -85,126 +112,12 @@ class Automation:
                     x, y = location
                     Utils.click(x, y, "Abrindo investidor 2")
                     time.sleep(1)
-                    capture_and_copy_screenshot()
+                    capture_and_save_screenshot()
                     time.sleep(1)
                 
                     Automation.claim_reward()
                 break
-    
-    def claim_reward():
-        location_open = Utils.find_image("./images/claim.png", 5)
-                        
-        if location_open:
-            x, y = location_open
-            Utils.click(x, y, "Recebendo recompensas")
-            time.sleep(1)
-            capture_and_copy_screenshot()
-            time.sleep(1)
             
-    """OK"""
-    @staticmethod
-    def open_box():
-        while True:
-            location_x = Utils.find_image("./images/box.png", 5)
-        
-            if location_x:
-                x, y = location_x
-                Utils.click(x, y, "Fechando tela!")
-                
-                capture_and_copy_screenshot()
-
-                time.sleep(1)
-                
-            else:
-                location_x = Utils.find_image("./images/box_2.png", 5)
-        
-                if location_x:
-                    x, y = location_x
-                    Utils.click(x, y, "Fechando tela!")
-                    
-                    capture_and_copy_screenshot()
-
-                    time.sleep(1)
-                else:
-                    break # Sai do loop se não houver mais locations
-                
-    """OK"""
-    @staticmethod
-    def up_food():
-        location_arrow = Utils.find_image('./images/food_upgrade_arrow.png', 5)
-        if location_arrow:
-            x, y = location_arrow
-            x= x+20
-            Utils.click(x,y, "Abrindo upgrade de comida")
-            time.sleep(1)
-            capture_and_copy_screenshot()
-            time.sleep(1)
-
-            Automation.click_up_food()
-            
-            x, y = location_arrow
-            y=y+50
-            
-            Utils.click(x,y, "Fechando upgrade")
-            
-            time.sleep(1)
-            capture_and_copy_screenshot()
-            time.sleep(1)
-    
-    """OK"""
-    @staticmethod  
-    def click_up_food():
-
-        print ('Chega aqui')
-        location_upgrade = Utils.find_image('./images/upgrade_food.png', 5)
-
-        if location_upgrade:
-            x, y = location_upgrade
-            
-            seconds = 3
-            Utils.click_and_hold(x, y, seconds, "Evoluindo")
-           
-
-        else:
-            print('Não foi encontrado nenhuma comida para evoluir.')            
-
-    """OK"""
-    @staticmethod
-    def up_upgrades():
-        location_arrow = Utils.find_image('./images/upgrades_arrow.png', 5)
-        if location_arrow:
-            x, y = location_arrow
-            Utils.click(x,y, "Abrindo upgrade")
-            time.sleep(2)
-                                    
-            capture_and_copy_screenshot()
-            time.sleep(1)
-            
-            Automation.click_up_upgrades()
-            time.sleep(1)
-    
-    """OK"""
-    @staticmethod
-    def click_up_upgrades():
-        while True:
-            location_upgrade = Utils.find_image('./images/upgrade_upgrades.png', 5)
-
-            if location_upgrade:
-                x, y = location_upgrade
-                Utils.click(x, y, "Evoluindo")
-            else:
-                location_upgrade = Utils.find_image('./images/upgrade_upgrades2.png', 5)
-                if location_upgrade:
-                    x, y = location_upgrade
-                    Utils.click(x, y, "Evoluindo")
-                else:
-                    Automation.close_x()
-                    break  # Sai do loop se não houver mais location_upgrade
-                
-            capture_and_copy_screenshot()
-            time.sleep(1)
-    
-    """OK"""
     @staticmethod
     def next_city():
         location_plane = Utils.find_image("./images/plane.png", 5)
@@ -212,7 +125,7 @@ class Automation:
             x, y = location_plane
             Utils.click(x, y, "Abrindo tela para próxima cidade!")
             
-            capture_and_copy_screenshot()
+            capture_and_save_screenshot()
             
             time.sleep(2)
             
@@ -229,7 +142,7 @@ class Automation:
                 x, y = location_next_city
                 Utils.click(x, y, "Abrindo tela para próxima cidade!")
                 
-                capture_and_copy_screenshot()
+                capture_and_save_screenshot()
                 
                 location_fly = Utils.find_image("./images/upgrade_city.png", 5)
                 if location_fly:
@@ -238,7 +151,6 @@ class Automation:
                     time.sleep(10)
                     Automation.open_city()
           
-    """OK"""      
     def open_city():
         location_open = Utils.find_image("./images/open.png", 5)
                         
@@ -246,32 +158,6 @@ class Automation:
             x, y = location_open
             Utils.click(x, y, "Abrindo tela para próxima cidade!")
             time.sleep(1)
-            capture_and_copy_screenshot()
+            capture_and_save_screenshot()
             time.sleep(1)
-            
-    """OK"""
-    @staticmethod
-    def close_x():
-        while True:
-            location_x = Utils.find_image("./images/x.png", 5)
-        
-            if location_x:
-                x, y = location_x
-                Utils.click(x, y, "Fechando tela!")
-                
-                capture_and_copy_screenshot()
-
-                time.sleep(2)
-                
-            else:
-                location_shops = Utils.find_image("./images/shops_x.png", 5)
-                
-                if location_shops:
-                    x, y = location_shops
-                    Utils.click(x, y, "Fechando tela!")
-                    
-                    capture_and_copy_screenshot()
-
-                    time.sleep(2)
-                else :
-                    break # Sai do loop se não houver mais locations
+'''

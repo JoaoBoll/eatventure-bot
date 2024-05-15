@@ -2,8 +2,8 @@ import subprocess
 import cv2
 import time
 from uiautomator import Device
-from adb_utils.adb_utils import capture_and_copy_screenshot
-from utils.utils import Utils
+from adb_utils.adb_utils import capture_and_save_screenshot
+from utils.image_utils import ImageUtils
 
 class UtilsTest:
     

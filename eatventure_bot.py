@@ -1,13 +1,32 @@
-import subprocess
-import cv2
 import numpy as np
-from adb_utils.adb_utils import capture_and_copy_screenshot
+from adb_utils.adb_utils import open_app 
 from automation.automation import Automation
 import time
+from globals.variables_start import GlobalsValues
+from globals import globals as g
+from enums.cellphone_models import CellphoneModels
+from utils.mesage_utils import MessageUtils as message
+from globals import globals as g
+from enums.identifiers import Identifiers
 
-# Exemplo de uso:
+
+# Variáveis Globais
+GlobalsValues.start_items(CellphoneModels.XIAOMI_POCO_X5_PRO)
+
+# Validar todos as imagens
+
+#Abrir APP
+open_app()
+
 while True:
-    Automation.process_alt()
+    # Atualize a exibição da tabela com os dados em `g.log`
+    #live.update(create_table(g.log))
+    
+    # Chame `Automation.process()` para continuar o processo principal
+    Automation.process()
+    
+    # Adicione algum atraso para permitir que as atualizações sejam perceptíveis (opcional)
+
 '''
 Investido:
 '''
