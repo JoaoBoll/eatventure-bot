@@ -50,8 +50,7 @@ class GlobalsValues:
             print(f"Ocorreu um erro ao carregar '{config_path}': {e}")
     
     def set_test_true():
-        globals.is_test.__setattr__(True)
-
+        globals.is_test = True
 
     
     #Classe para armazenar e gerenciar variáveis globais.

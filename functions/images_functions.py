@@ -82,9 +82,8 @@ class ImagesFunctions:
                         
         # Aqui valida apenas gemas.
         if location_open:
-            x,y = location_open
             time.sleep(1)
-            adb.press(x, y)
+            adb.press(g.claim_reward_x, g.claim_reward_y)
 
             for remaining in range(40, -1, -1):
                 sys.stdout.write(f'\rAssistindo AD: {remaining} segundos')
@@ -133,7 +132,7 @@ class ImagesFunctions:
             adb.press(x, y_close)
             time.sleep(0.5)
         else:
-            adb.press_and_hold(100,100, 1)
+            adb.press_and_hold(10,300, 0.3)
             
     # Abre as caixas de cozinheiros/comida/etc
     @staticmethod
@@ -155,6 +154,23 @@ class ImagesFunctions:
             
             capture_and_save_screenshot()
             time.sleep(0.5)
+   
+    @staticmethod
+    def open_box_test():
+        while True:
+            location_x = ImageUtils.find_image("box.png", 5)
+        
+            if location_x:
+                x, y = location_x
+                adb.press(x, y)
+            else:
+                location_x = ImageUtils.find_image("box_2.png", 5)
+        
+                if location_x:
+                    x, y = location_x
+                    adb.press(x, y)
+                else:
+                    break # Sai do loop se não houver mais locations   
    
     # Próxima Cidade
     def next_city():
