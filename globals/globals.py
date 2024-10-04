@@ -15,3 +15,7 @@ up_upgrade_y=0
 close_upgrades_x=0
 close_upgrades_y=0
 
+# Screen infos
+
+swipe_count=0
+swipe_up=True

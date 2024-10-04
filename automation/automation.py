@@ -1,12 +1,8 @@
 import time
-import sys
-from uiautomator import Device
-from adb_utils.adb_utils import capture_and_save_screenshot, open_app
-from utils.image_utils import ImageUtils
-from utils.utils_test import UtilsTest
 from utils.mesage_utils import MessageUtils as messages
 from globals import globals
 from functions.images_functions import ImagesFunctions as image
+from adb_utils import adb_utils as adb
 
 class Automation:
     
@@ -24,8 +20,11 @@ class Automation:
         # Procura qualquer item para fechar na tela!
         image.find_close_x()
 
+        # Convidar Helper (Só para tirar o "!")
+        # image.invite_helper()
+
         # Procurar Investidores
-        image.find_investor()
+        # image.find_investor()
         
         # Abrindo caixas
         image.open_box()
@@ -37,9 +36,23 @@ class Automation:
         image.up_food()
         
         # Proxima cidade
-        #image.next_city()
+        image.next_city()
 
+        if globals.running_times % 3 == 0 :
+            if globals.swipe_count % 4 == 0:
+                if globals.swipe_up:
+                    globals.swipe_up = False
+                else:
+                    globals.swipe_up = True
+
+            if globals.swipe_up:
+                adb.swipe_up(500, 400, 500, 1250)
+            else:
+                adb.swipe_down(500, 1250, 500, 400)
+                
+            globals.swipe_count = globals.swipe_count + 1
         print ('-----------------------------')
+        print (f'Rodou: {globals.running_times} vez(es)')
         
         # Evolui o nível das comidas
         #Automation.up_food()

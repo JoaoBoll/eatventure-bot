@@ -9,6 +9,7 @@ class ImagesFunctions:
     
     # Novo print
     def new_screenshot():
+        adb.open_app()
         capture_and_save_screenshot()
     
     # Fecha todas as abas abertas
@@ -31,7 +32,27 @@ class ImagesFunctions:
                 else:
                     ImagesFunctions.open_city()
                     break # Sai do loop se não houver mais locations
-    
+
+    # Clica no Invite Helper
+    def invite_helper():
+        location_helper = ImageUtils.find_image('invite_helper.png', 5)
+        if location_helper:
+            x, y = location_helper
+            adb.press(x+50,y+50)
+
+            time.sleep(1)
+            capture_and_save_screenshot()
+            time.sleep(1)
+
+            location = ImageUtils.find_image('x.png', 5)
+            if location:
+                x, y = location
+                adb.press(x, y)
+
+                time.sleep(1)
+                capture_and_save_screenshot()
+                time.sleep(1)
+
     # Upgrades da cidade
     def up_upgrades():
         location_arrow = ImageUtils.find_image('upgrades_arrow.png', 5)
@@ -119,41 +140,72 @@ class ImagesFunctions:
     def up_food():
         location_arrow = ImageUtils.find_image('food_upgrade_arrow.png', 5)
         if location_arrow:
-            x, y = location_arrow
-            adb.press(x + 25,y)
-            time.sleep(0.5)
+            ImagesFunctions.location_arrow(location_arrow)
+            return
+        
+        location_arrow_2 = ImageUtils.find_image('food_upgrade_arrow_2.png', 5)
+        if location_arrow_2:
+            ImagesFunctions.location_arrow(location_arrow_2)
 
-            x_up = x + 25            
-            y_up=y-50
-            adb.press_and_hold(x_up,y_up, 3)
-            time.sleep(0.3)            
-            
-            y_close = y + 45
-            adb.press(x, y_close)
-            time.sleep(0.5)
-        else:
-            adb.press_and_hold(10,300, 0.3)
-            
+        location_arrow_3 = ImageUtils.find_image('food_upgrade_arrow_3.png',5)
+        if location_arrow_3:
+            ImagesFunctions.location_arrow(location_arrow_3)
+
+        location_arrow_4 = ImageUtils.find_image('food_upgrade_arrow_4.png', 5)
+        if location_arrow_4:
+            ImagesFunctions.location_arrow(location_arrow_4)
+
+        location_arrow_5 = ImageUtils.find_image('food_upgrade_arrow_5.png', 5)
+        if location_arrow_5:
+            ImagesFunctions.location_arrow(location_arrow_5)
+
+        adb.press(10,300)
+    
+    def location_arrow(location_arrow):
+        x, y = location_arrow
+        adb.press(x+10 ,y +40)
+
+        time.sleep(0.5)
+        capture_and_save_screenshot()
+        time.sleep(0.5)
+
+        print(x)
+        print(y)
+
+        ImagesFunctions.up_button_food()
+
+        y_close = y + 45
+        adb.press(x+40, y_close)
+        capture_and_save_screenshot()
+        time.sleep(0.5)
+         
+    def up_button_food():
+        unlock = ImageUtils.find_image('unlock.png',5)
+        location_upgrade = ImageUtils.find_image('upgrade_food_gold.png',5)
+
+        if unlock and location_upgrade:
+            x_lup, y_lup = location_upgrade
+            adb.press(x_lup,y_lup+30)
+        elif location_upgrade:
+            x_lup, y_lup = location_upgrade
+            adb.press_and_hold(x_lup,y_lup+30, 3)
+        
+       
+
     # Abre as caixas de cozinheiros/comida/etc
     @staticmethod
     def open_box():
-        while True:
-            location_x = ImageUtils.find_image("box.png", 5)
-        
+        for i in range(5):
+            icon_path = f"box_{i}.png"
+            location_x = ImageUtils.find_image(icon_path, 5)
+    
             if location_x:
                 x, y = location_x
                 adb.press(x, y)
-            else:
-                location_x = ImageUtils.find_image("box_2.png", 5)
-        
-                if location_x:
-                    x, y = location_x
-                    adb.press(x, y)
-                else:
-                    break # Sai do loop se não houver mais locations   
-            
-            capture_and_save_screenshot()
-            time.sleep(0.5)
+            elif i == 5:
+                break
+        capture_and_save_screenshot()
+        time.sleep(0.5)
    
     @staticmethod
     def open_box_test():
@@ -174,37 +226,44 @@ class ImagesFunctions:
    
     # Próxima Cidade
     def next_city():
-        location_plane = ImageUtils.find_image("plane.png", 5)
-        if location_plane:
-            x, y = location_plane
+        location_next_city = ImageUtils.find_image("build.png", 5)
+        if location_next_city:
+            x, y = location_next_city
             adb.press(x, y)
             
             capture_and_save_screenshot()
             
             time.sleep(2)
             
-            location_fly = ImageUtils.find_image("fly.png", 5)
+            location_Open = ImageUtils.find_image("upgrade_city.png", 5)
             
-            if location_fly:
-                x, y = location_fly
+            if location_Open:
+                x, y = location_Open
                 adb.press(x, y)
-                time.sleep(15)
+                time.sleep(12)
+                ImagesFunctions.reset_globals_new_city()
 
         else:
-            location_next_city = ImageUtils.find_image("build.png", 5)
+            location_plane = ImageUtils.find_image_with_threshold("plane.png", 5, 0.95)
                         
-            if location_next_city:
-                x, y = location_next_city
+            if location_plane:
+                x, y = location_plane
                 adb.press(x, y)
                 
                 capture_and_save_screenshot()
                 
-                location_Open = ImageUtils.find_image("upgrade_city.png", 5)
-                if location_Open:
-                    x, y = location_Open
-                    adb.press(x, y)
-                    time.sleep(15)
-                    
+                location_fly = ImageUtils.find_image("fly.png", 5)
+                if location_fly:
+                    x, y = location_fly
+                    adb.press(x, y+40)
+                    time.sleep(12)
+                    ImagesFunctions.reset_globals_new_city()
+
+    def reset_globals_new_city():
+        g.running_times = 0
+        g.swipe_count = 0  
+        g.swipe_up = False
+                            
     def open_city():
         location_open = ImageUtils.find_image("open.png", 5)
                         

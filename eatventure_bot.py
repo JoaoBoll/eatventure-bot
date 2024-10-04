@@ -9,10 +9,9 @@ from utils.mesage_utils import MessageUtils as message
 from globals import globals as g
 from enums.identifiers import Identifiers
 
-
 # Variáveis Globais
 GlobalsValues.start_items(CellphoneModels.XIAOMI_POCO_X5_PRO)
-
+#GlobalsValues.set_test_true()
 # Validar todos as imagens
 
 #Abrir APP
@@ -22,6 +21,7 @@ while True:
     # Atualize a exibição da tabela com os dados em `g.log`
     #live.update(create_table(g.log))
     
+
     # Chame `Automation.process()` para continuar o processo principal
     Automation.process()
     

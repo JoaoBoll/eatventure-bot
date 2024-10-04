@@ -56,12 +56,11 @@ class ImageUtils():
         result = cv2.matchTemplate(screenshot, icon, method)
         min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
         
-        if max_val >= threshold:
-            
+        if (method in [cv2.TM_SQDIFF, cv2.TM_SQDIFF_NORMED] and min_val <= -0.8) or (method not in [cv2.TM_SQDIFF, cv2.TM_SQDIFF_NORMED] and max_val >= threshold):
             if method in [cv2.TM_SQDIFF, cv2.TM_SQDIFF_NORMED]:
-                location = min_loc
+                location = min_loc  # Quanto menor, melhor
             else:
-                location = max_loc
+                location = max_loc  # Quanto maior, melhor
 
             x,y = location
                         
