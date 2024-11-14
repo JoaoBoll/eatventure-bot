@@ -137,29 +137,38 @@ class ImagesFunctions:
             time.sleep(5)            
     
     #Evolui o nível dos pratos
-    def up_food():
-        location_arrow = ImageUtils.find_image('food_upgrade_arrow.png', 5)
-        if location_arrow:
-            ImagesFunctions.location_arrow(location_arrow)
-            return
-        
-        location_arrow_2 = ImageUtils.find_image('food_upgrade_arrow_2.png', 5)
-        if location_arrow_2:
-            ImagesFunctions.location_arrow(location_arrow_2)
+    def up_food(isNormal:bool):
+        if isNormal:
+            if True:
+                location_arrow = ImageUtils.find_image('food_upgrade_arrow.png', 5)
+                if location_arrow:
+                    ImagesFunctions.location_arrow(location_arrow)
+                    return
+                
+                location_arrow_2 = ImageUtils.find_image('food_upgrade_arrow_2.png', 5)
+                if location_arrow_2:
+                    ImagesFunctions.location_arrow(location_arrow_2)
 
-        location_arrow_3 = ImageUtils.find_image('food_upgrade_arrow_3.png',5)
-        if location_arrow_3:
-            ImagesFunctions.location_arrow(location_arrow_3)
+                location_arrow_3 = ImageUtils.find_image('food_upgrade_arrow_3.png',5)
+                if location_arrow_3:
+                    ImagesFunctions.location_arrow(location_arrow_3)
 
-        location_arrow_4 = ImageUtils.find_image('food_upgrade_arrow_4.png', 5)
-        if location_arrow_4:
-            ImagesFunctions.location_arrow(location_arrow_4)
+                location_arrow_4 = ImageUtils.find_image('food_upgrade_arrow_4.png', 5)
+                if location_arrow_4:
+                    ImagesFunctions.location_arrow(location_arrow_4)
 
-        location_arrow_5 = ImageUtils.find_image('food_upgrade_arrow_5.png', 5)
-        if location_arrow_5:
-            ImagesFunctions.location_arrow(location_arrow_5)
+                location_arrow_5 = ImageUtils.find_image('food_upgrade_arrow_5.png', 5)
+                if location_arrow_5:
+                    ImagesFunctions.location_arrow(location_arrow_5)
 
-        adb.press(10,300)
+                adb.press(10,300)
+            else:
+                ImagesFunctions.up_button_food()
+        else:
+            location_upgrade = ImageUtils.find_image_with_threshold('upgrade_food_event.png',5, 0.80)
+            if location_upgrade:
+                x_lup, y_lup = location_upgrade
+                adb.press_and_hold(x_lup,y_lup+30, 3)    
     
     def location_arrow(location_arrow):
         x, y = location_arrow
@@ -228,36 +237,46 @@ class ImagesFunctions:
     def next_city():
         location_next_city = ImageUtils.find_image("build.png", 5)
         if location_next_city:
+            print("build?")
+
             x, y = location_next_city
             adb.press(x, y)
             
+            time.sleep(0.7)
             capture_and_save_screenshot()
+            time.sleep(0.7)
             
-            time.sleep(2)
-            
-            location_Open = ImageUtils.find_image("upgrade_city.png", 5)
+            location_Open = ImageUtils.find_image("renovate.png", 5)
             
             if location_Open:
+                g.up_count = g.up_count + 1
                 x, y = location_Open
                 adb.press(x, y)
-                time.sleep(12)
+                time.sleep(10)
                 ImagesFunctions.reset_globals_new_city()
 
         else:
             location_plane = ImageUtils.find_image_with_threshold("plane.png", 5, 0.95)
-                        
             if location_plane:
+                print("Achou plane")
                 x, y = location_plane
-                adb.press(x, y)
-                
+                adb.press(x, y +20)
+
+                time.sleep(0.7)
                 capture_and_save_screenshot()
-                
+                time.sleep(0.7)
+
+                print("AAA")
+
                 location_fly = ImageUtils.find_image("fly.png", 5)
                 if location_fly:
+                    g.fly_count = g.fly_count + 1
                     x, y = location_fly
                     adb.press(x, y+40)
-                    time.sleep(12)
+                    time.sleep(10)
                     ImagesFunctions.reset_globals_new_city()
+            else:
+                print("Não achou")
 
     def reset_globals_new_city():
         g.running_times = 0

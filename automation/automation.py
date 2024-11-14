@@ -12,6 +12,14 @@ class Automation:
     tentativasDeAchar=0
     
     @staticmethod
+    def process_event():
+        image.new_screenshot()
+        time.sleep(0.5)
+        image.open_box()
+        image.up_upgrades()
+        image.up_food(False)
+
+    @staticmethod
     def process():
         globals.running_times = globals.running_times + 1
         image.new_screenshot()
@@ -33,7 +41,7 @@ class Automation:
         image.up_upgrades()
         
         # Evolui pratos
-        image.up_food()
+        image.up_food(True)
         
         # Proxima cidade
         image.next_city()
@@ -53,6 +61,7 @@ class Automation:
             globals.swipe_count = globals.swipe_count + 1
         print ('-----------------------------')
         print (f'Rodou: {globals.running_times} vez(es)')
+        print (f'Cidades: {globals.up_count} / Vôou: {globals.fly_count}')
         
         # Evolui o nível das comidas
         #Automation.up_food()

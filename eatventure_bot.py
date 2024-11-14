@@ -24,6 +24,8 @@ while True:
 
     # Chame `Automation.process()` para continuar o processo principal
     Automation.process()
+
+    #Automation.process_event()
     
     # Adicione algum atraso para permitir que as atualizações sejam perceptíveis (opcional)
 

@@ -19,3 +19,8 @@ close_upgrades_y=0
 
 swipe_count=0
 swipe_up=True
+
+# Up count
+
+fly_count=0
+up_count=0

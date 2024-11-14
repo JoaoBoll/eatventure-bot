@@ -11,37 +11,46 @@ import sys
 capture_and_save_screenshot() 
 GlobalsValues.start_items(CellphoneModels.XIAOMI_POCO_X5_PRO)
 GlobalsValues.set_test_true()
-time.sleep(1)
+#adb.swipe_up(500, 400, 500, 1250)
+
+
 location_next_city = ImageUtils.find_image("build.png", 5)
 if location_next_city:
+    print("build?")
+
     x, y = location_next_city
     adb.press(x, y)
     
-    #capture_and_save_screenshot()
+    time.sleep(0.7)
+    capture_and_save_screenshot()
+    time.sleep(0.7)
     
-    time.sleep(2)
-    
-    location_Open = ImageUtils.find_image("upgrade_city.png", 5)
+    location_Open = ImageUtils.find_image("renovate.png", 5)
     
     if location_Open:
+        g.up_count = g.up_count + 1
         x, y = location_Open
         adb.press(x, y)
-        time.sleep(15)
+        time.sleep(10)
         ImagesFunctions.reset_globals_new_city()
-
 else:
     location_plane = ImageUtils.find_image_with_threshold("plane.png", 5, 0.95)
-                
     if location_plane:
+        print("Achou plane")
         x, y = location_plane
-        adb.press(x, y)
-        
-        #capture_and_save_screenshot()
-        
-        location_fly = ImageUtils.find_image("fly.png", 3)
+        adb.press(x, y +20)
+
+        time.sleep(0.7)
+        capture_and_save_screenshot()
+        time.sleep(0.7)
+
+        print("AAA")
+
+        location_fly = ImageUtils.find_image("fly.png", 5)
         if location_fly:
             x, y = location_fly
-            adb.press(x, y)
-            time.sleep(15)
+            adb.press(x, y+40)
+            time.sleep(10)
             ImagesFunctions.reset_globals_new_city()
-
+    else:
+        print("Não achou")
