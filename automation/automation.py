@@ -1,3 +1,4 @@
+
 import time
 from utils.mesage_utils import MessageUtils as messages
 from globals import globals
@@ -10,6 +11,7 @@ class Automation:
     output_path='screenshot-circle.png'
     quantInvestSucces=0
     tentativasDeAchar=0
+    isNormal=True
     
     @staticmethod
     def process_event():
@@ -36,29 +38,32 @@ class Automation:
         
         # Abrindo caixas
         image.open_box()
-        
+         
         # Aplica upgrades
         image.up_upgrades()
         
         # Evolui pratos
-        image.up_food(True)
+        image.up_food(Automation.isNormal)
         
         # Proxima cidade
         image.next_city()
 
-        if globals.running_times % 3 == 0 :
-            if globals.swipe_count % 4 == 0:
-                if globals.swipe_up:
-                    globals.swipe_up = False
-                else:
-                    globals.swipe_up = True
+        if (Automation.isNormal):
+            if globals.running_times % 3 == 0 :
+                if globals.swipe_count % 4 == 0:
+                    if globals.swipe_up:
+                        globals.swipe_up = False
+                    else:
+                        globals.swipe_up = True
 
-            if globals.swipe_up:
-                adb.swipe_up(500, 400, 500, 1250)
-            else:
-                adb.swipe_down(500, 1250, 500, 400)
-                
-            globals.swipe_count = globals.swipe_count + 1
+                if globals.swipe_up:
+                    adb.swipe_up(500, 400, 500, 1250)
+
+                else:
+                    adb.swipe_down(500, 1250, 500, 400)
+
+                globals.swipe_count = globals.swipe_count + 1
+        
         print ('-----------------------------')
         print (f'Rodou: {globals.running_times} vez(es)')
         print (f'Cidades: {globals.up_count} / Vôou: {globals.fly_count}')

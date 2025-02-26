@@ -55,7 +55,7 @@ class ImagesFunctions:
 
     # Upgrades da cidade
     def up_upgrades():
-        location_arrow = ImageUtils.find_image('upgrades_arrow.png', 5)
+        location_arrow = ImageUtils.find_image_with_threshold('upgrades_arrow.png', 5, 0.95)
         if location_arrow:
             x, y = location_arrow
             adb.press(x,y)
@@ -235,7 +235,7 @@ class ImagesFunctions:
    
     # Próxima Cidade
     def next_city():
-        location_next_city = ImageUtils.find_image("build.png", 5)
+        location_next_city = ImageUtils.find_image_with_threshold("build.png", 5, 0.95)
         if location_next_city:
             print("build?")
 
@@ -246,12 +246,12 @@ class ImagesFunctions:
             capture_and_save_screenshot()
             time.sleep(0.7)
             
-            location_Open = ImageUtils.find_image("renovate.png", 5)
+            location_Open = ImageUtils.find_image("renovate_city_coin.png", 5)
             
             if location_Open:
                 g.up_count = g.up_count + 1
                 x, y = location_Open
-                adb.press(x, y)
+                adb.press(x + 20, y)
                 time.sleep(10)
                 ImagesFunctions.reset_globals_new_city()
 
