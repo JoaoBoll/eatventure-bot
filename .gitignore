@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Ambiente virtual
+.venv/
+venv/
+
+# Saída solta
+output.txt
+
+# Capturas de trabalho do template_selector: descartáveis.
+tests/capture/
+
+# tests/images/ NÃO entra aqui: são os fixtures em que o
+# tests/golden/expectations.json se baseia.

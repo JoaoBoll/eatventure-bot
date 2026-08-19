@@ -1,54 +1,103 @@
+"""
+Visualizador do stream cru, sem detecção.
+
+    python src/test_main.py
+
+Serve para conferir se a captura está de pé antes de
+culpar o detector.
+"""
+
+import argparse
+import sys
+
 import cv2
 
 from capture.screen import ScreenCapture
-
+from core import devices, log
+from core.config import (
+    DEVICE_SERIAL,
+    LOG_LEVEL,
+    WINDOW_HEIGHT,
+    WINDOW_WIDTH,
+)
 
 WINDOW_NAME = "AI Raw"
 
 
-capture = ScreenCapture()
+def main(argv=None):
 
+    log.setup(LOG_LEVEL)
 
-try:
+    logger = log.get("raw")
 
-    capture.start()
-
-    cv2.namedWindow(
-        WINDOW_NAME,
-        cv2.WINDOW_NORMAL
+    parser = argparse.ArgumentParser(
+        description="Visualizador do stream cru",
     )
 
-    cv2.resizeWindow(
-        WINDOW_NAME,
-        500,
-        900
+    parser.add_argument(
+        "--device",
+        metavar="SERIAL",
+        help="serial do device (adb devices)",
     )
 
-    while True:
+    args = parser.parse_args(argv)
 
-        frame = capture.get_frame()
+    # Mesma escolha do main.py: sem o -s, com dois devices na
+    # lista o adb recusa toda chamada.
+    capture = ScreenCapture(
+        devices.resolver(args.device or DEVICE_SERIAL)
+    )
 
-        if frame is None:
-            continue
+    try:
 
-        cv2.imshow(
+        capture.start()
+
+        cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
+
+        cv2.resizeWindow(
             WINDOW_NAME,
-            frame
+            WINDOW_WIDTH,
+            WINDOW_HEIGHT,
         )
 
-        if cv2.waitKey(1) & 0xFF == 27:
-            break
+        last_version = 0
+
+        while True:
+
+            # get_frame agora devolve (frame, versao, timestamp)
+            # e espera por frame novo em vez de girar em vazio.
+            frame, version, _ = capture.get_frame(
+                since_version=last_version,
+                timeout=1.0,
+            )
+
+            if not capture.is_running():
+
+                logger.warning("Stream encerrado.")
+
+                break
+
+            if frame is None:
+                continue
+
+            last_version = version
+
+            cv2.imshow(WINDOW_NAME, frame)
+
+            if cv2.waitKey(1) & 0xFF == 27:
+                break
+
+    except KeyboardInterrupt:
+
+        logger.info("Interrompido pelo usuário.")
+
+    finally:
+
+        capture.stop()
+
+        cv2.destroyAllWindows()
 
 
-except KeyboardInterrupt:
+if __name__ == "__main__":
 
-    print(
-        "\nPrograma interrompido pelo usuário."
-    )
-
-
-finally:
-
-    capture.stop()
-
-    cv2.destroyAllWindows()
+    sys.exit(main())

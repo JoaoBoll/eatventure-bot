@@ -1,79 +1,72 @@
+"""
+EatVenture AI — ponto de entrada.
+
+Uso:
+
+    python src/main.py
+
+Mudanças em relação à versão anterior:
+
+1. Código dentro de main(), não no topo do módulo.
+   Antes importar main.py já ligava o scrcpy.
+
+2. Loop principal dorme esperando frame novo, em vez de
+   girar a 100% de CPU reprocessando o mesmo frame.
+
+3. Informa ao detector as categorias do estado atual, e ao
+   ActionManager a resolução em que as detecções estão.
+"""
+
+import argparse
 import subprocess
+import sys
+
 import cv2
 
+from actions.manager import ActionManager
 from capture.screen import ScreenCapture
+from core import devices, log
+from core.config import (
+    AI_WINDOW_NAME,
+    AI_WINDOW_POSITION,
+    DEVICE_SERIAL,
+    LOG_LEVEL,
+    SCRCPY_EXTRA_ARGS,
+    SCRCPY_PATH,
+    SHOW_AI_VISION,
+    SHOW_SCRCPY,
+    VISION_FILTER_BY_STATE,
+    WINDOW_HEIGHT,
+    WINDOW_WIDTH,
+)
+from core.state_machine import StateMachine
 from vision.detector import Detector
 from vision.worker import VisionWorker
-from actions.manager import ActionManager
-from core.state_machine import StateMachine
 
-from core.config import (
-    SHOW_AI_VISION,
-    WINDOW_WIDTH,
-    WINDOW_HEIGHT,
-)
-
-
-SCRCPY_PATH = r"C:\scrcpy\scrcpy.exe"
-
-AI_WINDOW = "EatVenture - AI"
+logger = log.get("main")
 
 
 # =========================================================
-# ADB
+# ARGUMENTOS
 # =========================================================
 
-def get_device_id():
+def parse_args(argv=None):
 
-    result = subprocess.run(
-        [
-            "adb",
-            "devices",
-        ],
-        capture_output=True,
-        text=True,
-        check=True,
+    parser = argparse.ArgumentParser(
+        description="EatVenture AI",
     )
 
-    devices = []
+    parser.add_argument(
+        "--device",
+        metavar="SERIAL",
+        help=(
+            "serial do device (adb devices). Sem isto, usa "
+            "DEVICE_SERIAL do config; sem os dois, pergunta "
+            "quando houver mais de um conectado."
+        ),
+    )
 
-    for line in result.stdout.splitlines():
-
-        line = line.strip()
-
-        if not line:
-            continue
-
-        if line.startswith("List of devices"):
-            continue
-
-        parts = line.split()
-
-        if len(parts) >= 2:
-
-            device_id = parts[0]
-            status = parts[1]
-
-            if status == "device":
-
-                devices.append(
-                    device_id
-                )
-
-    if not devices:
-
-        raise RuntimeError(
-            "Nenhum dispositivo Android encontrado."
-        )
-
-    if len(devices) > 1:
-
-        raise RuntimeError(
-            "Mais de um dispositivo Android conectado:\n"
-            + "\n".join(devices)
-        )
-
-    return devices[0]
+    return parser.parse_args(argv)
 
 
 # =========================================================
@@ -82,13 +75,9 @@ def get_device_id():
 
 def start_scrcpy(device_id):
 
-    window_title = (
-        f"EatVenture ({device_id})"
-    )
+    window_title = f"EatVenture ({device_id})"
 
-    print(
-        f"Iniciando {window_title}..."
-    )
+    logger.info("Iniciando %s...", window_title)
 
     return subprocess.Popen(
         [
@@ -100,198 +89,224 @@ def start_scrcpy(device_id):
             "--window-title",
             window_title,
         ]
+        + list(SCRCPY_EXTRA_ARGS)
     )
 
 
 # =========================================================
-# INICIALIZAÇÃO
+# JANELA
 # =========================================================
 
-device_id = get_device_id()
+def setup_window():
 
-scrcpy_process = start_scrcpy(
-    device_id
-)
+    cv2.namedWindow(AI_WINDOW_NAME, cv2.WINDOW_NORMAL)
 
-capture = ScreenCapture()
+    cv2.resizeWindow(
+        AI_WINDOW_NAME,
+        WINDOW_WIDTH,
+        WINDOW_HEIGHT,
+    )
 
-detector = Detector(
-    threshold=0.80,
-    color_threshold=0.85,
-
-    category_thresholds={
-        "build": 0.95,
-        "new_point": 0.90,
-        "food": 0.90,
-        "upgrade": 0.98,
-        "up_food": 0.90,
-        "up_upgrade": 0.90,
-        "close": 0.85,
-
-    }
-)
-
-vision = VisionWorker(
-    detector=detector,
-
-    # 20 análises por segundo
-    interval=0.05,
-)
-
-action_manager = ActionManager()
-
-state_machine = StateMachine(
-    action_manager
-)
+    cv2.moveWindow(AI_WINDOW_NAME, *AI_WINDOW_POSITION)
 
 
-try:
+# =========================================================
+# LOOP
+# =========================================================
 
-    # =====================================================
-    # CAPTURE
-    # =====================================================
+def run_loop(capture, vision, detector, state_machine, actions):
 
-    capture.start()
-
-    # =====================================================
-    # VISION WORKER
-    # =====================================================
-
-    vision.start()
-
-    # =====================================================
-    # AI WINDOW
-    # =====================================================
-
-    if SHOW_AI_VISION:
-
-        cv2.namedWindow(
-            AI_WINDOW,
-            cv2.WINDOW_NORMAL
-        )
-
-        cv2.resizeWindow(
-            AI_WINDOW,
-            WINDOW_WIDTH,
-            WINDOW_HEIGHT
-        )
-
-        cv2.moveWindow(
-            AI_WINDOW,
-            600,
-            50
-        )
-
-    # =====================================================
-    # LOOP
-    # =====================================================
+    # Começa igual à versão inicial do ScreenCapture, então
+    # a primeira espera é pelo primeiro frame de verdade.
+    last_version = 0
 
     while True:
 
         # -------------------------------------------------
-        # Frame mais recente
+        # Espera o frame mais recente
         # -------------------------------------------------
 
-        frame = capture.get_frame()
+        # Timeout curto para a janela do OpenCV continuar
+        # respondendo (e o ESC funcionar) mesmo se o stream
+        # travar.
+        frame, version, timestamp = capture.get_frame(
+            since_version=last_version,
+            timeout=0.2,
+        )
+
+        if not capture.is_running():
+
+            logger.warning("Stream encerrado.")
+
+            break
 
         if frame is None:
             continue
+
+        last_version = version
+
+        height, width = frame.shape[:2]
+
+        actions.set_frame_size(width, height)
 
         # -------------------------------------------------
         # Envia frame para a IA
         # -------------------------------------------------
 
-        vision.set_frame(
-            frame
-        )
+        if VISION_FILTER_BY_STATE:
+
+            vision.set_categories(
+                state_machine.wanted_categories()
+            )
+
+        vision.set_frame(frame, timestamp)
 
         # -------------------------------------------------
-        # Pega as detecções atuais
+        # Detecções (do frame que o worker terminou)
         # -------------------------------------------------
 
-        detections = (
-            vision.get_detections()
-        )
+        detections, lag = vision.get_detections()
 
         # -------------------------------------------------
         # STATE MACHINE
         # -------------------------------------------------
 
-        state_machine.update(
-            detections
-        )
+        state_machine.update(detections, lag)
 
         # -------------------------------------------------
         # AI VISION
         # -------------------------------------------------
 
-        if SHOW_AI_VISION:
+        # Com a janela desligada não há cópia nem desenho:
+        # o overlay era o único lugar que copiava o frame.
+        if not SHOW_AI_VISION:
+            continue
 
-            ai_frame = frame.copy()
+        ai_frame = detector.draw(
+            frame.copy(),
+            detections,
+            {
+                "capture_fps": capture.get_fps(),
+                "detect_fps": vision.get_fps(),
+                "detect_ms": vision.get_duration() * 1000,
+                "lag": lag,
+            },
+        )
 
-            ai_frame = detector.draw(
-                ai_frame,
-                detections
-            )
+        cv2.imshow(AI_WINDOW_NAME, ai_frame)
 
-            cv2.imshow(
-                AI_WINDOW,
-                ai_frame
-            )
-
-        # -------------------------------------------------
-        # ESC
-        # -------------------------------------------------
-
+        # O ESC só chega aqui: é esta janela que recebe as
+        # teclas. Sem ela, o encerramento é por Ctrl+C.
         if cv2.waitKey(1) & 0xFF == 27:
             break
 
 
-except KeyboardInterrupt:
+# =========================================================
+# MAIN
+# =========================================================
 
-    print(
-        "\nPrograma interrompido pelo usuário."
+def main(argv=None):
+
+    log.setup(LOG_LEVEL)
+
+    args = parse_args(argv)
+
+    # --device manda no config, o config manda na pergunta.
+    #
+    # O Ctrl+C aqui é desistência do usuário na pergunta, não
+    # erro: um traceback de KeyboardInterrupt só polui a tela.
+    try:
+
+        device_id = devices.resolver(args.device or DEVICE_SERIAL)
+
+    except KeyboardInterrupt:
+
+        logger.info("Cancelado.")
+
+        return 1
+
+    windows = [
+        name
+        for name, enabled in (
+            ("IA", SHOW_AI_VISION),
+            ("scrcpy", SHOW_SCRCPY),
+        )
+        if enabled
+    ]
+
+    logger.info(
+        "Janelas: %s | encerrar com %s",
+        ", ".join(windows) or "nenhuma (headless)",
+        "ESC ou Ctrl+C" if SHOW_AI_VISION else "Ctrl+C",
     )
 
-
-finally:
-
-    print(
-        "Encerrando EatVenture AI..."
+    # O espelho do scrcpy é opcional: a captura do bot não
+    # passa por ele.
+    scrcpy_process = (
+        start_scrcpy(device_id)
+        if SHOW_SCRCPY
+        else None
     )
 
-    # =====================================================
-    # VISION
-    # =====================================================
+    capture = ScreenCapture(device_id)
 
-    vision.stop()
+    detector = Detector()
 
-    # =====================================================
-    # CAPTURE
-    # =====================================================
+    vision = VisionWorker(detector)
 
-    capture.stop()
+    actions = ActionManager(device_id)
 
-    # =====================================================
-    # WINDOWS
-    # =====================================================
+    state_machine = StateMachine(actions)
 
-    cv2.destroyAllWindows()
+    try:
 
-    # =====================================================
-    # SCRCPY
-    # =====================================================
+        capture.start()
 
-    if scrcpy_process:
+        vision.start()
 
-        scrcpy_process.terminate()
+        actions.start()
 
-        try:
+        if SHOW_AI_VISION:
 
-            scrcpy_process.wait(
-                timeout=2
-            )
+            setup_window()
 
-        except subprocess.TimeoutExpired:
+        run_loop(
+            capture,
+            vision,
+            detector,
+            state_machine,
+            actions,
+        )
 
-            scrcpy_process.kill()
+    except KeyboardInterrupt:
+
+        logger.info("Interrompido pelo usuário.")
+
+    finally:
+
+        logger.info("Encerrando EatVenture AI...")
+
+        vision.stop()
+
+        actions.stop()
+
+        capture.stop()
+
+        cv2.destroyAllWindows()
+
+        if scrcpy_process:
+
+            scrcpy_process.terminate()
+
+            try:
+
+                scrcpy_process.wait(timeout=2)
+
+            except subprocess.TimeoutExpired:
+
+                scrcpy_process.kill()
+
+
+if __name__ == "__main__":
+
+    sys.exit(main())

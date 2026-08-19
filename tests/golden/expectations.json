@@ -1,0 +1,51 @@
+{
+  "eatventure.png": [
+    {
+      "category": "upgrade",
+      "color_similarity": 1.0,
+      "confidence": 1.0,
+      "x": 914,
+      "y": 2194
+    },
+    {
+      "category": "new_point",
+      "color_similarity": 0.9357,
+      "confidence": 0.9663,
+      "x": 908,
+      "y": 1508
+    },
+    {
+      "category": "new_point",
+      "color_similarity": 0.9356,
+      "confidence": 0.9592,
+      "x": 548,
+      "y": 1820
+    }
+  ],
+  "food_stations.png": [
+    {
+      "category": "food",
+      "color_similarity": 1.0,
+      "confidence": 1.0,
+      "x": 898,
+      "y": 1520
+    },
+    {
+      "category": "food",
+      "color_similarity": 1.0,
+      "confidence": 1.0,
+      "x": 901,
+      "y": 1104
+    }
+  ],
+  "new_point.png": [],
+  "up_food.png": [
+    {
+      "category": "up_food",
+      "color_similarity": 0.9956,
+      "confidence": 0.9675,
+      "x": 689,
+      "y": 1348
+    }
+  ]
+}

@@ -1,21 +1,47 @@
-import cv2
+import argparse
+import sys
 from pathlib import Path
 
-from android_screenshot import AndroidScreenshot
+import cv2
+
+ROOT = Path(__file__).resolve().parent.parent
+
+sys.path.insert(0, str(ROOT / "tests"))
+sys.path.insert(0, str(ROOT / "tools"))
+sys.path.insert(0, str(ROOT / "src"))
+
+# Sem output_dir, grava em tests/capture/ — nunca em
+# tests/images/, que são os fixtures da regressão.
+from android_screenshot import AndroidScreenshot  # noqa: E402
+from renumerar import proximo_numero, renumerar   # noqa: E402
+import selector_layout as layout                  # noqa: E402
+from core import devices, log                     # noqa: E402
+from core.config import (                         # noqa: E402
+    DEVICE_SERIAL,
+    LOG_LEVEL,
+    SELECTOR_FALLBACK_HEIGHT,
+    SELECTOR_FALLBACK_WIDTH,
+    SELECTOR_HEIGHT_FRACTION,
+    SELECTOR_MAX_HEIGHT,
+    SELECTOR_MAX_WIDTH,
+    SELECTOR_WIDTH_FRACTION,
+)
 
 
 WINDOW_NAME = "Template Selector"
 
-TEMPLATES_DIR = Path(
-    "src/vision/templates"
-)
+# Relativo ao ARQUIVO: antes só funcionava rodando a partir
+# da raiz do repositório.
+TEMPLATES_DIR = ROOT / "src" / "vision" / "templates"
 
 
 class TemplateSelector:
 
-    def __init__(self):
+    def __init__(self, serial=None):
 
-        self.screenshot = AndroidScreenshot()
+        # O serial TEM de chegar no screencap: sem o -s, com
+        # dois devices na lista o adb recusa a captura.
+        self.screenshot = AndroidScreenshot(serial=serial)
 
         # Imagem ORIGINAL
         self.image = None
@@ -26,6 +52,9 @@ class TemplateSelector:
         # Escala da visualização
         self.scale = 1.0
 
+        # Coordenadas da IMAGEM ORIGINAL, não da janela: a
+        # janela é reduzida, e converter só na hora de salvar
+        # seria uma chance a mais de recortar do lugar errado.
         self.start_x = None
         self.start_y = None
 
@@ -78,40 +107,79 @@ class TemplateSelector:
     # Display
     # -----------------------------------------------------
 
+    def _janela(self):
+        """
+        Tamanho máximo da janela, em pixels de tela.
+        """
+
+        largura = SELECTOR_MAX_WIDTH
+        altura = SELECTOR_MAX_HEIGHT
+
+        if largura and altura:
+            return largura, altura
+
+        tela = layout.tela_disponivel(
+            SELECTOR_HEIGHT_FRACTION,
+            SELECTOR_WIDTH_FRACTION,
+        )
+
+        if tela is None:
+
+            tela = (
+                SELECTOR_FALLBACK_WIDTH,
+                SELECTOR_FALLBACK_HEIGHT,
+            )
+
+        return (
+            largura or tela[0],
+            altura or tela[1],
+        )
+
     def _prepare_display(self):
+        """
+        Calcula a escala. NÃO altera a imagem original.
+        """
 
         height, width = self.image.shape[:2]
 
-        # Tamanho máximo da janela.
-        #
-        # Isso NÃO altera a imagem original.
-        # É somente o tamanho da visualização.
+        max_width, max_height = self._janela()
 
-        max_width = 500
-        max_height = 900
-
-        scale_x = max_width / width
-        scale_y = max_height / height
-
-        self.scale = min(
-            scale_x,
-            scale_y,
-            1.0
+        self.scale = layout.escala(
+            width,
+            height,
+            max_width,
+            max_height,
         )
 
-        if self.scale < 1.0:
+        janela = layout.tamanho_canvas(width, height, self.scale)
 
-            self.display = cv2.resize(
-                self.image,
-                None,
-                fx=self.scale,
-                fy=self.scale,
-                interpolation=cv2.INTER_AREA
-            )
+        print(
+            f"[JANELA] {janela[0]}x{janela[1]} | "
+            f"escala {self.scale:.3f} "
+            f"(1 px na tela = "
+            f"{1 / self.scale:.1f} px do device)"
+        )
 
-        else:
+        self._render()
+
+    def _render(self):
+        """
+        Monta a visualização: a imagem inteira, reduzida.
+        """
+
+        height, width = self.image.shape[:2]
+
+        if self.scale == 1.0:
 
             self.display = self.image.copy()
+
+            return
+
+        self.display = cv2.resize(
+            self.image,
+            layout.tamanho_canvas(width, height, self.scale),
+            interpolation=cv2.INTER_AREA,
+        )
 
     # -----------------------------------------------------
     # Mouse
@@ -125,14 +193,16 @@ class TemplateSelector:
         flags,
         param
     ):
+        """
+        Guarda coordenadas da IMAGEM ORIGINAL, não da janela.
+        """
 
         if event == cv2.EVENT_LBUTTONDOWN:
 
-            self.start_x = x
-            self.start_y = y
+            self.start_x, self.start_y = self._para_imagem(x, y)
 
-            self.end_x = x
-            self.end_y = y
+            self.end_x = self.start_x
+            self.end_y = self.start_y
 
             self.selecting = True
 
@@ -142,19 +212,29 @@ class TemplateSelector:
 
             if self.selecting:
 
-                self.end_x = x
-                self.end_y = y
+                self.end_x, self.end_y = self._para_imagem(x, y)
 
                 self._draw_selection()
 
         elif event == cv2.EVENT_LBUTTONUP:
 
-            self.end_x = x
-            self.end_y = y
+            self.end_x, self.end_y = self._para_imagem(x, y)
 
             self.selecting = False
 
             self._draw_selection()
+
+    def _para_imagem(self, x, y):
+
+        height, width = self.image.shape[:2]
+
+        return layout.para_imagem(
+            x,
+            y,
+            width,
+            height,
+            self.scale,
+        )
 
     # -----------------------------------------------------
     # Desenho
@@ -162,13 +242,7 @@ class TemplateSelector:
 
     def _draw_selection(self):
 
-        self.display = cv2.resize(
-            self.image,
-            None,
-            fx=self.scale,
-            fy=self.scale,
-            interpolation=cv2.INTER_AREA
-        )
+        self._render()
 
         if (
             self.start_x is None
@@ -178,18 +252,58 @@ class TemplateSelector:
         ):
             return
 
+        canto_a = layout.para_canvas(
+            self.start_x,
+            self.start_y,
+            self.scale,
+        )
+
+        canto_b = layout.para_canvas(
+            self.end_x,
+            self.end_y,
+            self.scale,
+        )
+
         cv2.rectangle(
             self.display,
-            (
-                self.start_x,
-                self.start_y
-            ),
-            (
-                self.end_x,
-                self.end_y
-            ),
+            canto_a,
+            canto_b,
             (0, 255, 0),
             2
+        )
+
+        # Tamanho real do recorte, em pixels do device: é o que
+        # importa para o template, não o tamanho na tela.
+        largura = abs(self.end_x - self.start_x)
+        altura = abs(self.end_y - self.start_y)
+
+        etiqueta = f"{largura}x{altura}"
+
+        posicao = (
+            min(canto_a[0], canto_b[0]),
+            max(min(canto_a[1], canto_b[1]) - 8, 14),
+        )
+
+        cv2.putText(
+            self.display,
+            etiqueta,
+            posicao,
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (0, 0, 0),
+            3,
+            cv2.LINE_AA,
+        )
+
+        cv2.putText(
+            self.display,
+            etiqueta,
+            posicao,
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (0, 255, 0),
+            1,
+            cv2.LINE_AA,
         )
 
     # -----------------------------------------------------
@@ -323,72 +437,26 @@ class TemplateSelector:
     def save_selection(self):
 
         # -------------------------------------------------
-        # Coordenadas da visualização
+        # Coordenadas da IMAGEM ORIGINAL
         # -------------------------------------------------
+        #
+        # Já vêm convertidas do mouse_callback. Dividir pela
+        # escala aqui de novo recortaria do lugar errado.
+        #
 
-        display_x1 = min(
-            self.start_x,
-            self.end_x
-        )
+        x1 = min(self.start_x, self.end_x)
+        x2 = max(self.start_x, self.end_x)
 
-        display_x2 = max(
-            self.start_x,
-            self.end_x
-        )
-
-        display_y1 = min(
-            self.start_y,
-            self.end_y
-        )
-
-        display_y2 = max(
-            self.start_y,
-            self.end_y
-        )
-
-        # -------------------------------------------------
-        # Converte para coordenadas ORIGINAIS
-        # -------------------------------------------------
-
-        x1 = int(
-            display_x1 / self.scale
-        )
-
-        x2 = int(
-            display_x2 / self.scale
-        )
-
-        y1 = int(
-            display_y1 / self.scale
-        )
-
-        y2 = int(
-            display_y2 / self.scale
-        )
-
-        # Garante que não ultrapasse a imagem.
+        y1 = min(self.start_y, self.end_y)
+        y2 = max(self.start_y, self.end_y)
 
         height, width = self.image.shape[:2]
 
-        x1 = max(
-            0,
-            min(x1, width)
-        )
+        x1 = max(0, min(x1, width))
+        x2 = max(0, min(x2, width))
 
-        x2 = max(
-            0,
-            min(x2, width)
-        )
-
-        y1 = max(
-            0,
-            min(y1, height)
-        )
-
-        y2 = max(
-            0,
-            min(y2, height)
-        )
+        y1 = max(0, min(y1, height))
+        y2 = max(0, min(y2, height))
 
         # -------------------------------------------------
         # Recorta a imagem ORIGINAL
@@ -433,19 +501,55 @@ class TemplateSelector:
         # -------------------------------------------------
         # Número
         # -------------------------------------------------
+        #
+        # Antes era len(existing) + 1, que SOBRESCREVE em
+        # silêncio quando há lacuna na sequência: food tinha
+        # 17 arquivos mas ia até item_020, então o próximo
+        # calculado era item_018 — que já existia.
+        #
+        # Agora a sequência é COMPACTADA antes de salvar
+        # (item_005 faltando entre 004 e 006 faz o 006 virar
+        # 005, o 007 virar 006, e assim por diante), e o novo
+        # template entra no último número.
+        #
+        # Assim "próximo número" volta a ser simplesmente
+        # len + 1, sem ambiguidade.
+        #
 
-        existing = list(
-            category_dir.glob(
-                "item_*.png"
-            )
+        renomeados = renumerar(
+            category_dir,
+            aplicar=True
         )
 
-        number = len(existing) + 1
+        if renomeados:
+
+            print()
+            print(
+                f"[NUMERAÇÃO] {len(renomeados)} arquivo(s) "
+                f"compactado(s) em {category}:"
+            )
+
+            for origem, destino in renomeados:
+
+                print(
+                    f"  {origem.name} -> {destino.name}"
+                )
+
+        number = proximo_numero(category_dir)
 
         output_path = (
             category_dir
             / f"item_{number:03d}.png"
         )
+
+        while output_path.exists():
+
+            number += 1
+
+            output_path = (
+                category_dir
+                / f"item_{number:03d}.png"
+            )
 
         # -------------------------------------------------
         # Salva
@@ -617,12 +721,47 @@ class TemplateSelector:
 # Main
 # =========================================================
 
-if __name__ == "__main__":
+def main(argv=None):
 
-    selector = TemplateSelector()
+    parser = argparse.ArgumentParser(
+        description="Recorta templates da tela do device",
+    )
+
+    parser.add_argument(
+        "--device",
+        metavar="SERIAL",
+        help=(
+            "serial do device (adb devices). Sem isto, usa "
+            "DEVICE_SERIAL do config; sem os dois, pergunta "
+            "quando houver mais de um conectado."
+        ),
+    )
+
+    args = parser.parse_args(argv)
+
+    log.setup(LOG_LEVEL)
+
+    try:
+
+        serial = devices.resolver(args.device or DEVICE_SERIAL)
+
+    except KeyboardInterrupt:
+
+        print("Cancelado.")
+
+        return 1
+
+    selector = TemplateSelector(serial)
 
     # Primeira captura
     selector.capture_screen()
 
     # Abre o selector
     selector.select()
+
+    return 0
+
+
+if __name__ == "__main__":
+
+    sys.exit(main())
