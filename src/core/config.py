@@ -405,7 +405,7 @@ VISION_FILTER_BY_STATE = True
 #
 # Detecção velha = clique em coordenada que já mudou.
 # None desliga a checagem.
-MAX_DETECTION_AGE = 1.0
+MAX_DETECTION_AGE = 2.0
 
 
 # =========================================================
