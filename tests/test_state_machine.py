@@ -19,6 +19,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from core import log                              # noqa: E402
 from core.config import (                         # noqa: E402
     ACTION_COOLDOWN,
+    ACTION_SETTLE,
     DISMISS_ACTIONS,
     DISMISS_ATTEMPTS_BEFORE_SCROLL,
     MAX_DETECTION_AGE,
@@ -359,27 +360,45 @@ def test_estado_nao_vaza_variavel():
     assert machine.up_food_wait_start is None
 
 
-def test_up_food_em_normal_dispensa():
+def test_up_food_em_normal_evolui_a_comida():
     """
-    up_food visível em NORMAL = painel de comida abriu sem
-    querer. Não há o que evoluir aqui, então dispensa.
+    up_food em NORMAL faz o long press de evolução, igual ao
+    estado FOOD.
+
+    ESCOLHA DELIBERADA do dono do projeto. Não é o que parece
+    "seguro": este caminho GASTA MOEDA a cada painel de comida
+    que abre sem querer, e trava o bot pelos
+    UPGRADE_FOOD_PRESS segundos do press.
+
+    A alternativa era dispensar num ponto neutro. Se algum dia
+    quiser voltar, é trocar a ação para "dismiss" em
+    NORMAL_RULES — a ação continua implementada e testada.
     """
 
     machine, actions, _ = build()
 
     machine.update([detection("up_food")])
 
-    assert actions.actions == ["dismiss"], actions.actions
+    assert actions.actions == ["upgrade_food"], actions.actions
 
-    # Dispensar não muda de estado.
+    # A regra não declara próximo estado: segue em NORMAL.
     assert machine.state == sm.NORMAL, machine.state
 
 
-def test_mesmo_up_food_faz_o_oposto_em_food():
+def test_up_food_faz_o_mesmo_em_normal_e_em_food():
     """
-    A MESMA categoria tem significado oposto conforme o
-    estado: em NORMAL dispensa, em FOOD faz o long press.
+    A mesma ação nos dois estados, por escolha do dono. O que
+    muda é só o estado em que fica.
+
+    Este teste existe para o dia em que alguém "corrigir" um
+    dos dois lados sem olhar o outro.
     """
+
+    normal, acoes_normal, _ = build()
+
+    normal.update([detection("up_food")])
+
+    assert acoes_normal.actions == ["upgrade_food"]
 
     machine, actions, _ = build()
 
@@ -392,8 +411,8 @@ def test_mesmo_up_food_faz_o_oposto_em_food():
 
 def test_up_food_perde_para_o_close():
     """
-    Se o X está na tela, fechar por ele é melhor que tocar
-    num ponto neutro.
+    O X fecha o painel sem gastar nada, então vem antes do
+    long press de evolução.
     """
 
     machine, actions, _ = build()
@@ -420,7 +439,7 @@ def test_up_food_vence_acao_de_jogo():
         detection("box"),
     ])
 
-    assert actions.actions == ["dismiss"], actions.actions
+    assert actions.actions == ["upgrade_food"], actions.actions
 
 
 def test_acao_repetida_gera_aviso():
@@ -474,7 +493,7 @@ def test_acao_repetida_gera_aviso():
 
     assert avisos, "nenhum aviso de ação repetida"
 
-    assert "dismiss" in avisos[0], avisos
+    assert "upgrade_food" in avisos[0], avisos
 
 
 def test_contagem_de_repeticao_zera_ao_progredir():
@@ -554,20 +573,294 @@ def test_nunca_usa_back():
     assert "back" not in actions.actions, actions.actions
 
 
-def test_up_food_preso_tambem_rola():
+def test_up_food_em_normal_nao_escala_para_rolagem():
+    """
+    A escada de fechamento vale só para DISMISS_ACTIONS, e
+    "upgrade_food" não é uma delas: é ação de jogo.
+
+    Ou seja, up_food preso em NORMAL repete o press para
+    sempre em vez de rolar a tela. É consequência direta da
+    escolha de usar upgrade_food ali — o aviso de ação
+    repetida (test_acao_repetida_gera_aviso) é o que sobra
+    para avisar.
+    """
 
     machine, actions, clock = build()
 
-    for _ in range(DISMISS_ATTEMPTS_BEFORE_SCROLL + 1):
+    for _ in range(DISMISS_ATTEMPTS_BEFORE_SCROLL + 3):
 
         machine.update([detection("up_food")])
 
         clock.advance(ACTION_COOLDOWN + 0.01)
 
-    assert actions.actions == (
-        ["dismiss"] * DISMISS_ATTEMPTS_BEFORE_SCROLL
-        + ["scroll_bottom"]
-    ), actions.actions
+    assert "scroll_bottom" not in actions.actions, actions.actions
+
+    assert set(actions.actions) == {"upgrade_food"}, (
+        actions.actions
+    )
+
+    # A escada nem começou a contar.
+    assert machine._dismiss_attempts == 0
+
+
+# =========================================================
+# DUPLO TOQUE
+# =========================================================
+
+def test_nao_age_duas_vezes_sobre_a_mesma_tela():
+    """
+    O bug relatado: fechava o "MAX" e tocava DE NOVO no mesmo
+    ponto, o que REABRIA o painel.
+
+    Causa: o cooldown (0.5 s) libera antes de existir frame que
+    mostre o efeito da ação, porque o detector está com ~0.535 s
+    de atraso. A detecção em mão veio de ANTES do toque.
+
+    Reproduzido com os números medidos no device.
+    """
+
+    COOLDOWN = 0.5
+    ATRASO = 0.535
+
+    machine, actions, clock = build()
+
+    machine.action_cooldown = COOLDOWN
+
+    # Primeiro toque, sobre uma tela recém-vista.
+    machine.update([detection("gray_max")], 0.0)
+
+    assert actions.actions == ["gray_max"], actions.actions
+
+    # Passa o cooldown. A detecção continua sendo a MESMA tela
+    # de antes do toque — é o que o atraso do detector entrega.
+    clock.advance(COOLDOWN + 0.01)
+
+    machine.update([detection("gray_max")], ATRASO)
+
+    assert actions.actions == ["gray_max"], (
+        "tocou duas vezes sobre a mesma tela: "
+        f"{actions.actions}"
+    )
+
+
+def test_age_quando_o_frame_e_posterior_a_acao():
+    """
+    O outro lado: chegando frame de DEPOIS da ação, e o painel
+    ainda estando lá, tem de agir — senão a correção acima
+    viraria paralisia.
+    """
+
+    machine, actions, clock = build()
+
+    machine.action_cooldown = 0.5
+
+    machine.update([detection("gray_max")], 0.0)
+
+    clock.advance(0.6)
+
+    # Atraso pequeno: o frame é de depois do toque.
+    machine.update([detection("gray_max")], 0.05)
+
+    assert actions.actions == ["gray_max", "gray_max"], (
+        actions.actions
+    )
+
+
+def test_frame_antigo_nao_bloqueia_para_sempre():
+    """
+    Com atraso alto, o bot espera — mas volta a agir assim que
+    chega frame novo. O risco da correção seria travar o bot
+    quando o detector está lento.
+    """
+
+    machine, actions, clock = build()
+
+    machine.action_cooldown = 0.5
+
+    machine.update([detection("gray_max")], 0.0)
+
+    # Vários frames velhos: nenhum age.
+    for _ in range(5):
+
+        clock.advance(0.6)
+
+        machine.update([detection("gray_max")], 10.0)
+
+    assert actions.actions == ["gray_max"], actions.actions
+
+    # Frame fresco: age.
+    machine.update([detection("gray_max")], 0.01)
+
+    assert len(actions.actions) == 2, actions.actions
+
+
+def test_primeira_acao_nao_precisa_esperar():
+    """
+    Sem ação anterior não há o que aguardar. Sem esta guarda o
+    bot não faria NADA no start, porque last_action_time = 0
+    é anterior a qualquer frame.
+    """
+
+    machine, actions, _ = build()
+
+    machine.last_action_time = 0.0
+
+    # Abaixo de MAX_DETECTION_AGE: acima dela cairia na guarda
+    # de detecção velha, que é outra coisa.
+    machine.update([detection("gray_max")], 1.0)
+
+    assert actions.actions == ["gray_max"], actions.actions
+
+
+def test_a_guarda_vale_para_todo_caminho_de_acao():
+    """
+    A checagem vive em _can_act, que é por onde passam TODOS
+    os caminhos: regras, handlers de FOOD/NEW_POINT e o swipe
+    de exploração. Testada aqui direto, no ponto único.
+
+    (Não dá para montar o caso pela exploração: ela exige
+    exploration_delay = 5 s de tela vazia, e um frame anterior
+    à ação nessa janela já teria sido descartado por
+    MAX_DETECTION_AGE = 2 s antes de chegar aqui.)
+    """
+
+    machine, actions, clock = build()
+
+    machine.action_cooldown = 0.0
+    machine.action_settle = 0.4
+
+    machine.last_action_time = clock.now
+
+    # Frame capturado ANTES da ação: barrado.
+    machine._frame_time = clock.now - 0.1
+
+    assert not machine._can_act()
+
+    # Frame do MESMO instante: barrado. Não pode mostrar o
+    # efeito de algo que acabou de acontecer.
+    machine._frame_time = clock.now
+
+    assert not machine._can_act()
+
+    # Frame posterior à ação MAS dentro da animação: barrado.
+    # É o caso que a guarda causal sozinha deixava passar, e
+    # que causava o duplo toque no "MAX".
+    machine._frame_time = clock.now + 0.2
+
+    assert not machine._can_act(), (
+        "frame dentro da janela de animação não pode agir"
+    )
+
+    # Passado o settle: liberado.
+    machine._frame_time = clock.now + 0.41
+
+    assert machine._can_act()
+
+
+def test_nao_toca_com_o_painel_ja_fechado():
+    """
+    O bug relatado, reproduzido no domínio do tempo.
+
+    Simula a VERDADE do jogo e a visão ATRASADA da máquina:
+
+      - o painel está aberto
+      - toque com painel aberto  -> fecha (após a animação)
+      - toque com painel fechado -> ABRE (o DISMISS_POINT abre
+        algo; é justamente por isso que o duplo toque dói)
+      - a máquina só vê a tela de `atraso` segundos atrás
+
+    O toque espúrio é o dado quando o painel JÁ estava
+    fechado. Sem a guarda saem vários; com ela, nenhum.
+    """
+
+    ATRASO = 0.535     # medido no device, 165 templates
+    COOLDOWN = 0.5
+    ANIMACAO = 0.3     # tempo do jogo para fechar
+
+    def roda(settle):
+
+        clock = Clock()
+
+        sm.time.monotonic = clock.monotonic
+
+        actions = FakeActions()
+
+        machine = sm.StateMachine(actions)
+
+        machine.action_cooldown = COOLDOWN
+        machine.action_settle = settle
+        machine.last_action_time = clock.now - 100
+
+        # (instante em que passa a valer, aberto?)
+        eventos = []
+
+        def aberto(instante):
+
+            for t0, valor in reversed(eventos):
+
+                if instante >= t0:
+                    return valor
+
+            return True
+
+        toques = espurios = 0
+
+        fim = clock.now + 8.0
+
+        while clock.now < fim:
+
+            visto = aberto(clock.now - ATRASO)
+
+            antes = actions.actions.count("gray_max")
+
+            machine.update(
+                [detection("gray_max")] if visto else [],
+                ATRASO,
+            )
+
+            if actions.actions.count("gray_max") > antes:
+
+                toques += 1
+
+                estava = aberto(clock.now)
+
+                if not estava:
+                    espurios += 1
+
+                eventos.append((clock.now + ANIMACAO, not estava))
+
+            clock.advance(0.02)
+
+        return toques, espurios
+
+    # Sem settle (só cooldown + guarda causal): toca no vazio.
+    _, espurios_sem = roda(0.0)
+
+    assert espurios_sem > 0, (
+        "a simulação deveria reproduzir o bug com settle=0"
+    )
+
+    # Com settle cobrindo a animação: um toque, nenhum espúrio.
+    toques, espurios = roda(ACTION_SETTLE)
+
+    assert espurios == 0, f"{espurios} toque(s) no painel fechado"
+
+    assert toques == 1, f"{toques} toques onde 1 bastava"
+
+
+def test_settle_cobre_a_animacao_configurada():
+    """
+    A relação que faz a correção funcionar: o settle tem de ser
+    maior que a animação do jogo. Se alguém baixar ACTION_SETTLE
+    para 0.1, o duplo toque volta — e este teste diz por quê.
+    """
+
+    # Animação típica de painel de jogo.
+    assert ACTION_SETTLE >= 0.3, ACTION_SETTLE
+
+    # E não tão alto que o bot fique lento: acima de ~1s cada
+    # decisão custaria settle + atraso do detector.
+    assert ACTION_SETTLE <= 1.0, ACTION_SETTLE
 
 
 def test_escada_zera_quando_algo_e_resolvido():

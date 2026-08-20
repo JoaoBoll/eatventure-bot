@@ -26,6 +26,7 @@ import cv2
 from actions.manager import ActionManager
 from capture.screen import ScreenCapture
 from core import devices, log
+from core.battery import BatteryMonitor
 from core.config import (
     AI_WINDOW_NAME,
     AI_WINDOW_POSITION,
@@ -114,7 +115,14 @@ def setup_window():
 # LOOP
 # =========================================================
 
-def run_loop(capture, vision, detector, state_machine, actions):
+def run_loop(
+    capture,
+    vision,
+    detector,
+    state_machine,
+    actions,
+    battery,
+):
 
     # Começa igual à versão inicial do ScreenCapture, então
     # a primeira espera é pelo primeiro frame de verdade.
@@ -190,6 +198,12 @@ def run_loop(capture, vision, detector, state_machine, actions):
                 "detect_fps": vision.get_fps(),
                 "detect_ms": vision.get_duration() * 1000,
                 "lag": lag,
+
+                # Leitura em memória, feita por outra thread:
+                # dumpsys custa ~56 ms e não pode entrar aqui.
+                "battery": battery.get(),
+
+                "cycle": state_machine.cycle_stats(),
             },
         )
 
@@ -258,6 +272,8 @@ def main(argv=None):
 
     state_machine = StateMachine(actions)
 
+    battery = BatteryMonitor(actions.android)
+
     try:
 
         capture.start()
@@ -265,6 +281,8 @@ def main(argv=None):
         vision.start()
 
         actions.start()
+
+        battery.start()
 
         if SHOW_AI_VISION:
 
@@ -276,6 +294,7 @@ def main(argv=None):
             detector,
             state_machine,
             actions,
+            battery,
         )
 
     except KeyboardInterrupt:
@@ -285,6 +304,8 @@ def main(argv=None):
     finally:
 
         logger.info("Encerrando EatVenture AI...")
+
+        battery.stop()
 
         vision.stop()
 

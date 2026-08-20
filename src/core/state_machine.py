@@ -35,8 +35,11 @@ import logging
 import time
 
 from core import log
+from core.metrics import formata_duracao
 from core.config import (
     ACTION_COOLDOWN,
+    ACTION_SETTLE,
+    CYCLE_CATEGORIES,
     DISMISS_ACTIONS,
     DISMISS_ATTEMPTS_BEFORE_SCROLL,
     EXPLORATION_DELAY,
@@ -77,16 +80,23 @@ UPGRADE = "UPGRADE"
 # As quatro primeiras fecham o que não deveria estar aberto,
 # e por isso vêm antes de qualquer ação de jogo.
 #
-# up_food aparecendo em NORMAL significa que o painel de
-# comida abriu sem querer: em NORMAL não existe nada a fazer
-# com ele, então dispensa com toque MANTIDO curto num ponto
-# neutro (tap seco às vezes não fecha o painel).
+# up_food em NORMAL faz o MESMO que em FOOD: long press de
+# UPGRADE_FOOD_PRESS segundos no botão, evoluindo a comida.
 #
-# Dentro do estado FOOD o MESMO up_food faz o oposto: long
-# press de 4 s no próprio botão, para evoluir a comida. É o
-# estado que decide o significado da mesma detecção — e as
-# duas ações custam coisas bem diferentes, então não confunda:
-# dispensar não gasta moeda, evoluir gasta.
+# ESCOLHA DELIBERADA, contra a alternativa de dispensar o
+# painel. Vale saber o que ela custa: o painel de comida às
+# vezes abre sem querer, e nesse caso o bot gasta moeda e fica
+# travado o tempo do press.
+#
+# Consequência menos óbvia: "upgrade_food" não está em
+# DISMISS_ACTIONS, então a escada de fechamento (tenta N vezes
+# -> rola a tela) NÃO vale aqui. up_food preso em NORMAL repete
+# o press indefinidamente; o que avisa é REPEATED_ACTION_WARNING
+# no log.
+#
+# Para voltar a dispensar, troque a ação por "dismiss": ela
+# continua implementada e coberta por
+# tests/test_pipeline.py::test_dismiss_toca_no_ponto_neutro.
 NORMAL_RULES = [
     ("open_store", "open_store_click", None),
     ("close", "close", None),
@@ -151,9 +161,34 @@ class StateMachine:
 
         self.last_action_time = 0.0
         self.action_cooldown = ACTION_COOLDOWN
+        self.action_settle = ACTION_SETTLE
+
+        # Quando o frame que gerou as detecções em mão foi
+        # CAPTURADO (não quando chegou aqui).
+        #
+        # Sem isso o bot age duas vezes sobre a mesma tela: o
+        # cooldown libera antes de existir um frame que mostre
+        # o efeito da primeira ação. Ver _can_act.
+        self._frame_time = None
+
+        # Quantas vezes esperou frame novo, para não encher o
+        # log com uma linha por quadro.
+        self._waited_warned = 0.0
 
         # Espera depois do long press de comida.
         self.up_food_wait_start = None
+
+        # =================================================
+        # TEMPO CORRIDO ENTRE REFORMAS
+        # =================================================
+        #
+        # Começa a contar do start, não do primeiro build:
+        # o primeiro trecho também é informação ("já são 8
+        # minutos e ele ainda não passou de restaurante").
+        #
+        self.cycle_at = time.monotonic()
+        self.cycle_last = None
+        self.cycle_count = 0
 
         # =================================================
         # EXPLORAÇÃO DA TELA
@@ -209,6 +244,17 @@ class StateMachine:
     # =====================================================
 
     def update(self, detections, lag=0.0):
+
+        # =================================================
+        # QUANDO ESTA TELA FOI VISTA
+        # =================================================
+        #
+        # lag é a idade do frame que gerou estas detecções, e
+        # é o que permite saber se elas já poderiam refletir a
+        # última ação. Guardado antes de qualquer coisa: todo
+        # caminho de ação passa por _can_act.
+        #
+        self._frame_time = time.monotonic() - lag
 
         # =================================================
         # TIMEOUT DO ESTADO
@@ -360,6 +406,13 @@ class StateMachine:
 
         self.last_action_time = time.monotonic()
 
+        # Aqui, e não em _apply_rules: este é o ponto em que a
+        # ação SAIU de verdade. Marcar antes contaria ciclo em
+        # tentativa barrada por cooldown ou worker ocupado.
+        if detection and detection["category"] in CYCLE_CATEGORIES:
+
+            self._mark_cycle(detection["category"])
+
         self._count_repeat(action)
 
         if next_state is not None and next_state != self.state:
@@ -367,6 +420,50 @@ class StateMachine:
             self._enter(next_state)
 
         return True
+
+    # =====================================================
+    # TEMPO CORRIDO
+    # =====================================================
+
+    def _mark_cycle(self, category):
+        """
+        Fecha o ciclo atual e começa outro.
+        """
+
+        agora = time.monotonic()
+
+        duracao = agora - self.cycle_at
+
+        self.cycle_count += 1
+
+        logger.info(
+            "Ciclo %d fechado por '%s' em %s%s",
+            self.cycle_count,
+            category,
+            formata_duracao(duracao),
+            (
+                f" (anterior {formata_duracao(self.cycle_last)})"
+                if self.cycle_last is not None
+                else " (contado desde o start)"
+            ),
+        )
+
+        self.cycle_last = duracao
+        self.cycle_at = agora
+
+    def cycle_stats(self):
+        """
+        (tempo_corrido, ultimo_ciclo, quantos) para o HUD.
+
+        ultimo_ciclo é None até o primeiro build/plane — antes
+        disso não há com o que comparar.
+        """
+
+        return (
+            time.monotonic() - self.cycle_at,
+            self.cycle_last,
+            self.cycle_count,
+        )
 
     def _escalate(self, action):
         """
@@ -451,10 +548,62 @@ class StateMachine:
         if self.action_manager.is_busy():
             return False
 
-        return (
-            time.monotonic() - self.last_action_time
-            >= self.action_cooldown
-        )
+        agora = time.monotonic()
+
+        if agora - self.last_action_time < self.action_cooldown:
+            return False
+
+        # =============================================
+        # A TELA EM MÃO JÁ MOSTRA O EFEITO DA AÇÃO?
+        # =============================================
+        #
+        # O cooldown sozinho não basta. Com o detector em
+        # ~535 ms de atraso e o cooldown em 500 ms, no momento
+        # em que o cooldown libera a detecção em mão veio de um
+        # frame capturado ANTES da última ação — ela não pode
+        # mostrar o efeito dela.
+        #
+        # O sintoma era duplo toque: fechava o "MAX" e tocava
+        # de novo no mesmo ponto, o que REABRIA o painel. Vale
+        # para toda ação, mas dói mais nas de fechar, onde o
+        # ponto de dispensa é também o que abre.
+        #
+        # Não é ajuste de cooldown: por mais alto que ele
+        # fosse, um detector mais lento voltaria a estourar a
+        # margem. A condição certa é causal, não temporal.
+        #
+        # E não basta o frame ser POSTERIOR à ação: enquanto a
+        # animação de fechar não termina, um frame posterior
+        # ainda mostra o painel. Daí o action_settle.
+        #
+        if (
+            self._frame_time is not None
+            and self.last_action_time
+            and self._frame_time
+            <= self.last_action_time + self.action_settle
+        ):
+
+            if (
+                logger.isEnabledFor(logging.DEBUG)
+                and agora - self._waited_warned > 1.0
+            ):
+
+                logger.debug(
+                    "esperando frame que mostre o efeito da "
+                    "ação (falta %.0f ms)",
+                    (
+                        self.last_action_time
+                        + self.action_settle
+                        - self._frame_time
+                    )
+                    * 1000,
+                )
+
+                self._waited_warned = agora
+
+            return False
+
+        return True
 
     # =====================================================
     # TROCA DE ESTADO

@@ -100,3 +100,25 @@ class DurationMeter:
 
         with self.lock:
             return self.value
+
+
+def formata_duracao(segundos):
+    """
+    Duração legível de relance: "42s", "3m07s", "1h04m".
+
+    Segundo cheio, nunca decimal: aqui a leitura é de canto de
+    olho, e "127.4s" obriga a fazer conta de cabeça.
+    """
+
+    if segundos is None:
+        return "--"
+
+    total = int(max(0, segundos))
+
+    if total < 60:
+        return f"{total}s"
+
+    if total < 3600:
+        return f"{total // 60}m{total % 60:02d}s"
+
+    return f"{total // 3600}h{(total % 3600) // 60:02d}m"

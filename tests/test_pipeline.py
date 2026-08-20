@@ -26,6 +26,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from actions.android import AndroidActions      # noqa: E402
 from actions.manager import ActionManager       # noqa: E402
 from core import log                            # noqa: E402
+from core.battery import BatteryMonitor         # noqa: E402
 from core import state_machine as sm            # noqa: E402
 from core.metrics import DurationMeter, RateMeter  # noqa: E402
 from vision.detector import Detector            # noqa: E402
@@ -424,9 +425,15 @@ def test_loop_roda_sem_janela():
 
     main.SHOW_AI_VISION = False
 
+    # O monitor de bateria roda em thread e fala adb — aqui o
+    # adb é falso, então ele exercita o caminho todo sem device.
+    battery = BatteryMonitor(actions.android, interval=0.05)
+
     vision.start()
 
     actions.start()
+
+    battery.start()
 
     try:
 
@@ -436,6 +443,7 @@ def test_loop_roda_sem_janela():
             detector,
             machine,
             actions,
+            battery,
         )
 
         # Consumiu os frames e saiu quando o stream acabou.
@@ -446,6 +454,8 @@ def test_loop_roda_sem_janela():
     finally:
 
         main.SHOW_AI_VISION = original
+
+        battery.stop()
 
         vision.stop()
 
@@ -571,9 +581,14 @@ def test_hud_desenha_e_desliga():
 
 def test_dismiss_toca_no_ponto_neutro():
     """
-    up_food em NORMAL tem que virar um toque no DISMISS_POINT
-    convertido para a resolução do device — não no centro da
-    detecção.
+    A ação "dismiss" tem que virar toque MANTIDO no
+    DISMISS_POINT, ignorando a detecção que a disparou.
+
+    Ela não está em nenhuma regra hoje: NORMAL_RULES usa
+    "upgrade_food" para up_food, por escolha do dono. Este
+    teste chama o ActionManager direto de propósito — a ação
+    continua disponível para voltar às regras, e código que
+    ninguém exercita apodrece sem ninguém notar.
     """
 
     from core.config import (
@@ -583,7 +598,7 @@ def test_dismiss_toca_no_ponto_neutro():
         REFERENCE_WIDTH,
     )
 
-    _, _, actions, machine = build()
+    _, _, actions, _ = build()
 
     actions.start()
 
@@ -608,9 +623,7 @@ def test_dismiss_toca_no_ponto_neutro():
             "height": 128,
         }
 
-        machine.update([deteccao])
-
-        assert machine.state == sm.NORMAL, machine.state
+        assert actions.execute("dismiss", deteccao)
 
         deadline = time.monotonic() + 5.0
 
@@ -643,7 +656,7 @@ def test_dismiss_converte_para_device_menor():
     então em outro device ele tem que escalar.
     """
 
-    _, _, actions, machine = build(device_size=(540, 1200))
+    _, _, actions, _ = build(device_size=(540, 1200))
 
     actions.start()
 
@@ -651,7 +664,8 @@ def test_dismiss_converte_para_device_menor():
 
         actions.set_frame_size(540, 1200)
 
-        machine.update([
+        assert actions.execute(
+            "dismiss",
             {
                 "category": "up_food",
                 "name": "item_001.png",
@@ -662,8 +676,8 @@ def test_dismiss_converte_para_device_menor():
                 "y": 200,
                 "width": 40,
                 "height": 40,
-            }
-        ])
+            },
+        )
 
         deadline = time.monotonic() + 5.0
 

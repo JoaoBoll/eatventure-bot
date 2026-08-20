@@ -91,7 +91,7 @@ SHOW_AI_VISION = True
 #
 # Ligado é útil para intervir na mão, porque a janela da IA
 # não aceita toque.
-SHOW_SCRCPY = True
+SHOW_SCRCPY = False
 
 # Texto "categoria F=.. C=.." em cima de cada caixa.
 #
@@ -103,6 +103,50 @@ SHOW_DETECTION_LABELS = True
 # Idade do frame que gerou as detecções, no canto da janela.
 # Ajuda a distinguir "detecção errada" de "detecção atrasada".
 SHOW_DETECTION_LAG = True
+
+# TEMPO CORRIDO entre reformas no canto da janela.
+#
+# Mede o que o bot existe para fazer: fechar o ciclo de um
+# restaurante. Os FPS dizem se a visão está saudável, mas não
+# dizem se o bot está PROGREDINDO — ele pode estar a 30 fps
+# clicando em nada há vinte minutos.
+SHOW_CYCLE_TIME = True
+
+# Categorias que marcam o fim de um ciclo.
+#
+# `build` e `plane` são as duas portas para RENOVATE, ou seja,
+# as duas formas de o bot passar de restaurante. Qualquer uma
+# reinicia o cronômetro.
+CYCLE_CATEGORIES = {"build", "plane"}
+
+# Múltiplo do último ciclo a partir do qual o tempo corrido fica
+# vermelho.
+#
+# Não existe "tempo normal" fixo: cada restaurante leva o que
+# leva, e vai ficando mais lento. Então a referência é o ciclo
+# ANTERIOR, não um número inventado. Passar de 3x dele é sinal
+# de bot travado, não de restaurante difícil.
+CYCLE_STALL_FACTOR = 3.0
+
+# Bateria do device no canto da janela.
+#
+# Vale mais do que parece: o bot roda por horas, e sessão que
+# morre no meio por bateria descarregada não deixa rastro no log
+# — só para de agir.
+SHOW_BATTERY = True
+
+# Intervalo entre leituras da bateria (segundos).
+#
+# `dumpsys battery` custa ~56 ms, mais de 3x uma passada do
+# detector em UPGRADE. Nunca é chamado do loop de render: roda
+# em thread própria e o HUD lê o último valor.
+#
+# 30 s é folgado de propósito — 1% de bateria leva vários
+# minutos, então ler mais rápido só gasta adb.
+BATTERY_POLL_INTERVAL = 30.0
+
+# Abaixo disto o número fica vermelho no HUD.
+BATTERY_WARNING_LEVEL = 20
 
 # FPS no canto da janela, em duas linhas:
 #
@@ -212,7 +256,7 @@ COLOR_THRESHOLD = 0.80
 # A StateMachine não refiltra por confiança.
 CATEGORY_THRESHOLDS = {
     "build": 0.95,
-    "new_point": 0.95,
+    "new_point": 0.97,
     "food": 0.95,
     "upgrade": 0.98,
     "up_food": 0.90,
@@ -231,28 +275,59 @@ CATEGORY_THRESHOLDS = {
 # Estágio 2 (fino):   reconfirma cada candidato em resolução
 #                     cheia, numa janela pequena.
 #
-# O resultado final tem SEMPRE a confiança e a coordenada
-# de resolução cheia, então os thresholds acima continuam
-# valendo. O estágio grosso só serve para descartar
-# rapidamente as regiões sem chance.
+# O resultado final tem SEMPRE a confiança e a coordenada de
+# resolução cheia, então os thresholds acima continuam valendo.
+# O estágio grosso só serve para descartar rapidamente as
+# regiões sem chance.
 #
-# MEDIDO nas duas telas de tests/images, com os 43
-# templates atuais:
+# MEDIDO nas duas telas de tests/images, com 43 templates:
 #
 #   busca direta (versão antiga) ... 1697 ms
-#   COARSE_SCALE = 0.50 ...........  562 ms
-#   COARSE_SCALE = 0.40 ...........  323 ms
-#   COARSE_SCALE = 0.35 ...........  299 ms
-#
-# As detecções (coordenada E confiança) são IDÊNTICAS à
-# busca direta em todas as escalas testadas.
-#
-# 0.40 é o piso útil: abaixo disso o menor template
-# (up_upgrade, 32px) fica menor que MIN_COARSE_SIDE e cai
-# na busca direta, que é justamente a lenta.
+#   escala global 0.50 ............  562 ms
+#   escala global 0.40 ............  323 ms
 #
 
+# TETO da escala do estágio grosso — não a escala usada.
+#
+# A escala em que um template sobrevive à redução depende do
+# TAMANHO dele: abaixo de MIN_COARSE_SIDE (12 px) o estágio
+# grosso é abandonado e a busca cai em resolução cheia, que é
+# justamente a lenta. Uma escala global fica travada pelo MENOR
+# template de todos (up_upgrade, 32 px -> 0.40), e os grandes
+# pagam a conta.
+#
+# MEDIDO nos 4 fixtures, com os 106 templates atuais:
+#
+#   escala global 0.40 ........ 3409 ms
+#   escala por template ....... 1046 ms   (3.3x)
+#
+# E as detecções (coordenada E confiança) ficam IDÊNTICAS: o
+# custo extra não estava comprando precisão nenhuma.
+#
+# O padrão é exato, não empírico — o custo explode PRECISAMENTE
+# quando a escala cai abaixo de 12/menor_lado. Por isso a escala
+# é derivada daí, e não existe tabela por categoria para manter
+# na mão.
+#
+# 75 dos 106 templates são food (mediana 80x93): eles aguentam
+# 0.15-0.20, contra o 0.40 que a escala global impunha.
 COARSE_SCALE = 0.40
+
+# Piso da escala derivada.
+#
+# Não é sobre precisão: a 0.10 as detecções continuaram
+# idênticas. É sobre o frame reduzido ficar tão pequeno que
+# aparece candidato demais, e cada candidato custa uma
+# reconfirmação em resolução cheia.
+COARSE_SCALE_MIN = 0.10
+
+# Grade da escala derivada.
+#
+# Arredondar PARA CIMA na grade dá a folga em relação ao piso
+# teórico, e limita quantos tamanhos distintos de frame reduzido
+# existem — cada um custa um resize por passada (7 escalas =
+# 7.9 ms medidos, contra ~700 ms de busca).
+COARSE_SCALE_STEP = 0.05
 
 # Folga do threshold no estágio grosso.
 #
@@ -365,9 +440,12 @@ SCROLL_BOTTOM_PAUSE = 0.25
 
 # Duração do toque MANTIDO no ponto neutro, em segundos.
 #
-# Usado quando up_food aparece em NORMAL (painel de comida
-# abriu sem querer): um tap seco do adb às vezes não registra
+# Da ação "dismiss": um tap seco do adb às vezes não registra
 # no jogo, e o painel não fecha.
+#
+# NENHUMA regra usa "dismiss" hoje — up_food em NORMAL faz
+# upgrade_food, por escolha do dono do projeto. A ação segue
+# implementada e testada, pronta para voltar às regras.
 #
 # 0.4s é deliberado: bem acima de um tap falho, e abaixo dos
 # ~500ms que o Android trata como long press — não queremos
@@ -415,6 +493,29 @@ MAX_DETECTION_AGE = 2.0
 # Intervalo mínimo entre ações.
 ACTION_COOLDOWN = 0.5
 
+# Tempo que o JOGO leva para reagir a um toque, em segundos.
+#
+# Resolve o duplo toque: fechar o "MAX" e tocar de novo no mesmo
+# ponto, o que REABRE o painel.
+#
+# Duas coisas conspiram. Primeiro, o cooldown (0.5 s) libera
+# antes de o detector produzir um frame posterior à ação, porque
+# o atraso dele é ~0.535 s — a máquina decidia sobre uma tela de
+# ANTES do próprio toque. Segundo, mesmo um frame posterior ao
+# toque ainda mostra o painel enquanto a animação de fechar não
+# terminou.
+#
+# Por isso a condição não é temporal, é causal: só age sobre
+# frame CAPTURADO pelo menos ACTION_SETTLE depois da última
+# ação. Aumentar o cooldown não resolveria — um detector mais
+# lento voltaria a estourar a margem.
+#
+# 0.4 s cobre animação de painel de jogo (tipicamente
+# 0.15-0.3 s) com folga. Se o duplo toque voltar a aparecer,
+# aumente: o custo é o bot agir um pouco mais devagar, contra
+# uma ação errada que desfaz a anterior.
+ACTION_SETTLE = 0.4
+
 # Tempo sem detectar nada antes de fazer swipe.
 EXPLORATION_DELAY = 5.0
 
@@ -436,8 +537,12 @@ UP_FOOD_WAIT = 2.0
 # NORMAL não tem timeout (é o estado base), então uma regra
 # que dispara e não resolve fica repetindo para sempre — e
 # como encontrar algo reseta a exploração, o swipe nunca entra
-# para salvar. Exemplo: "dismiss" para fechar o painel de
-# comida que abriu sem querer, num ponto que não fecha nada.
+# para salvar.
+#
+# O caso concreto hoje: up_food em NORMAL faz "upgrade_food",
+# que não está em DISMISS_ACTIONS e por isso não escala para
+# rolagem. Se o painel de comida não fechar, este aviso é o
+# único sinal — e cada repetição gasta moeda.
 #
 # Só loga: agir sozinho aqui seria adivinhar.
 REPEATED_ACTION_WARNING = 8
@@ -452,5 +557,5 @@ STATE_TIMEOUTS = {
     "RENOVATE": 12.0,
     "UPGRADE": 15.0,
     "NEW_POINT": 10.0,
-    "FOOD": 20.0,
+    "FOOD": 5.0,
 }

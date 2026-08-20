@@ -109,15 +109,20 @@ categoria, o texto empilhado atrapalha mais do que ajuda.
 ### O HUD
 
 ```
-captura   59.4 fps
-detector   3.1 fps  318 ms
-atraso     340 ms
+captura   30.0 fps
+detector   3.2 fps  304 ms
+atraso     535 ms
+bateria      46 %  carregando
+reforma      2  1m33s  (ult 2m23s)
 ```
 
 - **captura** — frames por segundo chegando do device.
 - **detector** — passadas do detector por segundo, e o custo
   médio de uma.
 - **atraso** — idade do frame que gerou as detecções na tela.
+- **bateria** — nível do device, com marca de carregando.
+- **reforma** — quantas o bot já fechou, o tempo corrido desde
+  a última, e quanto durou a anterior.
 
 Os dois FPS são números bem diferentes e é justamente a
 comparação que diagnostica: captura em 60 com detector em 3
@@ -128,6 +133,49 @@ O detector fica **vermelho** abaixo de `1 / MAX_DETECTION_AGE`
 a máquina de estados para de clicar, em vez de acertar onde o
 objeto estava. É o mesmo limite da checagem de idade, não um
 número separado. O atraso fica vermelho na metade do limite.
+
+A **bateria** fica vermelha abaixo de `BATTERY_WARNING_LEVEL`
+(20%) quando não está carregando. Vale mais do que parece: o bot
+roda por horas, e sessão que morre por bateria descarregada não
+deixa rastro no log — o bot só para de agir.
+
+`dumpsys battery` custa **~56 ms**, mais de 3x uma passada inteira
+do detector no estado `UPGRADE`. Por isso ele **nunca** é chamado
+do loop de render: roda numa thread própria
+([core/battery.py](src/core/battery.py)) a cada
+`BATTERY_POLL_INTERVAL` (30 s), e o HUD só lê o último valor da
+memória. Se a leitura passar do dobro do intervalo sem atualizar,
+o HUD mostra a idade dela junto — número parado parece atual, e
+isso é pior que número ausente.
+
+O nível é calculado como `level / scale`, não `level` direto: a
+escala do `dumpsys` nem sempre é 100.
+
+### Tempo corrido entre reformas
+
+É o único número do HUD que mede **progresso**. Os FPS dizem que
+a visão está saudável; não dizem que o bot está andando — ele
+pode estar a 30 fps clicando em nada há vinte minutos.
+
+O cronômetro reinicia quando o bot age sobre `build` ou `plane`
+(`CYCLE_CATEGORIES`), que são as duas portas para `RENOVATE`, ou
+seja, as duas formas de passar de restaurante.
+
+A marcação acontece dentro de `_act`, não em `_apply_rules`:
+`_act` é o ponto em que a ação **saiu** de verdade. Marcar antes
+contaria ciclo em tentativa barrada por cooldown ou por worker
+ocupado — e aí o contador subiria a cada frame.
+
+Fica **vermelho** quando o tempo corrido passa de
+`CYCLE_STALL_FACTOR` (3x) o ciclo anterior. A referência é o
+ciclo anterior e não um número fixo, porque não existe "tempo
+normal": cada restaurante leva o que leva, e vai ficando mais
+lento. Sem ciclo anterior nunca fica vermelho — sem referência,
+"demorado" não quer dizer nada.
+
+Antes da primeira reforma o tempo corrido conta desde o start,
+que também é informação: "8 minutos e ainda não passou de
+restaurante".
 
 ## Estrutura
 
@@ -140,6 +188,7 @@ número separado. O atraso fica vermelho na metade do limite.
 | [actions/manager.py](src/actions/manager.py) | ação → toque, em thread própria |
 | [actions/android.py](src/actions/android.py) | comandos adb |
 | [core/devices.py](src/core/devices.py) | lista e escolhe o device |
+| [core/battery.py](src/core/battery.py) | lê a bateria fora do caminho crítico |
 | [core/config.py](src/core/config.py) | **todo** valor ajustável |
 | [tools/regras.py](tools/regras.py) | imprime e valida as prioridades |
 | [tools/renumerar.py](tools/renumerar.py) | compacta a numeração dos templates |
@@ -285,6 +334,7 @@ python tests/test_pipeline.py        # integração, com adb falso (inclui o mod
 python tests/test_renumerar.py       # compactação da numeração
 python tests/test_selector_layout.py # coordenadas do seletor
 python tests/test_devices.py         # escolha de device
+python tests/test_ciclo.py           # tempo corrido entre reformas
 ```
 
 Nenhum deles precisa de device.
@@ -299,7 +349,7 @@ A ordem das regras em [state_machine.py](src/core/state_machine.py)
 | 1 | `open_store` | clica | — |
 | 2 | `close` | clica no X | — |
 | 3 | `gray_max` | toca ponto neutro | — |
-| 4 | `up_food` | **segura** ponto neutro (0.4 s), escalando | — |
+| 4 | `up_food` | **long press** no botão, evoluindo a comida | — |
 | 5 | `plane` | clica | `RENOVATE` |
 | 6 | `build` | clica | `RENOVATE` |
 | 7 | `upgrade` | clica | `UPGRADE` |
@@ -307,8 +357,17 @@ A ordem das regras em [state_machine.py](src/core/state_machine.py)
 | 9 | `box` | clica | — |
 | 10 | `food` | clica | `FOOD` |
 
-As quatro primeiras fecham o que não deveria estar aberto, e
-por isso vêm antes de qualquer ação de jogo.
+As três primeiras fecham o que não deveria estar aberto, e por
+isso vêm antes de qualquer ação de jogo.
+
+A quarta é diferente: `up_food` em `NORMAL` faz o **mesmo** que
+em `FOOD` — long press de `UPGRADE_FOOD_PRESS` segundos no botão,
+evoluindo a comida. É escolha deliberada, e vale saber o que
+custa: o painel de comida às vezes abre sem querer, e nesse caso
+o bot gasta moeda e fica travado o tempo do press. Também não
+entra na escada de fechamento (ver abaixo), porque
+`upgrade_food` não é uma `DISMISS_ACTION` — se o painel não
+fechar, o único sinal é o `REPEATED_ACTION_WARNING`.
 
 **Não existe número de prioridade escrito em lugar nenhum** — a
 ordem da lista É a prioridade. Antes eram comentários
@@ -368,6 +427,44 @@ reseta a exploração, então o swipe não entra para salvar. Daí
 o `REPEATED_ACTION_WARNING`: depois de N ações idênticas
 seguidas sai um aviso no log.
 
+### Por que o bot não age duas vezes sobre a mesma tela
+
+Sintoma: fechava o "MAX" e tocava **de novo** no mesmo ponto, o
+que **reabria** o painel — porque o `DISMISS_POINT` é também um
+ponto que abre coisa.
+
+Duas causas somadas:
+
+1. O `ACTION_COOLDOWN` (0,5 s) liberava antes de existir frame
+   posterior à ação, porque o atraso do detector é ~0,535 s. A
+   máquina decidia sobre uma tela de **antes** do próprio toque.
+2. Mesmo um frame posterior ao toque ainda mostra o painel
+   enquanto a animação de fechar não terminou.
+
+Por isso a condição em `_can_act` não é temporal, é **causal**:
+só age sobre frame **capturado** ao menos `ACTION_SETTLE` depois
+da última ação. Aumentar o cooldown não resolveria — um detector
+mais lento voltaria a estourar a margem.
+
+Simulado no domínio do tempo, com o painel abrindo e fechando de
+verdade e a máquina vendo com atraso (toques no ponto, e quantos
+deles com o painel **já fechado**):
+
+| `ACTION_SETTLE` | anim 0,10 s | anim 0,20 s | anim 0,30 s | anim 0,40 s |
+|---|---|---|---|---|
+| 0 (só a guarda causal) | 5t **2esp** | 5t **2esp** | 5t **2esp** | 5t **2esp** |
+| 0,20 | 1t 0esp | 1t 0esp | 5t **2esp** | 5t **2esp** |
+| **0,40 (config)** | 1t 0esp | 1t 0esp | 1t 0esp | 1t 0esp |
+
+A regra é `ACTION_SETTLE >= animação do jogo`. Baixar para 0,1
+faz o duplo toque voltar, e há teste dizendo isso.
+
+**O custo**: o intervalo entre ações passa a ser
+`settle + atraso do detector`. Com o atraso em 0,535 s, o teto
+cai de ~1,9 para ~1,1 ação por segundo. É troca deliberada — uma
+ação errada que desfaz a anterior custa mais que meia ação por
+segundo.
+
 ### Fechar painel: por que existe uma escada
 
 **Nenhum ponto fixo é seguro numa posição de rolagem qualquer.**
@@ -391,6 +488,7 @@ gray_max → gray_max → gray_max → scroll_bottom → gray_max → ...
 | Config | O quê |
 |---|---|
 | `DISMISS_ACTIONS` | quais ações escalam (`dismiss`, `gray_max`) |
+
 | `DISMISS_ATTEMPTS_BEFORE_SCROLL` | tentativas no ponto antes de rolar (3) |
 | `SCROLL_BOTTOM_DIRECTION` | `"up"` — dedo para cima, **vista desce** |
 | `SCROLL_BOTTOM_SWIPES` | 6, o bastante para chegar ao fim |
@@ -407,6 +505,15 @@ bot saiu do buraco) ou quando troca de estado.
 Swipe sozinho não resolve — swipe não fecha painel, só deixa o
 loop mais lento. Ele serve para *chegar* na posição de rolagem
 onde o ponto funciona.
+
+Hoje **só `gray_max` escala**: nenhuma regra usa a ação
+`dismiss`, porque `up_food` em `NORMAL` faz `upgrade_food`. A
+ação `dismiss` (toque mantido de `DISMISS_HOLD_DURATION` no
+`DISMISS_POINT`, convertido para a resolução do device) segue
+implementada e coberta por
+`tests/test_pipeline.py::test_dismiss_toca_no_ponto_neutro`,
+pronta para voltar às regras — código que ninguém exercita
+apodrece sem ninguém notar.
 
 ## Quando não abre
 
@@ -504,19 +611,60 @@ usado pelo bot.
 
 ## Custo do detector
 
-Medido nas telas de `tests/images` (1080x2400, 43 templates):
+O custo é **linear no número de templates** — cada um é uma
+varredura da tela inteira. Hoje são **106**, e **75 deles são
+`food`**.
 
-| Situação | Tempo | FPS |
-|---|---|---|
-| busca direta em resolução cheia | 1697 ms | 0.6 |
-| dois estágios, todas as categorias | 323 ms | 3.1 |
-| dois estágios, estado `UPGRADE` (3 templates) | 27 ms | 37 |
-| dois estágios, estado `FOOD` (4 templates) | 34 ms | 30 |
+### O gargalo: escala global travada pelo menor template
 
-O estado `NORMAL` continua caro porque 39 dos 43 templates
-são relevantes nele. O caminho para melhorar é
-`CATEGORY_ROIS` em [config.py](src/core/config.py):
-restringir cada categoria à parte da tela onde ela pode
-aparecer corta o custo e o falso positivo junto. Está
-deliberadamente vazio — ROI errada esconde detecção boa, e
-isso precisa ser conferido no jogo.
+O estágio grosso procura numa cópia reduzida do frame. Abaixo de
+`MIN_COARSE_SIDE` (12 px) o template não sobrevive à redução, o
+estágio grosso é abandonado e a busca cai em resolução cheia —
+que é justamente a lenta.
+
+Com uma escala **global**, ela fica travada pelo MENOR template
+de todos (`up_upgrade`, 32 px → 0.40) e os grandes pagam a conta.
+`food` tem mediana 80x93: aguenta 0.15–0.20.
+
+A escala agora é **derivada por template**, de
+`MIN_COARSE_SIDE / menor_lado`, arredondada para cima na grade de
+`COARSE_SCALE_STEP`. Não existe tabela por categoria para manter
+na mão, porque o padrão é exato: o custo explode *precisamente*
+quando a escala cai abaixo desse piso.
+
+Medido no device (1080x2400, 106 templates, 30 fps de captura):
+
+| | detect | lag médio | p95 | pior |
+|---|---|---|---|---|
+| `NORMAL` antes (escala global) | 916 ms | 1360 ms | 2163 ms | 2251 ms |
+| **`NORMAL` agora** | **156 ms** | **255 ms** | **342 ms** | **372 ms** |
+| `UPGRADE` antes | 33 ms | 73 ms | 102 ms | 112 ms |
+| **`UPGRADE` agora** | **16 ms** | **34 ms** | **45 ms** | **65 ms** |
+
+**5,9x** em `NORMAL`. As detecções ficam iguais — mesmas
+coordenadas, mesmo conjunto, confiança diferindo na 6ª casa
+decimal (ruído do refino). O custo não estava comprando precisão
+nenhuma.
+
+Isso também tirou o lag da zona de perigo: o p95 era 2163 ms
+contra um `MAX_DETECTION_AGE` de 2000 ms — metade das detecções
+lentas estava sendo descartada por velhice antes de virar ação.
+
+O frame reduzido é construído **sob demanda**, um por escala
+usada: em `UPGRADE`, com 4 templates, sai 1 resize e não 7. Os 7
+resizes custam 7.9 ms juntos, contra ~700 ms de busca.
+
+### O que sobrou na mesa
+
+- **`CATEGORY_ROIS`** em [config.py](src/core/config.py), ainda
+  vazio. Restringir cada categoria à parte da tela onde ela pode
+  aparecer corta custo e falso positivo junto. ROI errada
+  esconde detecção boa, então precisa ser conferida no jogo.
+- **Cascata de prioridade**: `food` é a última regra de `NORMAL`,
+  então buscá-la foi desperdício sempre que algo de prioridade
+  maior está na tela. Ajuda menos do que parece — amostrando 12
+  telas reais, nenhuma tinha detecção alguma, que é o pior caso
+  da cascata.
+- **Cortar templates não resolve**: cruzando os 75 `food` entre
+  si, só 3 pares se cobrem (~25 ms de 876). Os pratos são de
+  fato distintos.

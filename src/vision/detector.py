@@ -42,10 +42,13 @@ Mudanças em relação à versão anterior:
 
 from pathlib import Path
 
+import math
+
 import cv2
 import numpy as np
 
 from core import log
+from core.metrics import formata_duracao
 from core.config import (
     CATEGORY_ROIS,
     CATEGORY_THRESHOLDS,
@@ -57,6 +60,13 @@ from core.config import (
     NMS_IOU,
     REFINE_SLACK,
     SHAPE_THRESHOLD,
+    COARSE_SCALE_MIN,
+    COARSE_SCALE_STEP,
+    BATTERY_POLL_INTERVAL,
+    BATTERY_WARNING_LEVEL,
+    CYCLE_STALL_FACTOR,
+    SHOW_BATTERY,
+    SHOW_CYCLE_TIME,
     SHOW_DETECTION_LABELS,
     SHOW_DETECTION_LAG,
     SHOW_FPS,
@@ -115,6 +125,42 @@ class Detector:
     # --------------------------------------------------
     # Templates
     # --------------------------------------------------
+
+    def _coarse_scale_for(self, smallest_side):
+        """
+        Escala do estágio grosso para UM template.
+
+        A menor escala em que o template ainda tem
+        MIN_COARSE_SIDE de lado — abaixo disso o estágio grosso
+        é abandonado e a busca cai em resolução cheia, que custa
+        uma ordem de grandeza mais.
+
+        Arredonda PARA CIMA na grade: escala maior é sempre a
+        opção segura, e a grade limita quantos tamanhos
+        distintos de frame reduzido precisam existir.
+        """
+
+        if smallest_side <= 0:
+            return self.coarse_scale
+
+        exata = MIN_COARSE_SIDE / smallest_side
+
+        na_grade = (
+            math.ceil(exata / COARSE_SCALE_STEP)
+            * COARSE_SCALE_STEP
+        )
+
+        # O arredondamento de float deixa 0.15000000000000002,
+        # e aí duas escalas iguais viram chaves diferentes no
+        # cache de frames reduzidos — um resize a mais por
+        # passada, de graça.
+        return round(
+            min(
+                self.coarse_scale,
+                max(COARSE_SCALE_MIN, na_grade),
+            ),
+            4,
+        )
 
     def load_templates(self):
 
@@ -214,7 +260,10 @@ class Detector:
         # VERSÃO REDUZIDA (estágio grosso)
         # -------------------------------------------------
 
-        scale = self.coarse_scale
+        # Escala PRÓPRIA deste template, derivada do tamanho
+        # dele. Antes era a global, travada pelo menor template
+        # de todos.
+        scale = self._coarse_scale_for(min(height, width))
 
         coarse_gray = None
         coarse_mask = None
@@ -253,6 +302,7 @@ class Detector:
 
             "coarse_gray": coarse_gray,
             "coarse_mask": coarse_mask,
+            "coarse_scale": scale,
 
             "width": width,
             "height": height,
@@ -451,19 +501,27 @@ class Detector:
         # CÓPIA REDUZIDA (uma vez por frame)
         # =================================================
 
-        scale = self.coarse_scale
+        # Cada template tem a escala dele, então pode haver mais
+        # de um frame reduzido. São construídos SOB DEMANDA: no
+        # estado UPGRADE, com 4 templates, sai 1 resize e não 7.
+        coarse_frames = {}
 
-        coarse_frame = None
+        def coarse_for(scale):
 
-        if scale < 1.0:
+            if scale >= 1.0:
+                return None
 
-            coarse_frame = cv2.resize(
-                frame_gray,
-                None,
-                fx=scale,
-                fy=scale,
-                interpolation=cv2.INTER_AREA,
-            )
+            if scale not in coarse_frames:
+
+                coarse_frames[scale] = cv2.resize(
+                    frame_gray,
+                    None,
+                    fx=scale,
+                    fy=scale,
+                    interpolation=cv2.INTER_AREA,
+                )
+
+            return coarse_frames[scale]
 
         wanted = (
             set(categories)
@@ -499,7 +557,7 @@ class Detector:
 
             candidates = self._search(
                 frame_gray,
-                coarse_frame,
+                coarse_for(template["coarse_scale"]),
                 template,
                 min_threshold,
                 roi,
@@ -604,7 +662,7 @@ class Detector:
         # confiança, e descartar aqui é irreversível.
         #
 
-        scale = self.coarse_scale
+        scale = template["coarse_scale"]
 
         coarse_roi = (
             int(roi[0] * scale),
@@ -923,7 +981,9 @@ class Detector:
 
     def draw(self, frame, detections, stats=None):
         """
-        stats aceita: capture_fps, detect_fps, detect_ms, lag.
+        stats aceita: capture_fps, detect_fps, detect_ms, lag,
+        battery (nível, carregando, idade_da_leitura),
+        cycle (corrido, ultimo, quantos).
         Chaves ausentes simplesmente não aparecem.
         """
 
@@ -1070,6 +1130,82 @@ class Detector:
                 self.HUD_OK
                 if lag <= limit * 0.5
                 else self.HUD_BAD,
+            )
+
+            y += 40
+
+        # -------------------------------------------------
+        # BATERIA
+        # -------------------------------------------------
+        #
+        # Sessão que morre por bateria descarregada não deixa
+        # rastro no log — o bot só para de agir.
+        #
+
+        battery = stats.get("battery")
+
+        if SHOW_BATTERY and battery:
+
+            level, charging, age = battery
+
+            if level is not None:
+
+                label = f"bateria  {level:5d} %"
+
+                if charging:
+                    label += "  carregando"
+
+                # Leitura velha é pior que leitura ausente: um
+                # número parado parece atual. O intervalo é
+                # conhecido, então passar do dobro dele é
+                # sinal de adb travado.
+                elif age > BATTERY_POLL_INTERVAL * 2:
+                    label += f"  ({age:.0f}s atras)"
+
+                self._hud_text(
+                    output,
+                    label,
+                    y,
+                    self.HUD_OK
+                    if charging or level > BATTERY_WARNING_LEVEL
+                    else self.HUD_BAD,
+                )
+
+                y += 40
+
+        # -------------------------------------------------
+        # TEMPO CORRIDO ENTRE REFORMAS
+        # -------------------------------------------------
+        #
+        # O único número do HUD que mede PROGRESSO. Os FPS
+        # dizem que a visão está saudável; este diz se o bot
+        # está andando. Ele pode estar a 30 fps clicando em
+        # nada há vinte minutos.
+        #
+
+        cycle = stats.get("cycle")
+
+        if SHOW_CYCLE_TIME and cycle:
+
+            corrido, ultimo, quantos = cycle
+
+            label = f"reforma {quantos:5d}  {formata_duracao(corrido)}"
+
+            if ultimo is not None:
+                label += f"  (ult {formata_duracao(ultimo)})"
+
+            # Vermelho só quando há com o que comparar: sem
+            # ciclo anterior, "demorado" não quer dizer nada.
+            travado = (
+                ultimo is not None
+                and corrido > ultimo * CYCLE_STALL_FACTOR
+            )
+
+            self._hud_text(
+                output,
+                label,
+                y,
+                self.HUD_BAD if travado else self.HUD_NEUTRAL,
             )
 
         return output
