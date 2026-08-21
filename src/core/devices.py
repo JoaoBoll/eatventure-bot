@@ -22,9 +22,10 @@ device nenhum plugado.
 import subprocess
 import sys
 
-from core import log
+from core import log, config
 
 logger = log.get("devices")
+ADB = config.ADB_PATH
 
 
 # =========================================================
@@ -40,7 +41,7 @@ def listar():
     """
 
     resultado = subprocess.run(
-        ["adb", "devices"],
+        [ADB, "devices"],
         capture_output=True,
         text=True,
         check=True,
@@ -73,7 +74,7 @@ def _propriedade(serial, nome):
     try:
 
         resultado = subprocess.run(
-            ["adb", "-s", serial, "shell", "getprop", nome],
+            [ADB, "-s", serial, "shell", "getprop", nome],
             capture_output=True,
             text=True,
             timeout=5,

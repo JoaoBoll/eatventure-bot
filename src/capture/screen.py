@@ -37,6 +37,7 @@ from core.config import (
     SCRCPY_PORT,
     SCRCPY_SERVER_PATH,
     SCRCPY_SERVER_VERSION,
+    ADB_PATH,
 )
 
 logger = log.get("capture")
@@ -507,7 +508,7 @@ class ScreenCapture:
         no stream".
         """
 
-        comando = ["adb"]
+        comando = [ADB_PATH]
 
         if self.serial:
 

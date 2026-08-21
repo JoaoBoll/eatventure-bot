@@ -9,9 +9,10 @@ levantava CalledProcessError e matava o programa.
 import re
 import subprocess
 
-from core import log
+from core import log, config
 
 logger = log.get("android")
+ADB = config.ADB_PATH
 
 
 class AndroidActions:
@@ -26,7 +27,7 @@ class AndroidActions:
 
     def _base(self):
 
-        command = ["adb"]
+        command = [ADB]
 
         if self.serial:
 

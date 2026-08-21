@@ -7,6 +7,7 @@ Nenhum outro módulo deve ter número mágico.
 
 import os
 from pathlib import Path
+import shutil
 
 
 # =========================================================
@@ -31,11 +32,67 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 #   DEVICE_SERIAL = "e2615705"
 DEVICE_SERIAL = None
 
-SCRCPY_PATH = r"C:\scrcpy\scrcpy.exe"
+# Prefer system scrcpy/adb in PATH if installed; else prefer project tools
+_scrcpy_dir = PROJECT_ROOT / "tools" / "scrcpy"
 
-SCRCPY_SERVER_PATH = r"C:\scrcpy\scrcpy-server"
+# Prefer scrcpy from PATH when available
+_scrcpy_path = shutil.which("scrcpy")
+if _scrcpy_path:
+    SCRCPY_PATH = _scrcpy_path
+    # Try to find server jar under project tools if present
+    _jar = next(_scrcpy_dir.rglob("scrcpy-server*.jar"), None) if _scrcpy_dir.exists() else None
+    SCRCPY_SERVER_PATH = str(_jar) if _jar is not None else r""
+else:
+    if _scrcpy_dir.exists():
+        try:
+            _exe = next(_scrcpy_dir.rglob("scrcpy.exe"), None)
+            _jar = next(_scrcpy_dir.rglob("scrcpy-server*.jar"), None)
+            SCRCPY_PATH = str(_exe) if _exe is not None else r""
+            SCRCPY_SERVER_PATH = str(_jar) if _jar is not None else r""
+        except Exception:
+            SCRCPY_PATH = r""
+            SCRCPY_SERVER_PATH = r""
+    else:
+        SCRCPY_PATH = r""
+        SCRCPY_SERVER_PATH = r""
 
 SCRCPY_SERVER_VERSION = "4.1"
+
+# ADB: prefer system adb from PATH
+_adb_system = shutil.which("adb")
+if _adb_system:
+    ADB_PATH = _adb_system
+else:
+    # If scrcpy is available (either system or project), prefer adb next to it
+    _adb_from_scrcpy = None
+    try:
+        if SCRCPY_PATH:
+            scrcpy_p = Path(SCRCPY_PATH)
+            # look for adb.exe in the same directory
+            candidate = scrcpy_p.parent / 'adb.exe'
+            if candidate.exists():
+                _adb_from_scrcpy = str(candidate)
+            else:
+                # also try sibling platform-tools or parent/platform-tools
+                sibling = scrcpy_p.parent / 'platform-tools' / 'adb.exe'
+                if sibling.exists():
+                    _adb_from_scrcpy = str(sibling)
+    except Exception:
+        _adb_from_scrcpy = None
+
+    if not _adb_from_scrcpy:
+        # project tools/scrcpy may contain adb.exe somewhere under it
+        _scrcpy_dir = PROJECT_ROOT / 'tools' / 'scrcpy'
+        if _scrcpy_dir.exists():
+            _adb_candidate = next(_scrcpy_dir.rglob('adb.exe'), None)
+            if _adb_candidate:
+                _adb_from_scrcpy = str(_adb_candidate)
+
+    if _adb_from_scrcpy:
+        ADB_PATH = _adb_from_scrcpy
+    else:
+        # No adb found in PATH or beside scrcpy: use system 'adb' fallback
+        ADB_PATH = "adb"
 
 # Porta local do NOSSO túnel de captura.
 #
