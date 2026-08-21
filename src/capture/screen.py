@@ -24,6 +24,7 @@ import socket
 import subprocess
 import threading
 import time
+import os
 
 import av
 import cv2
@@ -522,22 +523,34 @@ class ScreenCapture:
 
     def _push_server(self):
 
-        result = subprocess.run(
-            self._adb(
-                "push",
-                self.SERVER_PATH,
-                self.DEVICE_JAR,
-            ),
-            capture_output=True,
-            text=True,
-        )
+            # Verifica se o caminho do scrcpy-server está configurado e existe
+            if not self.SERVER_PATH:
+                raise RuntimeError(
+                    "Caminho do scrcpy-server não configurado (SCRCPY_SERVER_PATH vazio). "
+                    "Instale scrcpy no PATH ou coloque o scrcpy-server*.jar em tools/scrcpy e tente novamente."
+                )
 
-        if result.returncode != 0:
+            if not os.path.exists(self.SERVER_PATH):
+                raise RuntimeError(
+                    f"scrcpy-server não encontrado em '{self.SERVER_PATH}'. Verifique SCRCPY_SERVER_PATH ou coloque o arquivo scrcpy-server*.jar em tools/scrcpy."
+                )
 
-            raise RuntimeError(
-                "Erro ao enviar scrcpy-server:\n"
-                + (result.stderr or "")
+            result = subprocess.run(
+                self._adb(
+                    "push",
+                    self.SERVER_PATH,
+                    self.DEVICE_JAR,
+                ),
+                capture_output=True,
+                text=True,
             )
+
+            if result.returncode != 0:
+
+                raise RuntimeError(
+                    "Erro ao enviar scrcpy-server:\n"
+                    + (result.stderr or "")
+                )
 
     # =====================================================
     # FORWARD

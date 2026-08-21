@@ -35,26 +35,46 @@ DEVICE_SERIAL = None
 # Prefer system scrcpy/adb in PATH if installed; else prefer project tools
 _scrcpy_dir = PROJECT_ROOT / "tools" / "scrcpy"
 
+# O binario do server pode vir como "scrcpy-server-v3.x.jar" (release do
+# GitHub) ou simplesmente "scrcpy-server" (build/zip do Windows).
+_SERVER_NAMES = ("scrcpy-server*.jar", "scrcpy-server")
+
+
+def _find_server(base: Path):
+    for pattern in _SERVER_NAMES:
+        try:
+            hit = next((p for p in base.rglob(pattern) if p.is_file()), None)
+        except Exception:
+            hit = None
+        if hit is not None:
+            return hit
+    return None
+
+
 # Prefer scrcpy from PATH when available
 _scrcpy_path = shutil.which("scrcpy")
 if _scrcpy_path:
     SCRCPY_PATH = _scrcpy_path
-    # Try to find server jar under project tools if present
-    _jar = next(_scrcpy_dir.rglob("scrcpy-server*.jar"), None) if _scrcpy_dir.exists() else None
+    # Primeiro, tenta achar o server ao lado do scrcpy.exe (instalacao do sistema)
+    try:
+        _jar = _find_server(Path(_scrcpy_path).parent)
+    except Exception:
+        _jar = None
+    # Se nao encontrar, tenta o diretorio de ferramentas do projeto
+    if _jar is None and _scrcpy_dir.exists():
+        _jar = _find_server(_scrcpy_dir)
     SCRCPY_SERVER_PATH = str(_jar) if _jar is not None else r""
 else:
+    SCRCPY_PATH = r""
+    SCRCPY_SERVER_PATH = r""
     if _scrcpy_dir.exists():
         try:
             _exe = next(_scrcpy_dir.rglob("scrcpy.exe"), None)
-            _jar = next(_scrcpy_dir.rglob("scrcpy-server*.jar"), None)
+            _jar = _find_server(_scrcpy_dir)
             SCRCPY_PATH = str(_exe) if _exe is not None else r""
             SCRCPY_SERVER_PATH = str(_jar) if _jar is not None else r""
         except Exception:
-            SCRCPY_PATH = r""
-            SCRCPY_SERVER_PATH = r""
-    else:
-        SCRCPY_PATH = r""
-        SCRCPY_SERVER_PATH = r""
+            pass
 
 SCRCPY_SERVER_VERSION = "4.1"
 
