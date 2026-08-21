@@ -12,6 +12,10 @@ output.txt
 # Capturas de trabalho do template_selector: descartáveis.
 tests/capture/
 
+# Dataset de treino: imagens pesam e não entram no git.
+# Faça backup por rsync/cópia, não por commit.
+dataset/
+
 # tests/images/ NÃO entra aqui: são os fixtures em que o
 # tests/golden/expectations.json se baseia.
 .aider*

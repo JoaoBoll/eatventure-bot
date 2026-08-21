@@ -189,6 +189,8 @@ restaurante".
 | [actions/android.py](src/actions/android.py) | comandos adb |
 | [core/devices.py](src/core/devices.py) | lista e escolhe o device |
 | [core/battery.py](src/core/battery.py) | lê a bateria fora do caminho crítico |
+| [dataset/recorder.py](src/dataset/recorder.py) | grava frame + rótulos para treino |
+| [dataset/store.py](src/dataset/store.py) | índice do dataset no PostgreSQL |
 | [core/config.py](src/core/config.py) | **todo** valor ajustável |
 | [tools/regras.py](tools/regras.py) | imprime e valida as prioridades |
 | [tools/renumerar.py](tools/renumerar.py) | compacta a numeração dos templates |
@@ -335,6 +337,7 @@ python tests/test_renumerar.py       # compactação da numeração
 python tests/test_selector_layout.py # coordenadas do seletor
 python tests/test_devices.py         # escolha de device
 python tests/test_ciclo.py           # tempo corrido entre reformas
+python tests/test_dataset.py         # gravação do dataset de treino
 ```
 
 Nenhum deles precisa de device.
@@ -602,6 +605,53 @@ adb forward --list                            # para onde aponta?
 
 Atalho de emergência: `SHOW_SCRCPY = False`. O espelho não é
 usado pelo bot.
+
+## Gravar dataset de treino
+
+**Ligado.** Em [config.py](src/core/config.py):
+
+```python
+RECORD_DATASET = True
+DATASET_DIR = PROJECT_ROOT / "dataset"
+DATASET_IMAGE_FORMAT = "jpg"    # 4.3x menor que png
+```
+
+Grava **todas as 16 ações** do bot, mais os dois swipes de
+exploração.
+
+Grava, para cada ação, o frame que motivou a decisão e os rótulos
+que o template matcher produziu: **todas as caixas** do frame com
+categoria, qual delas virou ação, o ponto tocado em pixel do
+frame, e o **resultado** (o alvo saiu da tela?).
+
+As caixas e não só o ponto do clique porque um ponto por imagem é
+ambíguo quando há vários alvos e não ensina quantos existem — com
+as caixas a tarefa é detecção de objetos, a mesma do matcher, com
+muito mais rótulo por imagem. E o resultado porque é ele que
+permite treinar só nas ações que **funcionaram**, em vez de herdar
+todo erro do professor.
+
+MEDIDO no device: **nenhum impacto** no bot (atraso 58 → 50 ms,
+captura 30 fps nos dois casos) — a gravação roda em thread com
+fila que descarta quando enche.
+
+Espaço: **2,10 MB** por frame em PNG, **0,49 MB** em JPG q92. Com
+o bot agindo ~1x/s, 7,6 GB/hora contra 1,8 GB/hora. Há teto em
+`DATASET_MAX_DISK_MB`.
+
+O **`samples.jsonl` é o que treina** — tem caminho da imagem,
+todas as caixas com categoria, o ponto do clique e o resultado.
+Banco é opcional e guarda só **metadado**: imagem fica em
+arquivo, porque treinar puxando BLOB por época é lento e o
+dataset deixaria de ser copiável com `rsync`.
+
+```bash
+psql -h host -U usuario -d eatventure -f docs/schema.sql
+python tools/dataset_import.py            # carrega o samples.jsonl
+```
+
+Formato, DDL das tabelas, índices e consultas úteis:
+**[docs/dataset.md](docs/dataset.md)**.
 
 ## Planos futuros
 

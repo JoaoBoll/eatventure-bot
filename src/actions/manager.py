@@ -266,6 +266,64 @@ class ActionManager:
             int(round(y * device_height / REFERENCE_HEIGHT)),
         )
 
+    def _reference_to_frame(self, x, y):
+        """
+        Coordenada da resolução de referência -> FRAME.
+
+        Existe para o rótulo do dataset: a imagem gravada é o
+        frame, então o ponto tocado tem de estar no espaço
+        dele. Não é usada para tocar.
+        """
+
+        if not self.frame_size:
+            return int(x), int(y)
+
+        frame_width, frame_height = self.frame_size
+
+        return (
+            int(round(x * frame_width / REFERENCE_WIDTH)),
+            int(round(y * frame_height / REFERENCE_HEIGHT)),
+        )
+
+    def target_frame(self, action, detection):
+        """
+        Onde esta ação vai tocar, em coordenada de FRAME —
+        o mesmo espaço da imagem que o dataset grava.
+
+        None quando a ação não tem alvo pontual (scroll).
+
+        Deliberadamente separada de _dispatch: o caminho do
+        toque continua convertendo direto da referência para o
+        device, sem passar pelo frame, porque dupla conversão
+        introduz arredondamento e é aquele caminho que gasta
+        moeda. As duas leem a MESMA constante, e
+        tests/test_dataset.py confere que caem no mesmo ponto.
+        """
+
+        kind = ACTION_TABLE.get(action)
+
+        if kind is None or kind == SCROLL:
+            return None
+
+        if kind in (DISMISS, HOLD):
+
+            return self._reference_to_frame(*DISMISS_POINT)
+
+        if detection is None:
+            return None
+
+        return (
+            detection["x"] + detection["width"] // 2,
+            detection["y"] + detection["height"] // 2,
+        )
+
+    def kind_of(self, action):
+        """
+        Comportamento por trás do nome da ação.
+        """
+
+        return ACTION_TABLE.get(action)
+
     # =====================================================
     # SUBMISSÃO
     # =====================================================

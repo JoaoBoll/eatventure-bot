@@ -10,3 +10,14 @@
 av==18.1.0
 numpy==2.5.2
 opencv-python==5.0.0.93
+
+# Opcional: só para indexar o dataset no PostgreSQL
+# (DATASET_DB_ENABLED em src/core/config.py).
+#
+# Comentado de propósito — quem não usa banco não deve ser
+# obrigado a instalar driver no `pip install -r`. O dataset
+# funciona só com arquivos; o samples.jsonl é a fonte de verdade.
+#
+# Ver docs/dataset.md.
+#
+# psycopg[binary]==3.2.9

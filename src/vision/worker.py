@@ -39,6 +39,10 @@ class VisionWorker:
         self.detections = []
         self.detections_time = 0.0
 
+        # Frame que produziu as detecções acima. Não é o
+        # latest_frame: aquele já foi substituído.
+        self.detections_frame = None
+
         self.categories = None
 
         self.frame_lock = threading.Lock()
@@ -119,6 +123,22 @@ class VisionWorker:
     # =====================================================
     # DETECÇÕES
     # =====================================================
+
+    def get_input(self):
+        """
+        (frame, detecções, instante_do_frame) da última passada.
+
+        É o par imagem+rótulo consistente: get_detections()
+        devolve as detecções, mas não a imagem de onde vieram.
+        """
+
+        with self.detection_lock:
+
+            return (
+                self.detections_frame,
+                list(self.detections),
+                self.detections_time,
+            )
 
     def get_detections(self):
         """
@@ -232,5 +252,12 @@ class VisionWorker:
 
                 self.detections = detections
                 self.detections_time = frame_time
+
+                # O frame que PRODUZIU estas detecções.
+                #
+                # Guardado porque o dataset precisa da imagem
+                # exata que gerou os rótulos: latest_frame já
+                # foi substituído por outro mais novo.
+                self.detections_frame = frame
 
             time.sleep(self.interval)

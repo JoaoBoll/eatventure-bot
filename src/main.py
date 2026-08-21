@@ -20,6 +20,7 @@ Mudanças em relação à versão anterior:
 import argparse
 import subprocess
 import sys
+import time
 
 import cv2
 
@@ -27,11 +28,17 @@ from actions.manager import ActionManager
 from capture.screen import ScreenCapture
 from core import devices, log
 from core.battery import BatteryMonitor
+from dataset.recorder import DatasetRecorder
 from core.config import (
     AI_WINDOW_NAME,
     AI_WINDOW_POSITION,
+    DATASET_DB_BATCH,
+    DATASET_DB_DSN,
+    DATASET_DB_ENABLED,
+    DATASET_DB_SCHEMA,
     DEVICE_SERIAL,
     LOG_LEVEL,
+    RECORD_DATASET,
     SCRCPY_EXTRA_ARGS,
     SCRCPY_PATH,
     SHOW_AI_VISION,
@@ -112,6 +119,86 @@ def setup_window():
 
 
 # =========================================================
+# DATASET
+# =========================================================
+
+def build_recorder():
+    """
+    Gravador do dataset, ou None se estiver desligado.
+
+    O banco é opcional dentro do opcional: sem ele o dataset
+    continua completo em arquivo, e o samples.jsonl é a fonte
+    de verdade do treino.
+    """
+
+    if not RECORD_DATASET:
+        return None
+
+    store = None
+
+    if DATASET_DB_ENABLED:
+
+        if not DATASET_DB_DSN:
+
+            logger.error(
+                "DATASET_DB_ENABLED ligado mas "
+                "DATASET_DB_DSN vazio — gravando só em "
+                "arquivo. Ver docs/dataset.md."
+            )
+
+        else:
+
+            from dataset.store import PostgresStore
+
+            try:
+
+                store = PostgresStore(
+                    DATASET_DB_DSN,
+                    batch_size=DATASET_DB_BATCH,
+                    schema=DATASET_DB_SCHEMA,
+                ).connect()
+
+            except Exception as error:
+
+                # Banco fora não pode impedir a coleta: as
+                # imagens são o que não se recupera depois.
+                logger.error(
+                    "Sem conexão com o banco (%s) — gravando "
+                    "só em arquivo. Depois dá para importar "
+                    "com tools/dataset_import.py.",
+                    error,
+                )
+
+                store = None
+
+    return DatasetRecorder(store=store)
+
+
+# =========================================================
+# LEITURA DAS DETECÇÕES
+# =========================================================
+
+def read_detections(vision):
+    """
+    (detecções, idade, frame, instante_do_frame).
+
+    O frame é o que GEROU essas detecções, não o mais recente:
+    é isso que mantém imagem e rótulo consistentes para o
+    dataset.
+    """
+
+    frame, detections, frame_time = vision.get_input()
+
+    lag = (
+        max(0.0, time.monotonic() - frame_time)
+        if frame_time
+        else 0.0
+    )
+
+    return detections, lag, frame, frame_time
+
+
+# =========================================================
 # LOOP
 # =========================================================
 
@@ -173,13 +260,24 @@ def run_loop(
         # Detecções (do frame que o worker terminou)
         # -------------------------------------------------
 
-        detections, lag = vision.get_detections()
+        # get_input em vez de get_detections: devolve também o
+        # frame que PRODUZIU as detecções. Sem isso, o dataset
+        # gravaria uma imagem de uma passada com os rótulos de
+        # outra.
+        detections, lag, detect_frame, detect_time = (
+            read_detections(vision)
+        )
 
         # -------------------------------------------------
         # STATE MACHINE
         # -------------------------------------------------
 
-        state_machine.update(detections, lag)
+        state_machine.update(
+            detections,
+            lag,
+            detect_frame,
+            detect_time,
+        )
 
         # -------------------------------------------------
         # AI VISION
@@ -270,7 +368,9 @@ def main(argv=None):
 
     actions = ActionManager(device_id)
 
-    state_machine = StateMachine(actions)
+    recorder = build_recorder()
+
+    state_machine = StateMachine(actions, recorder)
 
     battery = BatteryMonitor(actions.android)
 
@@ -283,6 +383,10 @@ def main(argv=None):
         actions.start()
 
         battery.start()
+
+        if recorder:
+
+            recorder.start()
 
         if SHOW_AI_VISION:
 
@@ -304,6 +408,12 @@ def main(argv=None):
     finally:
 
         logger.info("Encerrando EatVenture AI...")
+
+        # Antes do resto: fecha a amostra pendente e grava o
+        # último lote no banco.
+        if recorder:
+
+            recorder.stop()
 
         battery.stop()
 

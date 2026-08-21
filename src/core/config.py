@@ -5,6 +5,7 @@ Todo valor ajustável do projeto mora aqui.
 Nenhum outro módulo deve ter número mágico.
 """
 
+import os
 from pathlib import Path
 
 
@@ -210,6 +211,209 @@ SELECTOR_MAX_HEIGHT = None
 # Usado quando a detecção de tela não funciona.
 SELECTOR_FALLBACK_WIDTH = 1600
 SELECTOR_FALLBACK_HEIGHT = 1000
+
+
+# =========================================================
+# DATASET DE TREINO
+# =========================================================
+#
+# Grava, para cada ação, o frame que motivou a decisão e os
+# rótulos que o template matcher produziu.
+#
+# São gravadas as CAIXAS, não só o ponto do clique: um ponto por
+# imagem é ambíguo quando há vários alvos e não ensina quantos
+# existem. Com as caixas a tarefa é detecção de objetos — a
+# mesma que o matcher faz, com muito mais rótulo por imagem. O
+# ponto do clique se deriva da caixa; o contrário não.
+#
+# Também é gravado o RESULTADO da ação (o alvo saiu da tela?).
+# Sem ele o treino herda todo erro do professor e o modelo não
+# passa do template matcher.
+#
+# Detalhes e o DDL do banco: docs/dataset.md
+
+# Liga a gravação.
+RECORD_DATASET = True
+
+# Pasta de destino. É também a pasta que o treino LÊ.
+#
+#   <DATASET_DIR>/samples.jsonl        índice, fonte de verdade
+#   <DATASET_DIR>/images/AAAA-MM-DD/   as imagens
+DATASET_DIR = PROJECT_ROOT / "dataset"
+
+# "png" ou "jpg".
+#
+# MEDIDO num frame decodificado de H.264 (o que o recorder de
+# fato grava): PNG 2.10 MB, JPG q92 0.49 MB — 4.3x menor. Com o
+# bot agindo ~1x/s isso é 7.6 GB/hora contra 1.8 GB/hora.
+#
+# JPG escolhido: a sessão é longa, e artefato de compressão é
+# irrelevante para reconhecer botão de UI, que tem borda forte e
+# cor saturada. Trocar de volta é esta linha.
+DATASET_IMAGE_FORMAT = "jpg"
+DATASET_JPEG_QUALITY = 92
+
+# Ações que entram no dataset.
+#
+# TODAS as que o bot sabe fazer, inclusive `click` (o build) e
+# `plane`, que antes ficavam de fora. Cada tipo precisa de
+# exemplo próprio para ser aprendido.
+#
+# Note que `upgrade_food` cobre o processo de evolução da comida
+# inteiro — é a mesma ação em NORMAL e em FOOD.
+#
+# `swipe_up`/`swipe_down` não estão em ACTION_TABLE: são a
+# exploração, que chama o ActionManager por outro caminho. A
+# direção entra no NOME em vez de num campo novo, porque para o
+# treino subir e descer são rótulos diferentes.
+DATASET_ACTIONS = {
+    # Um toque no centro da detecção.
+    "click",              # build
+    "close",
+    "food",
+    "new_point",
+    "new_point_click",
+    "open_box",
+    "open_renovate",
+    "open_store_click",
+    "plane",
+    "renovate_click",
+    "upgrade",
+
+    # Vários toques.
+    "upgrade_item",
+
+    # Toque longo.
+    "upgrade_food",
+
+    # Ponto fixo, ignora a detecção.
+    "gray_max",
+    "dismiss",
+
+    # Sem alvo pontual.
+    "scroll_bottom",
+    "swipe_up",
+    "swipe_down",
+}
+
+# Segundos entre amostras NEGATIVAS (tela sem detecção).
+#
+# Um detector treinado só em telas com alvo aprende que sempre
+# existe um alvo. 0 desliga.
+#
+# É INTERVALO e não probabilidade porque a probabilidade se
+# aplicaria por passada do loop, que roda ~30x/s: medido, 5% por
+# passada gravou 30 negativas em 25 s — 11 GB/hora em PNG. O
+# intervalo é previsível, não importa a velocidade do loop.
+DATASET_NEGATIVE_INTERVAL = 20.0
+
+# Lado da miniatura usada para comparar telas (NxN pixels).
+#
+# Serve para duas coisas: gravar o `phash` como metadado (para
+# deduplicar offline depois, com métrica melhor) e decidir se a
+# tela MUDOU depois de uma ação sem alvo pontual.
+DATASET_HASH_SIZE = 8
+
+# Quantas miniaturas recentes manter em memória.
+DATASET_DEDUPE_MEMORY = 200
+
+# Máximo de amostras `unchanged` seguidas da MESMA ação.
+#
+# Substitui a deduplicação por conteúdo, que NÃO FUNCIONA aqui.
+# Medido nos dados reais, com diferença média de miniatura 8x8:
+#
+#   bot travado na mesma tela ..... 1.9 a 5.8
+#   jogo real, telas distintas .... 2.5 a 59.8
+#
+# As faixas se sobrepõem, porque a tela do jogo anima sozinha
+# (contador de dinheiro, personagens). Qualquer limite que pegue
+# o caso travado joga fora amostra distinta de verdade.
+#
+# O discriminador limpo é o RESULTADO, que já é gravado:
+#
+#   sessão travada ..... 35/35 unchanged, sempre a mesma ação
+#   sessão produtiva ... open_box 5x seguidas, todas changed
+#
+# Então o corte é por sequência de `unchanged`: mata o caso
+# travado (35 amostras viram 3) e não perde nenhuma amostra
+# produtiva. Zera quando a ação muda ou quando dá `changed`.
+DATASET_MAX_UNCHANGED_STREAK = 3
+
+# Diferença média de miniatura a partir da qual a tela é
+# considerada MUDADA, para ações sem alvo pontual (swipe,
+# scroll, dismiss).
+#
+# Aqui a margem é confortável, ao contrário da deduplicação:
+# detectar mudança GRANDE é fácil (rolagem move a vista inteira,
+# 8.9 a 59.8 nos dados), enquanto distinguir "nenhuma mudança"
+# de "mudança pequena" é que não dá.
+DATASET_SCREEN_CHANGE = 8.0
+
+# Tamanho da fila para a thread de gravação.
+#
+# Codificar PNG de 1080x2400 custa mais que uma passada do
+# detector, então a gravação NUNCA roda no caminho crítico. Fila
+# cheia DESCARTA a amostra: perder amostra é aceitável, atrasar
+# o bot não é.
+DATASET_QUEUE_SIZE = 8
+
+# Segundos de espera por um frame que mostre o efeito da ação
+# antes de gravar o resultado como "unknown".
+DATASET_OUTCOME_TIMEOUT = 3.0
+
+# Teto de amostras por execução. 0 = sem limite.
+DATASET_MAX_SAMPLES = 0
+
+# Teto de disco para a pasta do dataset, em MB. 0 = sem limite.
+#
+# MEDIDO: um frame 1080x2400 dá 2.10 MB em PNG e 0.49 MB em JPG
+# q92 (4.3x menor). Com o bot agindo ~1x/s:
+#
+#   PNG ... 7.6 GB/hora
+#   JPG ... 1.8 GB/hora
+#
+# O bot roda por horas sem ninguém olhando, então um teto evita
+# descobrir o problema com o disco cheio. Ao estourar, a
+# gravação para e avisa uma vez — o bot continua jogando.
+DATASET_MAX_DISK_MB = 20_000
+
+
+# ---------------------------------------------------------
+# BANCO (opcional)
+# ---------------------------------------------------------
+#
+# O banco é ÍNDICE, não armazenamento: as imagens ficam em
+# arquivo. Guardar pixels como BLOB faria o treino ler gigabytes
+# por época através do driver, e o dataset deixaria de ser
+# copiável com um rsync.
+#
+# O treino funciona sem banco nenhum — o samples.jsonl basta.
+#
+# Preencha o DSN e ligue. Rode antes o DDL de docs/dataset.md.
+DATASET_DB_ENABLED = True
+
+# ATENÇÃO: este arquivo está no git. Senha escrita aqui vai para
+# o histórico do repositório, e apagar depois não a remove dos
+# commits antigos. Se este repo for para algum lugar público,
+# use a variável de ambiente e deixe a linha abaixo vazia:
+#
+#   PowerShell:  $env:EATVENTURE_DB_DSN = "host=... password=..."
+#   bash:        export EATVENTURE_DB_DSN="host=... password=..."
+#
+# Forma KEYWORD/VALUE do libpq, e não URL, de propósito: a senha
+# tem "@", que numa URL precisaria virar %40 — e um %40 esquecido
+# faz o parser ler o host errado. Aqui não existe escape.
+DATASET_DB_DSN = os.environ.get(
+    "EATVENTURE_DB_DSN",
+    "host=192.168.1.100 port=5432 dbname=eatventure "
+    "user=admin password=admin@123",
+)
+
+DATASET_DB_SCHEMA = "public"
+
+# Amostras por ida ao banco. Uma ida por amostra colocaria
+# latência de rede na thread que também codifica PNG.
+DATASET_DB_BATCH = 20
 
 
 # =========================================================

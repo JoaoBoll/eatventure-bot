@@ -152,9 +152,12 @@ class StateMachine:
     NEW_POINT = NEW_POINT
     UPGRADE = UPGRADE
 
-    def __init__(self, action_manager):
+    def __init__(self, action_manager, recorder=None):
 
         self.action_manager = action_manager
+
+        # Gravador do dataset de treino. None = não grava.
+        self.recorder = recorder
 
         self.state = NORMAL
         self.state_entered = time.monotonic()
@@ -162,6 +165,11 @@ class StateMachine:
         self.last_action_time = 0.0
         self.action_cooldown = ACTION_COOLDOWN
         self.action_settle = ACTION_SETTLE
+
+        # Frame atual, guardado para o gravador do dataset.
+        self._frame = None
+        self._detections = []
+        self._lag = 0.0
 
         # Quando o frame que gerou as detecções em mão foi
         # CAPTURADO (não quando chegou aqui).
@@ -243,7 +251,34 @@ class StateMachine:
     # UPDATE
     # =====================================================
 
-    def update(self, detections, lag=0.0):
+    def update(
+        self,
+        detections,
+        lag=0.0,
+        frame=None,
+        frame_time=None,
+    ):
+
+        # =================================================
+        # DATASET
+        # =================================================
+        #
+        # Antes de qualquer return: é aqui que a ação anterior
+        # recebe veredito, e ela precisa disso mesmo nos frames
+        # em que o bot não age.
+        #
+        if self.recorder is not None:
+
+            self._frame = frame
+
+            self._detections = detections
+
+            self.recorder.observe(
+                frame,
+                detections,
+                frame_time,
+                self.state,
+            )
 
         # =================================================
         # QUANDO ESTA TELA FOI VISTA
@@ -255,6 +290,8 @@ class StateMachine:
         # caminho de ação passa por _can_act.
         #
         self._frame_time = time.monotonic() - lag
+
+        self._lag = lag
 
         # =================================================
         # TIMEOUT DO ESTADO
@@ -415,11 +452,63 @@ class StateMachine:
 
         self._count_repeat(action)
 
+        self._record(action, detection)
+
         if next_state is not None and next_state != self.state:
 
             self._enter(next_state)
 
         return True
+
+    # =====================================================
+    # DATASET
+    # =====================================================
+
+    def _record(self, action, detection):
+        """
+        Entrega ao gravador a ação que ACABOU de sair, com o
+        frame e os rótulos que a motivaram.
+
+        Chamado de dentro de _act de propósito: é o único
+        ponto em que se sabe que a ação saiu de verdade, e não
+        foi barrada por cooldown ou por worker ocupado.
+        """
+
+        if self.recorder is None:
+            return
+
+        if self._frame is None:
+            return
+
+        self.recorder.on_action(
+            action=action,
+
+            # swipe_* não está em ACTION_TABLE: é a exploração,
+            # que chama o ActionManager por outro caminho.
+            action_kind=(
+                "swipe"
+                if action.startswith("swipe_")
+                else self.action_manager.kind_of(action)
+            ),
+            detection=detection,
+
+            # Ponto tocado no espaço da IMAGEM gravada.
+            # None para o swipe: não é um toque pontual.
+            click=(
+                None
+                if action.startswith("swipe_")
+                else self.action_manager.target_frame(
+                    action,
+                    detection,
+                )
+            ),
+
+            state=self.state,
+            frame=self._frame,
+            detections=self._detections,
+            lag=self._lag,
+            cycle_count=self.cycle_count,
+        )
 
     # =====================================================
     # TEMPO CORRIDO
@@ -808,6 +897,15 @@ class StateMachine:
 
         self.last_action_time = now
         self.last_detection_time = now
+
+        # A exploração não passa por _act, então precisa gravar
+        # aqui. É decisão do bot como qualquer outra: "não achei
+        # nada, rolo a tela" — e para o treino subir e descer são
+        # rótulos diferentes, daí a direção ir no NOME.
+        self._record(
+            f"swipe_{self.swipe_direction}",
+            None,
+        )
 
         self.swipe_count += 1
 
