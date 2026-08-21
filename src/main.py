@@ -46,6 +46,8 @@ from core.config import (
     VISION_FILTER_BY_STATE,
     WINDOW_HEIGHT,
     WINDOW_WIDTH,
+    REFERENCE_WIDTH,
+    REFERENCE_HEIGHT,
 )
 from core.state_machine import StateMachine
 from vision.detector import Detector
@@ -240,9 +242,13 @@ def run_loop(
 
         last_version = version
 
-        height, width = frame.shape[:2]
+        # O detector recebe frames normalizados; informar o
+        # ActionManager na resolução de referência do projeto
+        # para que a conversão frame->device funcione.
+        actions.set_frame_size(REFERENCE_WIDTH, REFERENCE_HEIGHT)
 
-        actions.set_frame_size(width, height)
+        # Se for necessário manter a folha do tamanho real para
+        # outros usos, a variável "frame" ainda está disponível.
 
         # -------------------------------------------------
         # Envia frame para a IA

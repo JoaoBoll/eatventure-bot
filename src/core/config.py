@@ -174,7 +174,10 @@ AI_WINDOW_POSITION = (600, 50)
 #   "--stay-awake"        device não dorme enquanto plugado
 #   "--window-borderless"
 #   "--always-on-top"
-SCRCPY_EXTRA_ARGS = []
+SCRCPY_EXTRA_ARGS = [
+    "--capture-orientation", "90",  # Força o Scrcpy a iniciar deitado (Modo Paisagem)
+    "--no-audio"                    # Desativa o áudio para evitar o erro do Demuxer
+]
 
 
 # =========================================================

@@ -15,8 +15,11 @@ Mudanças em relação à versão anterior:
 import threading
 import time
 
+import numpy as np
+import cv2
+
 from core import log
-from core.config import VISION_INTERVAL
+from core.config import VISION_INTERVAL, REFERENCE_WIDTH, REFERENCE_HEIGHT
 from core.metrics import DurationMeter, RateMeter
 
 logger = log.get("vision")
@@ -93,15 +96,59 @@ class VisionWorker:
 
     def set_frame(self, frame, timestamp=None):
 
+        """
+        Recebe o frame bruto (resolução do device) e armazena
+        duas versões: a original (para dataset/visualização) e
+        uma versão normalizada com letterbox para o detector.
+        """
+
         with self.frame_lock:
 
-            self.latest_frame = frame
+            # Frame original
+            self.latest_raw_frame = frame
 
+            # Timestamp do instante do frame (pode vir de quem
+            # capturou a imagem)
             self.latest_frame_time = (
-                time.monotonic()
-                if timestamp is None
-                else timestamp
+                time.monotonic() if timestamp is None else timestamp
             )
+
+            # Normaliza preservando proporção com padding (letterbox)
+            try:
+                src_h, src_w = frame.shape[:2]
+
+                # Tamanho de destino do detector
+                dst_w = REFERENCE_WIDTH
+                dst_h = REFERENCE_HEIGHT
+
+                # Escala preservando aspecto
+                scale = min(dst_w / src_w, dst_h / src_h)
+
+                new_w = int(round(src_w * scale))
+                new_h = int(round(src_h * scale))
+
+                resized = cv2.resize(
+                    frame,
+                    (new_w, new_h),
+                    interpolation=cv2.INTER_AREA,
+                )
+
+                # Criar canvas preto e centralizar (letterbox)
+                canvas = np.zeros((dst_h, dst_w, 3), dtype=resized.dtype)
+
+                x_offset = (dst_w - new_w) // 2
+                y_offset = (dst_h - new_h) // 2
+
+                canvas[y_offset : y_offset + new_h, x_offset : x_offset + new_w] = resized
+
+                self.latest_norm_frame = canvas
+
+            except Exception:
+                # Em caso de erro, usa o frame original como normalizado
+                self.latest_norm_frame = frame
+
+            # Limpeza para o consumidor: quando lido, a thread do
+            # worker limpa essas referências.
 
     # =====================================================
     # CATEGORIAS
@@ -196,16 +243,23 @@ class VisionWorker:
 
             with self.frame_lock:
 
-                frame = self.latest_frame
+                raw_frame = getattr(self, "latest_raw_frame", None)
+                norm_frame = getattr(self, "latest_norm_frame", None)
                 frame_time = self.latest_frame_time
 
-                self.latest_frame = None
+                # Limpa para sinalizar que foi consumido
+                self.latest_raw_frame = None
+                self.latest_norm_frame = None
 
-            if frame is None:
+            if raw_frame is None and norm_frame is None:
 
                 time.sleep(0.005)
 
                 continue
+
+            # Preferir norm_frame para a detecção; se não houver,
+            # cai para o raw_frame.
+            frame_for_detection = norm_frame if norm_frame is not None else raw_frame
 
             with self.detection_lock:
 
@@ -219,9 +273,9 @@ class VisionWorker:
             # Detector
             # ---------------------------------------------
             #
-            # O frame já chega como cópia privada do
-            # ScreenCapture, então não copiamos de novo:
-            # eram 3 cópias de ~7.8 MB por frame.
+            # Usar frame normalizado para a detecção, e guardar o
+            # raw_frame como a imagem que produziu as detecções
+            # (para o dataset).
             #
 
             started = time.monotonic()
@@ -229,7 +283,7 @@ class VisionWorker:
             try:
 
                 detections = self.detector.detect(
-                    frame,
+                    frame_for_detection,
                     categories,
                 )
 
@@ -253,11 +307,7 @@ class VisionWorker:
                 self.detections = detections
                 self.detections_time = frame_time
 
-                # O frame que PRODUZIU estas detecções.
-                #
-                # Guardado porque o dataset precisa da imagem
-                # exata que gerou os rótulos: latest_frame já
-                # foi substituído por outro mais novo.
-                self.detections_frame = frame
+                # O frame que PRODUZIU estas detecções (raw):
+                self.detections_frame = raw_frame if raw_frame is not None else frame_for_detection
 
             time.sleep(self.interval)

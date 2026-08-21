@@ -430,7 +430,10 @@ class ScreenCapture:
 
         with self.condition:
 
-            # Guarda SOMENTE o frame mais novo.
+            # Guarda SOMENTE o frame mais novo (na resolução nativa
+            # do device). A normalização para o espaço do detector
+            # é feita no VisionWorker para que o dataset continue
+            # recebendo a imagem original.
             self.latest_frame = bgr
             self.latest_frame_time = time.monotonic()
 
