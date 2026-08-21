@@ -1,27 +1,27 @@
-<#
-Instalador simples para Python no Windows (script PowerShell).
-
-Uso (PowerShell):
-  .\tools\install_python.ps1                    # instala versão padrão (configurável abaixo)
-  .\tools\install_python.ps1 -Version 3.11.4 -AllUsers -InstallDir 'C:\Program Files\Python311' -AddToPath -Quiet
-  .\tools\install_python.ps1 -Url 'https://www.python.org/ftp/python/3.11.4/python-3.11.4-amd64.exe' -Quiet
-
-Opções:
-  -Version    : versão do Python (ex: 3.11.4). Usado para construir a URL padrão do instalador.
-  -Url        : URL completa do instalador a baixar. Quando fornecido, ignora -Version.
-  -InstallDir : diretório de instalação (padrão para AllUsers=InstallAllUsers=1: 'C:\\Program Files\\Python<major><minor>', para per-user usa o diretório do instalador por default)
-  -AllUsers   : instala para todos os usuários (requer privilégio administrativo)
-  -AddToPath  : adiciona Python ao PATH durante a instalação (usa PrependPath=1)
-  -Quiet      : executa sem prompts interativos (modo silencioso), mas o script ainda pedirá confirmação se necessário
-  -Force      : sobrescreve diretório de destino sem pedir confirmação
-
-Notas de segurança e operação:
-- O script baixa o instalador oficial do python.org; verifique o checksum manualmente se quiser máxima confiança.
-- Para instalação AllUsers (em 'C:\\Program Files'), é necessário executar o PowerShell como Administrador.
-- Quando instalar em per-user sem privilégios, use o instalador com InstallAllUsers=0 e TargetDir apontando para um diretório sob o perfil do usuário.
-- O script tenta escolher o instalador amd64. Se precisar de x86, passe a URL manualmente.
-- Não faz commits git; apenas modifica o sistema do host onde rodar.
-#>
+#
+#Instalador simples para Python no Windows (script PowerShell).
+#
+#Uso (PowerShell):
+#  .\tools\install_python.ps1                    # instala versão padrão (configurável abaixo)
+#  .\tools\install_python.ps1 -Version 3.11.4 -AllUsers -InstallDir 'C:\Program Files\Python311' -AddToPath -Quiet
+#  .\tools\install_python.ps1 -Url 'https://www.python.org/ftp/python/3.11.4/python-3.11.4-amd64.exe' -Quiet
+#
+#Opções:
+#  -Version    : versão do Python (ex: 3.11.4). Usado para construir a URL padrão do instalador.
+#  -Url        : URL completa do instalador a baixar. Quando fornecido, ignora -Version.
+#  -InstallDir : diretório de instalação (padrão para AllUsers=InstallAllUsers=1: 'C:\\Program Files\\Python<major><minor>', para per-user usa o diretório do instalador por default)
+#  -AllUsers   : instala para todos os usuários (requer privilégio administrativo)
+#  -AddToPath  : adiciona Python ao PATH durante a instalação (usa PrependPath=1)
+#  -Quiet      : executa sem prompts interativos (modo silencioso), mas o script ainda pedirá confirmação se necessário
+#  -Force      : sobrescreve diretório de destino sem pedir confirmação
+#
+#Notas de segurança e operação:
+#- O script baixa o instalador oficial do python.org; verifique o checksum manualmente se quiser máxima confiança.
+#- Para instalação AllUsers (em 'C:\\Program Files'), é necessário executar o PowerShell como Administrador.
+#- Quando instalar em per-user sem privilégios, use o instalador com InstallAllUsers=0 e TargetDir apontando para um diretório sob o perfil do usuário.
+#- O script tenta escolher o instalador amd64. Se precisar de x86, passe a URL manualmente.
+#- Não faz commits git; apenas modifica o sistema do host onde rodar.
+#
 
 param(
     [string]$Version = "3.11.4",
@@ -100,14 +100,17 @@ if (-not $Quiet) {
 
 # Executa o instalador e espera
 try {
-    $proc = Start-Process -FilePath $tmpFile -ArgumentList $silentFlags, $installArgs -Wait -PassThru
+    # Constrói uma única string de argumentos para evitar passar array de arrays
+    $argString = $silentFlags + ' ' + ($installArgs -join ' ')
+    $proc = Start-Process -FilePath $tmpFile -ArgumentList $argString -Wait -PassThru
     if ($proc.ExitCode -ne 0) {
         Write-Warning "Instalador retornou código de saída: $($proc.ExitCode)"
     } else {
         Write-Host "Instalação concluída com código de saída 0."
     }
 } catch {
-    Fail "Falha ao executar o instalador: $_"
+    $msg = $_.Exception.Message
+    Fail ("Falha ao executar o instalador: " + $msg)
 }
 
 # Limpar arquivo temporário
