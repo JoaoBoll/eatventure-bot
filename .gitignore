@@ -19,3 +19,5 @@ dataset/
 # tests/images/ NÃO entra aqui: são os fixtures em que o
 # tests/golden/expectations.json se baseia.
 .aider*
+
+/tools/scrcpy/
