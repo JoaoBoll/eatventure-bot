@@ -15,7 +15,12 @@ tests/capture/
 # Dataset de treino: imagens pesam e não entram no git.
 # Faça backup por rsync/cópia, não por commit.
 
-/dataset/
+/dataset/images
+/dataset/samples.jsonl
+
+
+/dataset_to_unify/images
+/dataset_to_unify/samples.jsonl
 
 # tests/images/ NÃO entra aqui: são os fixtures em que o
 # tests/golden/expectations.json se baseia.

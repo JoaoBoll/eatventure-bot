@@ -1,0 +1,43 @@
+{
+  "label_mode": "action",
+  "labels": [
+    "click",
+    "close",
+    "food",
+    "gray_max",
+    "negative",
+    "new_point",
+    "new_point_click",
+    "open_box",
+    "open_store_click",
+    "plane",
+    "renovate_click",
+    "scroll_bottom",
+    "swipe_down",
+    "swipe_up",
+    "upgrade",
+    "upgrade_food",
+    "upgrade_item"
+  ],
+  "counts": {
+    "click": 229,
+    "close": 2426,
+    "food": 3430,
+    "gray_max": 1105,
+    "negative": 2402,
+    "new_point": 1318,
+    "new_point_click": 1128,
+    "open_box": 4879,
+    "open_store_click": 310,
+    "plane": 39,
+    "renovate_click": 268,
+    "scroll_bottom": 3,
+    "swipe_down": 514,
+    "swipe_up": 643,
+    "upgrade": 2353,
+    "upgrade_food": 3944,
+    "upgrade_item": 4306
+  },
+  "train_ratio": 0.8,
+  "backend": "cpu"
+}
