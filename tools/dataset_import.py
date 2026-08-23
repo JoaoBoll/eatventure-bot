@@ -1,4 +1,4 @@
-"""
+﻿"""
 Importa um samples.jsonl para o PostgreSQL.
 
     python tools/dataset_import.py
@@ -91,13 +91,12 @@ def main(argv=None):
 
     if not dsn:
 
-        print("Sem DSN.")
+        print("Sem DSN configurado. Não há banco para importar — pulando etapa de importação.")
         print()
-        print("Preencha DATASET_DB_DSN em src/core/config.py")
-        print("ou passe --dsn. Formato:")
-        print("  postgresql://usuario:senha@host:5432/banco")
+        print("Se quiser realmente importar para um banco, passe --dsn ou preencha DATASET_DB_DSN em src/core/config.py")
+        print("Formato:  ******host:5432/banco")
 
-        return 1
+        return 0
 
     print(f"Importando {caminho}...")
 
