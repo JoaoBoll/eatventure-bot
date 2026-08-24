@@ -48,6 +48,10 @@ class VisionWorker:
 
         self.categories = None
 
+        # Escala e offset do letterbox do ultimo frame. None
+        # ate' o primeiro set_frame.
+        self.latest_norm_transform = None
+
         self.frame_lock = threading.Lock()
         self.detection_lock = threading.Lock()
 
@@ -143,9 +147,35 @@ class VisionWorker:
 
                 self.latest_norm_frame = canvas
 
+                # =========================================
+                # A TRANSFORMACAO, GUARDADA
+                # =========================================
+                #
+                # Sem ela as deteccoes ficam presas no espaco
+                # normalizado, e o unico jeito de voltar para o
+                # frame real e' uma regra de tres por
+                # REFERENCE_* — que ignora tanto a escala que
+                # preserva aspecto quanto as barras do
+                # letterbox.
+                #
+                # Num device 1080x2400 isso passa: escala 1,
+                # offset 0. Em qualquer outro aspecto, o offset
+                # nao e' zero e o clique sai deslocado por
+                # dezenas ou centenas de pixels — sempre na
+                # mesma direcao, o que faz parecer erro de
+                # deteccao e nao de coordenada.
+                self.latest_norm_transform = (
+                    scale,
+                    x_offset,
+                    y_offset,
+                )
+
             except Exception:
                 # Em caso de erro, usa o frame original como normalizado
                 self.latest_norm_frame = frame
+
+                # Sem letterbox nao ha o que desfazer.
+                self.latest_norm_transform = None
 
             # Limpeza para o consumidor: quando lido, a thread do
             # worker limpa essas referências.
@@ -229,6 +259,68 @@ class VisionWorker:
         return self.duration.average()
 
     # =====================================================
+    # ESPACO DAS COORDENADAS
+    # =====================================================
+
+    @staticmethod
+    def _to_raw_space(detections, transform, raw_frame):
+        """
+        Deteccoes do espaco normalizado -> espaco do frame real.
+
+        Inverte exatamente o que set_frame fez: tira o offset
+        das barras do letterbox e desfaz a escala.
+
+        transform None (normalizacao falhou, o detector rodou
+        no frame cru) = nada a inverter.
+        """
+
+        if not detections or transform is None:
+            return detections
+
+        scale, x_offset, y_offset = transform
+
+        if not scale:
+            return detections
+
+        if raw_frame is not None:
+            altura, largura = raw_frame.shape[:2]
+        else:
+            altura = largura = None
+
+        convertidas = []
+
+        for deteccao in detections:
+
+            x = (deteccao["x"] - x_offset) / scale
+            y = (deteccao["y"] - y_offset) / scale
+
+            largura_caixa = deteccao["width"] / scale
+            altura_caixa = deteccao["height"] / scale
+
+            # Uma caixa que cai FORA do frame real veio das
+            # barras negras do letterbox. Nao existe objeto ali;
+            # tocar nesse ponto e' tocar em nada — ou, pior, no
+            # que estiver na borda.
+            if largura is not None:
+
+                if x + largura_caixa <= 0 or x >= largura:
+                    continue
+
+                if y + altura_caixa <= 0 or y >= altura:
+                    continue
+
+            convertida = dict(deteccao)
+
+            convertida["x"] = int(round(x))
+            convertida["y"] = int(round(y))
+            convertida["width"] = int(round(largura_caixa))
+            convertida["height"] = int(round(altura_caixa))
+
+            convertidas.append(convertida)
+
+        return convertidas
+
+    # =====================================================
     # WORKER
     # =====================================================
 
@@ -245,6 +337,11 @@ class VisionWorker:
 
                 raw_frame = getattr(self, "latest_raw_frame", None)
                 norm_frame = getattr(self, "latest_norm_frame", None)
+                transform = getattr(
+                    self,
+                    "latest_norm_transform",
+                    None,
+                )
                 frame_time = self.latest_frame_time
 
                 # Limpa para sinalizar que foi consumido
@@ -297,6 +394,32 @@ class VisionWorker:
                 continue
 
             self.last_duration = time.monotonic() - started
+
+            # =============================================
+            # DE VOLTA AO FRAME REAL
+            # =============================================
+            #
+            # A COMPARACAO e' relativa (tudo foi medido no
+            # espaco de referencia, e e' isso que faz um
+            # template valer em N telas). O CLIQUE nao pode
+            # ser: ele tem de cair exatamente onde o objeto
+            # esta no frame real.
+            #
+            # Aqui as duas coisas se encontram — e este e' o
+            # unico lugar onde a inversao pode acontecer, porque
+            # e' o unico que conhece a transformacao usada.
+            #
+            # Tambem conserta o dataset: a imagem gravada e' o
+            # raw_frame, e as caixas agora estao no espaco dela.
+            # Antes, em device fora da referencia, gravava
+            # imagem e rotulo em espacos diferentes.
+            if norm_frame is not None:
+
+                detections = self._to_raw_space(
+                    detections,
+                    transform,
+                    raw_frame,
+                )
 
             self.duration.add(self.last_duration)
 

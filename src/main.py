@@ -46,8 +46,6 @@ from core.config import (
     VISION_FILTER_BY_STATE,
     WINDOW_HEIGHT,
     WINDOW_WIDTH,
-    REFERENCE_WIDTH,
-    REFERENCE_HEIGHT,
 )
 from core.state_machine import StateMachine
 from vision.detector import Detector
@@ -242,13 +240,30 @@ def run_loop(
 
         last_version = version
 
-        # O detector recebe frames normalizados; informar o
-        # ActionManager na resolução de referência do projeto
-        # para que a conversão frame->device funcione.
-        actions.set_frame_size(REFERENCE_WIDTH, REFERENCE_HEIGHT)
+        # =================================================
+        # A RESOLUÇÃO REAL DO FRAME
+        # =================================================
+        #
+        # Antes aqui ia REFERENCE_WIDTH/HEIGHT, com a
+        # justificativa de que "o detector recebe frames
+        # normalizados". A premissa estava certa e a conclusão
+        # errada: o detector recebe normalizado, mas o
+        # VisionWorker agora devolve as detecções de volta no
+        # espaço do frame REAL — é lá que elas estão quando
+        # chegam aqui.
+        #
+        # Dizer "referência" para coordenada que está em
+        # "frame real" faz o ActionManager aplicar uma regra de
+        # três a mais. Num device 1080x2400 dava na mesma
+        # (escala 1); em qualquer outro, todo clique saía
+        # deslocado. Era esse o problema em dispositivos
+        # diferentes.
+        #
+        # Com a resolução real, a conversão frame->device é
+        # exata: o toque cai onde o objeto foi detectado.
+        altura_frame, largura_frame = frame.shape[:2]
 
-        # Se for necessário manter a folha do tamanho real para
-        # outros usos, a variável "frame" ainda está disponível.
+        actions.set_frame_size(largura_frame, altura_frame)
 
         # -------------------------------------------------
         # Envia frame para a IA

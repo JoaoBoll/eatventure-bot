@@ -110,6 +110,37 @@ matriz de confusão e as maiores confusões em pares. A média
 ignorada: `plane` tem 52 caixas contra 17.642 de `food`, e um
 modelo que ignora `plane` ainda acerta 99,9%.
 
+### Todas as flags do treino
+
+Uma linha, um exemplo, o que ela muda de verdade.
+
+| Flag | Exemplo | O que muda |
+|---|---|---|
+| `--kind` | `--kind category` | `category` (padrão): recorte de caixa → categoria, e a ação sai da tabela de prioridade. `--kind action`: tela inteira → ação, existe só para comparar. **O bot só usa `category`.** |
+| `--split` | `--split session` | Define o **grupo** do split. `phash` (padrão): quadros iguais não cruzam treino/teste. `session`: a partida inteira vai para um lado — mede generalizar para outra partida. A queda entre os dois é o quanto o modelo decorou o restaurante. |
+| `--train-ratio` | `--train-ratio 0.7` | Fração de **grupos** (não de amostras) para treino. Abaixe se o teste sair vazio com `--split session`. A contagem final de amostras não bate exato com a fração, e isso é esperado. |
+| `--outcome` | `--outcome changed negative` | Só amostras com esses resultados: `changed`, `unchanged`, `unknown`, `negative`. `changed negative` deixa de fora as ações do professor que **não funcionaram** — o modelo não herda os erros dele. |
+| `--negatives` | `--negatives 4` | Recortes de fundo sorteados por frame, rotulados `background`. Sem eles todo pedaço de cenário viraria detecção. `--negatives 0` desliga. |
+| `--trees` | `--trees 60` | Árvores da floresta (padrão 200). Menos = treino rápido para ensaio; mais = ganho pequeno e custo linear. |
+| `--jobs` | `--jobs 4` | Núcleos. Padrão `-1` (todos). Baixe se a máquina ficar inutilizável durante o treino. |
+| `--limit` | `--limit 2000` | Usa só as N primeiras amostras. É para testar o encanamento, **não** para medir: com poucas amostras as classes raras (`plane`, `fly`) desaparecem do treino. |
+| `--seed` | `--seed 7` | Semente do split e da floresta. Trocar dá outra divisão — útil para ver se um resultado bom foi sorte. |
+| `--dataset-root` | `--dataset-root dataset2` | Outra pasta de dataset. |
+| `--model-out` | `--model-out IA/teste.joblib` | Grava em outro lugar, sem sobrescrever o modelo bom. Use sempre que estiver experimentando. |
+
+Exemplos combinando:
+
+```bash
+# ensaio: rápido, descartável, sem tocar no modelo bom
+python IA/train_ai.py --limit 2000 --trees 60 --model-out IA/ensaio.joblib
+
+# o treino "de verdade", medido do jeito mais honesto
+python IA/train_ai.py --split session --outcome changed negative
+
+# o mesmo split com outra semente: o resultado se mantém?
+python IA/train_ai.py --split session --seed 7
+```
+
 Ele **não instala dependência sozinho** — se faltar algo, ele
 diz o comando. Instalar pacote como efeito colateral de treinar
 muda o ambiente de quem só queria treinar.
@@ -150,6 +181,44 @@ Confira antes com:
 ```bash
 python IA/bot_ai.py --source proposer --debug-proposals
 ```
+
+### Todas as flags do bot
+
+| Flag | Exemplo | O que muda |
+|---|---|---|
+| `--auto` | `--auto` | **A única que toca no jogo.** Sem ela, `execute` e `swipe` são substituídos na origem e nada é enviado ao device. |
+| `--model` | `--model IA/ensaio.joblib` | Qual modelo carregar. O load confere o número de features e se as classes são categorias — um modelo de ação é barrado aqui. |
+| `--source` | `--source proposer` | De onde vêm as caixas. `templates` (padrão): o detector atual diz onde olhar. `proposer`: cor e contorno, **experimental**. |
+| `--min-confidence` | `--min-confidence 0.80` | Piso global de confiança (padrão 0.60). `fly`, `renovate` e `plane` têm piso próprio mais baixo e **ignoram** o valor global quando ele é maior — perder um `fly` custa um ciclo de reforma inteiro. |
+| `--compare` | `--compare` | Compara a categoria do modelo com a do template matching, caixa a caixa, e imprime a concordância. Só faz sentido com `--source templates`. |
+| `--demo` | `--demo` | Roda sobre imagens do dataset e mede o acerto contra os rótulos. **Sem device.** É a forma barata de saber se o modelo presta. |
+| `--demo-limit` | `--demo-limit 30` | Quantas amostras no modo demo (padrão 50). |
+| `--debug-proposals` | `--debug-proposals` | Desenha em cinza também as caixas candidatas **descartadas**. É o que mostra se o proposer está propondo lixo. |
+| `--device` | `--device emulator-5554` | Serial do device. Sem isto, pergunta. |
+| `--headless` | `--headless` | Sem janela. Para medir sem o custo do `imshow`. |
+| `--dataset-root` | `--dataset-root dataset2` | Pasta do dataset, no modo demo. |
+
+Exemplos combinando:
+
+```bash
+# medir um modelo recém-treinado, sem device nenhum
+python IA/bot_ai.py --model IA/ensaio.joblib --demo --demo-limit 30
+
+# ver o proposer trabalhando, com as caixas descartadas
+python IA/bot_ai.py --source proposer --debug-proposals
+
+# agir, mas exigente
+python IA/bot_ai.py --auto --min-confidence 0.80
+```
+
+### O overlay durante a execução
+
+| Campo | O que dizer quando parece travado |
+|---|---|
+| `lag` | Idade real do frame que gerou as detecções, em ms. Acima de 2000 a StateMachine **para de clicar** de propósito (`MAX_DETECTION_AGE`) — detector lento demais. |
+| `no est` | Tempo no estado atual. Subindo sem parar = estado sem saída. Em `RENOVATE`, quase sempre é o modelo não conhecer `fly`/`renovate`. |
+| `cand` / `det` | Candidatos propostos e detecções aceitas. `cand` alto com `det` zero = tudo caiu no `--min-confidence`. |
+| `auto` | `nao` = nada é enviado ao device. |
 
 ---
 
