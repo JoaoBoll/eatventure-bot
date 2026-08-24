@@ -41,7 +41,10 @@ import shutil
 import sys
 import time
 
-from core.config import BATTERY_POLL_INTERVAL
+from core.config import (
+    BATTERY_POLL_INTERVAL,
+    DETECTOR_DEBUG_MISSES,
+)
 from core.metrics import formata_duracao
 
 
@@ -80,7 +83,12 @@ def formata_bateria(leitura):
 # Quantas linhas o bloco ocupa. Fixo de propósito: a reescrita
 # precisa saber quantas linhas subir, e descobrir isso contando
 # o que foi impresso é como o desenho sai torto.
-LINHAS = 6
+#
+# A linha de quase-acerto é a única opcional, e a decisão é
+# tomada UMA vez, na construção do painel — não a cada
+# redesenho. Uma linha que entra e sai deslocaria o bloco e o
+# `\033[nA` passaria a subir a conta errada.
+LINHAS_BASE = 5
 
 
 class StatusPanel:
@@ -91,9 +99,29 @@ class StatusPanel:
     se já é hora de redesenhar.
     """
 
-    def __init__(self, device, interval=0.5, stream=None):
+    def __init__(
+        self,
+        device,
+        interval=0.5,
+        stream=None,
+        misses_line=None,
+    ):
 
         self.device = device or "?"
+
+        # A linha "Sem deteccao" só faz sentido com
+        # DETECTOR_DEBUG_MISSES ligado: sem ele o detector nem
+        # calcula o melhor match, e a linha ficaria eternamente
+        # em "—" ocupando espaço.
+        self.misses_line = (
+            DETECTOR_DEBUG_MISSES
+            if misses_line is None
+            else misses_line
+        )
+
+        self.linhas = LINHAS_BASE + (
+            1 if self.misses_line else 0
+        )
 
         # Redesenhar a 30 fps não deixa ninguém mais informado e
         # gasta syscall de escrita. Meio segundo é rápido o
@@ -226,19 +254,24 @@ class StatusPanel:
         # QUASE-ACERTO
         # -------------------------------------------------
         #
-        # A linha existe sempre, mesmo vazia: o painel tem
-        # altura fixa, e uma linha que aparece e desaparece
-        # deslocaria o bloco inteiro a cada redesenho.
-        linhas.append(
-            f"Sem deteccao: {misses}"
-            if misses
-            else "Sem deteccao: —"
-        )
+        # Só existe com o debug ligado. Ligada, aparece sempre —
+        # mesmo sem nada a relatar — porque o bloco tem altura
+        # fixa e uma linha intermitente estragaria a reescrita.
+        if self.misses_line:
+
+            linhas.append(
+                f"Sem deteccao: {misses}"
+                if misses
+                else "Sem deteccao: —"
+            )
 
         # Trava o tamanho: se um dia alguém acrescentar uma
-        # linha sem mexer em LINHAS, o painel comeria a linha
-        # de cima em vez de falhar visivelmente.
-        assert len(linhas) == LINHAS, (len(linhas), LINHAS)
+        # linha sem mexer na conta, o painel comeria a linha de
+        # cima em vez de falhar visivelmente.
+        assert len(linhas) == self.linhas, (
+            len(linhas),
+            self.linhas,
+        )
 
         largura = self._largura()
 
@@ -289,7 +322,7 @@ class StatusPanel:
         if self.desenhado:
 
             # Sobe ao topo do bloco anterior.
-            saida.append(f"\033[{LINHAS}A")
+            saida.append(f"\033[{self.linhas}A")
 
         for linha in linhas:
 

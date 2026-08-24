@@ -58,6 +58,8 @@ from core.config import (
     COLOR_THRESHOLD,
     DETECTOR_DEBUG_INTERVAL,
     DETECTOR_DEBUG_MISSES,
+    DETECTOR_SCALE_COARSE_MARGIN,
+    DETECTOR_SCALES,
     MAX_DETECTION_AGE,
     RESAMPLED_THRESHOLD_SLACK,
     MAX_MATCHES_PER_TEMPLATE,
@@ -327,6 +329,85 @@ class Detector:
             "width": width,
             "height": height,
         }
+
+    # --------------------------------------------------
+    # Variantes por escala
+    # --------------------------------------------------
+
+    def _variant(self, template, scale):
+        """
+        O template redimensionado, com gray, cor e máscara
+        coerentes entre si.
+
+        Cacheado no próprio template: são poucas escalas e
+        redimensionar 184 templates por quadro seria mais caro
+        que a busca.
+
+        Devolve None quando a escala deixaria o template menor
+        que 4 px — abaixo disso não há forma a comparar.
+        """
+
+        if scale == 1.0:
+            return template
+
+        cache = template.setdefault("_variants", {})
+
+        if scale in cache:
+            return cache[scale]
+
+        largura = int(round(template["width"] * scale))
+        altura = int(round(template["height"] * scale))
+
+        if largura < 4 or altura < 4:
+
+            cache[scale] = None
+
+            return None
+
+        tamanho = (largura, altura)
+
+        # INTER_AREA para reduzir, INTER_CUBIC para ampliar: o
+        # AREA ampliando devolve bloco, e bloco não casa com o
+        # frame, que foi ampliado de outro jeito.
+        interpolacao = (
+            cv2.INTER_AREA if scale < 1.0 else cv2.INTER_CUBIC
+        )
+
+        variante = {
+            "category": template["category"],
+            "name": template["name"],
+
+            "image": cv2.resize(
+                template["image"],
+                tamanho,
+                interpolation=interpolacao,
+            ),
+
+            "gray": cv2.resize(
+                template["gray"],
+                tamanho,
+                interpolation=interpolacao,
+            ),
+
+            "mask": (
+                None
+                if template["mask"] is None
+                else cv2.resize(
+                    template["mask"],
+                    tamanho,
+                    interpolation=cv2.INTER_NEAREST,
+                )
+            ),
+
+            "width": largura,
+            "height": altura,
+
+            "scale": scale,
+        }
+
+        cache[scale] = variante
+
+        return variante
 
     # --------------------------------------------------
     # Similaridade de cor
@@ -609,18 +690,23 @@ class Detector:
                 roi,
             )
 
-            for x, y, confidence in candidates:
+            for x, y, confidence, variant in candidates:
 
                 # =========================================
                 # FILTRO DE COR
                 # =========================================
+                #
+                # Na variante, não no template original: o
+                # recorte do frame tem o tamanho da variante, e
+                # comparar com outra dimensão devolve 0.0 e
+                # descarta um acerto bom.
 
                 color_similarity = self._color_similarity(
                     frame_color,
-                    template["image"],
+                    variant["image"],
                     x,
                     y,
-                    template["mask"],
+                    variant["mask"],
                 )
 
                 if DETECTOR_DEBUG_MISSES:
@@ -649,8 +735,13 @@ class Detector:
                         "x": int(x),
                         "y": int(y),
 
-                        "width": template["width"],
-                        "height": template["height"],
+                        # Da variante: é o tamanho REAL da caixa
+                        # casada, e é dele que sai o centro onde
+                        # o toque cai.
+                        "width": variant["width"],
+                        "height": variant["height"],
+
+                        "scale": variant.get("scale", 1.0),
                     }
                 )
 
@@ -691,10 +782,21 @@ class Detector:
         roi,
     ):
         """
-        Devolve [(x, y, confiança)] em resolução cheia.
+        Devolve [(x, y, confiança, variante)] em resolução
+        cheia.
+
+        A variante diz em QUE escala o match saiu — é dela que
+        vêm a largura e a altura da caixa, e portanto o ponto do
+        clique.
         """
 
         coarse_template = template["coarse_gray"]
+
+        escalas = [
+            escala
+            for escala in DETECTOR_SCALES
+            if self._variant(template, escala) is not None
+        ] or [1.0]
 
         # -------------------------------------------------
         # Sem estágio grosso: busca direta
@@ -702,14 +804,25 @@ class Detector:
 
         if coarse_frame is None or coarse_template is None:
 
-            return self._match(
-                frame_gray,
-                template["gray"],
-                template["mask"],
-                min_threshold,
-                roi,
-                MAX_MATCHES_PER_TEMPLATE,
-            )
+            resultados = []
+
+            for escala in escalas:
+
+                variante = self._variant(template, escala)
+
+                resultados.extend(
+                    (x, y, confianca, variante)
+                    for x, y, confianca in self._match(
+                        frame_gray,
+                        variante["gray"],
+                        variante["mask"],
+                        min_threshold,
+                        roi,
+                        MAX_MATCHES_PER_TEMPLATE,
+                    )
+                )
+
+            return resultados
 
         # -------------------------------------------------
         # ESTÁGIO 1 — grosso
@@ -734,11 +847,20 @@ class Detector:
             ),
         )
 
+        # Com multi-escala, o estágio grosso precisa de folga
+        # EXTRA: ele usa o template em escala 1, e o que ele
+        # descartar o estágio fino nunca vê. Sem isto as
+        # escalas extras não serviriam para nada.
+        margem = self.coarse_margin
+
+        if len(escalas) > 1:
+            margem += DETECTOR_SCALE_COARSE_MARGIN
+
         coarse_hits = self._match(
             coarse_frame,
             coarse_template,
             template["coarse_mask"],
-            max(0.0, min_threshold - self.coarse_margin),
+            max(0.0, min_threshold - margem),
             coarse_roi,
             MAX_MATCHES_PER_TEMPLATE,
         )
@@ -762,6 +884,11 @@ class Detector:
 
         frame_height, frame_width = frame_gray.shape[:2]
 
+        # A maior escala manda no tamanho da janela: uma janela
+        # do tamanho da escala 1 não cabe o template a 1.06, e
+        # o _match devolveria vazio para as escalas grandes.
+        maior = max(escalas)
+
         for coarse_x, coarse_y, _ in coarse_hits:
 
             estimated_x = int(coarse_x / scale)
@@ -772,28 +899,55 @@ class Detector:
                 max(0, estimated_y - REFINE_SLACK),
                 min(
                     frame_width,
-                    estimated_x + template_width
+                    estimated_x
+                    + int(round(template_width * maior))
                     + REFINE_SLACK,
                 ),
                 min(
                     frame_height,
-                    estimated_y + template_height
+                    estimated_y
+                    + int(round(template_height * maior))
                     + REFINE_SLACK,
                 ),
             )
 
-            refined = self._match(
-                frame_gray,
-                template["gray"],
-                template["mask"],
-                min_threshold,
-                window,
+            # -----------------------------------------
+            # A MELHOR ESCALA, não a primeira
+            # -----------------------------------------
+            #
+            # Escalas vizinhas casam no mesmo objeto com
+            # confianças parecidas. Aceitar a primeira acima do
+            # corte devolveria uma caixa de tamanho arbitrário
+            # entre as candidatas — e a caixa define o centro,
+            # ou seja, onde o dedo cai. Fica a de maior
+            # confiança.
+            melhor = None
 
-                # Na janela fina só interessa o melhor ponto.
-                1,
-            )
+            for escala in escalas:
 
-            results.extend(refined)
+                variante = self._variant(template, escala)
+
+                refined = self._match(
+                    frame_gray,
+                    variante["gray"],
+                    variante["mask"],
+                    min_threshold,
+                    window,
+
+                    # Na janela fina só interessa o melhor ponto.
+                    1,
+                )
+
+                if not refined:
+                    continue
+
+                x, y, confianca = refined[0]
+
+                if melhor is None or confianca > melhor[2]:
+                    melhor = (x, y, confianca, variante)
+
+            if melhor is not None:
+                results.append(melhor)
 
         return results
 

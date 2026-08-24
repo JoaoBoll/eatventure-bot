@@ -619,6 +619,38 @@ CATEGORY_THRESHOLDS = {
 # barreira contra falso positivo.
 RESAMPLED_THRESHOLD_SLACK = 0.05
 
+# ESCALAS TESTADAS NO ESTÁGIO FINO
+#
+# O `matchTemplate` é RÍGIDO em escala: ele não tem tolerância
+# nenhuma. Um botão 3% maior que o template já desalinha as
+# bordas e derruba o TM_CCOEFF_NORMED vários pontos — e não é
+# ruído que a folga de reamostragem cobre, é o objeto com outro
+# tamanho.
+#
+# Por que isso acontece em outra tela: o letterbox iguala o
+# QUADRO a 1080x2400, não o tamanho dos elementos. O jogo
+# dimensiona a UI conforme a tela dele, então um botão que tinha
+# 200 px no device de referência pode ter 194 ou 212 no outro. O
+# objeto está lá, visível, e o template passa raspando.
+#
+# `build` (0.95) e `upgrade` (0.98) são os primeiros a sumir,
+# porque são os cortes mais altos.
+#
+# Custa pouco porque o estágio fino roda numa janela pequena, já
+# recortada pelo estágio grosso: 5 escalas ali não são 5x o
+# custo da passada, são 5x o custo da confirmação.
+#
+# (1.0,) desliga e volta ao comportamento anterior.
+DETECTOR_SCALES = (0.94, 0.97, 1.0, 1.03, 1.06)
+
+# Folga EXTRA no estágio grosso quando há multi-escala.
+#
+# O estágio grosso continua usando o template em escala 1. Se o
+# objeto está 6% fora, ele quase não passa lá — e o que o
+# estágio grosso descarta, o fino nunca vê. Sem esta folga, as
+# escalas extras não serviriam para nada.
+DETECTOR_SCALE_COARSE_MARGIN = 0.08
+
 # Diz no log, por categoria, qual foi o MELHOR match quando
 # nenhum passou.
 #
