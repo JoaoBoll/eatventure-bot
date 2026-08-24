@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
+import tempfile
 from collections import Counter
 from pathlib import Path
 
@@ -282,59 +284,71 @@ def train_model(
     import numpy as np
     from sklearn.model_selection import train_test_split
 
-    X = []
-    y = []
     total_samples = len(samples)
-    for index, sample in enumerate(samples, start=1):
-        X.append(load_image_features(sample["image"]))
-        y.append(sample["label"])
-        emit_training_progress(index, total_samples, "carregando imagens", file_name=sample["image"].name, inline=True)
+    feature_width = 32 * 32 * 3
+    memmap_file = tempfile.NamedTemporaryFile(prefix="train_ai_", suffix=".dat", delete=False)
+    memmap_path = memmap_file.name
+    memmap_file.close()
 
-    print(flush=True)
-    X_array = np.asarray(X, dtype=np.float32)
-    y_array = np.asarray(y)
+    try:
+        # As features ficam em disco; somente a imagem atual fica carregada durante esta etapa.
+        X_array = np.memmap(memmap_path, dtype=np.float32, mode="w+", shape=(total_samples, feature_width))
+        y_array = np.empty(total_samples, dtype="U128")
+        for index, sample in enumerate(samples):
+            X_array[index] = load_image_features(sample["image"])
+            y_array[index] = sample["label"]
+            emit_training_progress(index + 1, total_samples, "carregando imagens", file_name=sample["image"].name, inline=True)
 
-    emit_training_progress(70, 100, "dividindo treino/teste")
-    test_size = 1.0 - train_ratio
-    X_train, X_test, y_train, y_test = train_test_split(
-        X_array,
-        y_array,
-        train_size=train_ratio,
-        test_size=test_size,
-        random_state=42,
-        stratify=y_array,
-    )
+        print(flush=True)
+        emit_training_progress(70, 100, "dividindo treino/teste")
+        sample_indices = np.arange(total_samples)
+        train_indices, test_indices = train_test_split(
+            sample_indices,
+            train_size=train_ratio,
+            test_size=1.0 - train_ratio,
+            random_state=42,
+            stratify=y_array,
+        )
 
-    classifier_cls, backend = choose_classifier_backend(device)
-    emit_training_progress(75, 100, "treinando classificador")
-    clf = classifier_cls(
-        n_estimators=300,
-        random_state=42,
-        class_weight="balanced",
-        n_jobs=-1,
-    )
-    clf.fit(X_train, y_train)
-    emit_training_progress(95, 100, "avaliando modelo")
-    accuracy = clf.score(X_test, y_test)
+        classifier_cls, backend = choose_classifier_backend(device)
+        emit_training_progress(75, 100, "treinando classificador")
+        clf = classifier_cls(
+            n_estimators=300,
+            random_state=42,
+            class_weight="balanced",
+            n_jobs=-1,
+        )
+        clf.fit(X_array[train_indices], y_array[train_indices])
+        emit_training_progress(95, 100, "avaliando modelo")
+        accuracy = clf.score(X_array[test_indices], y_array[test_indices])
 
-    model_path.parent.mkdir(parents=True, exist_ok=True)
-    import joblib
+        model_path.parent.mkdir(parents=True, exist_ok=True)
+        import joblib
 
-    emit_training_progress(98, 100, "salvando modelo")
-    joblib.dump(clf, model_path)
-    metadata_path = model_path.with_suffix(".meta.json")
-    metadata_path.write_text(
-        json.dumps({
-            "label_mode": label_mode,
-            "labels": labels,
-            "counts": dict(sorted(counts.items())),
-            "train_ratio": train_ratio,
-            "backend": backend,
-        }, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    emit_training_progress(100, 100, "concluído")
-    return f"{accuracy:.2%}", accuracy, labels, dict(sorted(counts.items()))
+        emit_training_progress(98, 100, "salvando modelo")
+        joblib.dump(clf, model_path)
+        metadata_path = model_path.with_suffix(".meta.json")
+        metadata_path.write_text(
+            json.dumps({
+                "label_mode": label_mode,
+                "labels": labels,
+                "counts": dict(sorted(counts.items())),
+                "train_ratio": train_ratio,
+                "backend": backend,
+            }, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        emit_training_progress(100, 100, "concluído")
+        return f"{accuracy:.2%}", accuracy, labels, dict(sorted(counts.items()))
+    finally:
+        try:
+            del X_array
+        except UnboundLocalError:
+            pass
+        try:
+            os.unlink(memmap_path)
+        except FileNotFoundError:
+            pass
 
 
 def parse_args() -> argparse.Namespace:

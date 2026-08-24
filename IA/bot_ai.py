@@ -26,8 +26,8 @@ DATASET_ROOT = ROOT / "dataset"
 
 # Tamanho da janela de visão da IA. Ajuste aqui para deixar a tela mais
 # estreita/larga conforme sua resolução e preferência visual.
-AI_WINDOW_WIDTH = 608
-AI_WINDOW_HEIGHT = 1080
+AI_WINDOW_WIDTH = 405
+AI_WINDOW_HEIGHT = 720
 
 for candidate in (str(ROOT), str(SRC_ROOT)):
     if candidate not in sys.path:
