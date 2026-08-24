@@ -33,6 +33,7 @@ Mudanças em relação à versão anterior:
 
 import logging
 import time
+from collections import Counter
 
 from core import log
 from core.metrics import formata_duracao
@@ -197,6 +198,25 @@ class StateMachine:
         self.cycle_at = time.monotonic()
         self.cycle_last = None
         self.cycle_count = 0
+
+        # =================================================
+        # O QUE O BOT FEZ, EM NÚMERO
+        # =================================================
+        #
+        # Contado em _act, o único ponto do projeto por onde
+        # ação sai. Contar em _apply_rules incluiria tentativa
+        # barrada por cooldown ou worker ocupado — e aí o número
+        # diria quantas vezes o bot QUIS agir, não quantas agiu.
+        #
+        # Por categoria da detecção e por nome da ação, porque
+        # as duas perguntas são diferentes: `fly` é categoria
+        # (quantas vezes voou), `upgrade_item` é ação (quantos
+        # cliques de upgrade).
+        self.category_counts = Counter()
+        self.action_counts = Counter()
+
+        self.last_action = None
+        self.last_action_at = None
 
         # =================================================
         # EXPLORAÇÃO DA TELA
@@ -443,6 +463,16 @@ class StateMachine:
 
         self.last_action_time = time.monotonic()
 
+        # Mesmo raciocínio do ciclo, abaixo: só conta o que
+        # realmente saiu.
+        self.action_counts[action] += 1
+
+        if detection:
+            self.category_counts[detection["category"]] += 1
+
+        self.last_action = action
+        self.last_action_at = self.last_action_time
+
         # Aqui, e não em _apply_rules: este é o ponto em que a
         # ação SAIU de verdade. Marcar antes contaria ciclo em
         # tentativa barrada por cooldown ou worker ocupado.
@@ -553,6 +583,40 @@ class StateMachine:
             self.cycle_last,
             self.cycle_count,
         )
+
+    def summary(self):
+        """
+        O que interessa a quem está olhando a tela, num dict.
+
+        Nomes de negócio, não de código: quem acompanha o bot
+        quer saber quantas vezes ele voou e reformou, não quantas
+        vezes a categoria `fly` passou pelo `_act`.
+        """
+
+        return {
+            "estado": self.state,
+            "acao": self.last_action,
+            "acao_ha": (
+                None
+                if self.last_action_at is None
+                else time.monotonic() - self.last_action_at
+            ),
+
+            # `fly` é o botão do avião na tela de reforma; é ele
+            # que efetivamente muda de restaurante.
+            "voos": self.category_counts.get("fly", 0),
+
+            # `build` e `plane` são as duas portas para RENOVATE
+            # (CYCLE_CATEGORIES). Somadas, é quantas vezes o bot
+            # entrou numa reforma; `cycle_count` conta o mesmo
+            # evento, e serve de conferência.
+            "reformas": sum(
+                self.category_counts.get(categoria, 0)
+                for categoria in CYCLE_CATEGORIES
+            ),
+
+            "acoes": sum(self.action_counts.values()),
+        }
 
     def _escalate(self, action):
         """

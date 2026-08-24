@@ -190,6 +190,31 @@ SHOW_DETECTION_LAG = True
 # clicando em nada há vinte minutos.
 SHOW_CYCLE_TIME = True
 
+# ---------------------------------------------------------
+# PAINEL DE STATUS
+# ---------------------------------------------------------
+#
+# Um bloco fixo, reescrito no mesmo lugar: device, quantas vezes
+# voou, quantas reformou, o que está fazendo agora.
+#
+# É a resposta para "o que está acontecendo AGORA", que o log
+# não dá bem: com o bot agindo ~1x/s, a linha que interessa já
+# subiu na tela.
+#
+# LIGADO, o log do console cai para WARNING — senão as duas
+# coisas disputam o terminal e o painel se redesenha sobre a
+# linha errada. Aviso e erro continuam aparecendo; o INFO de
+# cada ação sai, porque é exatamente o que o painel substitui.
+#
+# DESLIGADO, tudo volta ao log linha-por-linha de antes. Use
+# assim quando estiver investigando algo.
+STATUS_PANEL = True
+
+# Segundos entre redesenhos. Meio segundo já parece vivo;
+# redesenhar a cada quadro só gasta escrita no terminal.
+STATUS_PANEL_INTERVAL = 0.5
+
+
 # Categorias que marcam o fim de um ciclo.
 #
 # `build` e `plane` são as duas portas para RENOVATE, ou seja,
@@ -312,8 +337,22 @@ SELECTOR_FALLBACK_HEIGHT = 1000
 #
 # Detalhes e o DDL do banco: docs/dataset.md
 
-# Liga a gravação.
-RECORD_DATASET = True
+# Liga a gravação do dataset — TUDO ou nada.
+#
+# True:  grava a imagem, a linha no samples.jsonl e o índice no
+#        banco (se DATASET_DB_ENABLED).
+# False: não grava nada. O DatasetRecorder nem é construído,
+#        então não há thread, não há fila e não há custo — o bot
+#        só joga.
+#
+# É um parâmetro só de propósito. Existiu por um tempo um
+# DATASET_SAVE_IMAGES separado, para gravar índice sem imagem;
+# saiu porque duas chaves para a mesma decisão é o tipo de coisa
+# que fica dessincronizada e ninguém percebe. E sem imagem o
+# treino de visão não roda de jeito nenhum (`features.py`
+# recorta pixel), então "só o índice" não era um modo útil o
+# bastante para justificar a segunda chave.
+DATASET_SAVE = True
 
 # Pasta de destino. É também a pasta que o treino LÊ.
 #

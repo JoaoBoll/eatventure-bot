@@ -553,7 +553,7 @@ def train(args):
 
         raise SystemExit(
             f"Amostras insuficientes ({len(registros)}). "
-            "Rode o bot mais tempo com RECORD_DATASET ligado."
+            "Rode o bot mais tempo com DATASET_SAVE ligado."
         )
 
     # -----------------------------------------------------

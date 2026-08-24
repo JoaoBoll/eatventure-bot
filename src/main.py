@@ -38,16 +38,19 @@ from core.config import (
     DATASET_DB_SCHEMA,
     DEVICE_SERIAL,
     LOG_LEVEL,
-    RECORD_DATASET,
+    DATASET_SAVE,
     SCRCPY_EXTRA_ARGS,
     SCRCPY_PATH,
     SHOW_AI_VISION,
     SHOW_SCRCPY,
+    STATUS_PANEL,
+    STATUS_PANEL_INTERVAL,
     VISION_FILTER_BY_STATE,
     WINDOW_HEIGHT,
     WINDOW_WIDTH,
 )
 from core.state_machine import StateMachine
+from core.status import StatusPanel
 from vision.detector import Detector
 from vision.worker import VisionWorker
 
@@ -131,7 +134,7 @@ def build_recorder():
     de verdade do treino.
     """
 
-    if not RECORD_DATASET:
+    if not DATASET_SAVE:
         return None
 
     store = None
@@ -209,6 +212,7 @@ def run_loop(
     state_machine,
     actions,
     battery,
+    panel=None,
 ):
 
     # Começa igual à versão inicial do ScreenCapture, então
@@ -299,6 +303,23 @@ def run_loop(
             detect_frame,
             detect_time,
         )
+
+        # -------------------------------------------------
+        # PAINEL
+        # -------------------------------------------------
+        #
+        # Depois do update: mostra o estado JÁ com o efeito
+        # desta volta. Antes, mostraria sempre um frame
+        # atrasado.
+        #
+        # Ele decide sozinho se é hora de redesenhar, então
+        # chamar a cada volta não custa.
+        if panel is not None:
+
+            panel.update(
+                state_machine.summary(),
+                extra=f"{vision.get_fps():.1f} fps",
+            )
 
         # -------------------------------------------------
         # AI VISION
@@ -395,6 +416,29 @@ def main(argv=None):
 
     battery = BatteryMonitor(actions.android)
 
+    # -----------------------------------------------------
+    # PAINEL
+    # -----------------------------------------------------
+    #
+    # O nome do device vem resolvido do adb, então é o serial
+    # real que está sendo usado — inclusive quando veio da
+    # pergunta interativa e não do config.
+    panel = (
+        StatusPanel(
+            device_id,
+            interval=STATUS_PANEL_INTERVAL,
+        )
+        if STATUS_PANEL
+        else None
+    )
+
+    if panel is not None:
+
+        # Sem isto, cada ação imprime uma linha de INFO e
+        # empurra o painel para cima — as duas coisas
+        # brigando pelo mesmo terminal.
+        log.set_console_level("WARNING")
+
     try:
 
         capture.start()
@@ -420,6 +464,7 @@ def main(argv=None):
             state_machine,
             actions,
             battery,
+            panel,
         )
 
     except KeyboardInterrupt:
@@ -427,6 +472,15 @@ def main(argv=None):
         logger.info("Interrompido pelo usuário.")
 
     finally:
+
+        # Antes de qualquer log: devolve o cursor para baixo do
+        # bloco, senão as linhas de encerramento escrevem em
+        # cima do painel.
+        if panel is not None:
+
+            panel.close()
+
+            log.set_console_level(LOG_LEVEL)
 
         logger.info("Encerrando EatVenture AI...")
 

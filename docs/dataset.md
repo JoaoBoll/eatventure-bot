@@ -38,7 +38,7 @@ em `changed`, os erros do professor ficam de fora.
 Em [src/core/config.py](../src/core/config.py):
 
 ```python
-RECORD_DATASET = True                      # já ligado
+DATASET_SAVE = True                      # já ligado
 DATASET_DIR = PROJECT_ROOT / "dataset"     # destino, e origem do treino
 DATASET_IMAGE_FORMAT = "jpg"               # já em jpg
 ```

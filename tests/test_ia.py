@@ -583,7 +583,7 @@ def test_indice_ausente_da_erro_com_instrucao():
 
     except FileNotFoundError as erro:
 
-        assert "RECORD_DATASET" in str(erro), str(erro)
+        assert "DATASET_SAVE" in str(erro), str(erro)
 
         return
 

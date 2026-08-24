@@ -51,7 +51,7 @@ def read_index(dataset_root):
 
         raise FileNotFoundError(
             f"Índice não encontrado: {caminho}\n"
-            "Ligue RECORD_DATASET em src/core/config.py e rode "
+            "Ligue DATASET_SAVE em src/core/config.py e rode "
             "o bot para gerar amostras."
         )
 

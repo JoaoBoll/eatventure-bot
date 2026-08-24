@@ -82,7 +82,7 @@ def main(argv=None):
 
         print(f"Índice não encontrado: {caminho}")
         print()
-        print("Ligue RECORD_DATASET no config e rode o bot,")
+        print("Ligue DATASET_SAVE no config e rode o bot,")
         print("ou aponte --jsonl para o arquivo certo.")
 
         return 1

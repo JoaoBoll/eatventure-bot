@@ -611,7 +611,7 @@ usado pelo bot.
 **Ligado.** Em [config.py](src/core/config.py):
 
 ```python
-RECORD_DATASET = True
+DATASET_SAVE = True
 DATASET_DIR = PROJECT_ROOT / "dataset"
 DATASET_IMAGE_FORMAT = "jpg"    # 4.3x menor que png
 ```
