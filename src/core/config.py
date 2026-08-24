@@ -595,6 +595,42 @@ CATEGORY_THRESHOLDS = {
 }
 
 
+# FOLGA PARA FRAME REAMOSTRADO
+#
+# Os thresholds acima foram calibrados em frame NATIVO
+# 1080x2400: o template foi recortado dessa tela, então o match
+# é quase pixel a pixel e chega a ~0.99.
+#
+# Em qualquer outra resolução o frame passa pelo letterbox e é
+# reamostrado. Isso não muda o objeto, mas suaviza borda e mexe
+# em subpixel — e o TM_CCOEFF_NORMED cai alguns pontos. Com
+# `upgrade` em 0.98, uma queda de 0.04 significa NENHUMA
+# detecção: o bot não age, e nada no log diz por quê.
+#
+# Era esse o sintoma de "em outra tela não detecta o upgrade".
+#
+# A folga é aplicada SÓ quando o frame foi reamostrado (escala
+# diferente de 1). No device de referência nada muda, então o
+# ajuste fino já feito continua valendo exatamente como está.
+#
+# 0 desliga. Suba se ainda faltar detecção em tela diferente;
+# baixe se aparecer falso positivo. O filtro de cor
+# (COLOR_THRESHOLD) continua valendo inteiro e é a segunda
+# barreira contra falso positivo.
+RESAMPLED_THRESHOLD_SLACK = 0.05
+
+# Diz no log, por categoria, qual foi o MELHOR match quando
+# nenhum passou.
+#
+# Sem isto, "não detectou" é indistinguível de "detectou e o
+# threshold cortou" — e são problemas opostos: um pede template
+# novo, o outro pede baixar o número. Ligue quando levar o bot
+# para uma tela nova, e desligue depois: é uma linha a cada
+# DETECTOR_DEBUG_INTERVAL segundos.
+DETECTOR_DEBUG_MISSES = False
+DETECTOR_DEBUG_INTERVAL = 3.0
+
+
 # ---------------------------------------------------------
 # BUSCA EM DOIS ESTÁGIOS
 # ---------------------------------------------------------

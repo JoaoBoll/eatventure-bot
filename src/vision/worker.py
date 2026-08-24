@@ -379,9 +379,22 @@ class VisionWorker:
 
             try:
 
+                # O detector não tem como saber que o frame
+                # passou por resize — quem redimensionou foi
+                # este worker. Sem contar, os thresholds
+                # calibrados em frame nativo cortam tudo numa
+                # tela de outra resolução.
+                escala = (
+                    transform[0] if transform else 1.0
+                )
+
                 detections = self.detector.detect(
                     frame_for_detection,
                     categories,
+                    resampled=(
+                        norm_frame is not None
+                        and abs(escala - 1.0) > 0.01
+                    ),
                 )
 
             except Exception as error:

@@ -43,6 +43,7 @@ Mudanças em relação à versão anterior:
 from pathlib import Path
 
 import math
+import time
 
 import cv2
 import numpy as np
@@ -55,7 +56,10 @@ from core.config import (
     COARSE_MARGIN,
     COARSE_SCALE,
     COLOR_THRESHOLD,
+    DETECTOR_DEBUG_INTERVAL,
+    DETECTOR_DEBUG_MISSES,
     MAX_DETECTION_AGE,
+    RESAMPLED_THRESHOLD_SLACK,
     MAX_MATCHES_PER_TEMPLATE,
     NMS_IOU,
     REFINE_SLACK,
@@ -119,6 +123,14 @@ class Detector:
         self.coarse_margin = coarse_margin
 
         self.templates = []
+
+        # Melhor match visto por categoria na passada atual,
+        # para o diagnóstico de quase-acerto. Só é preenchido
+        # com DETECTOR_DEBUG_MISSES ligado.
+        self._best = {}
+        self._best_color = {}
+
+        self._debug_at = 0.0
 
         self.load_templates()
 
@@ -464,7 +476,7 @@ class Detector:
     # Detect
     # --------------------------------------------------
 
-    def detect(self, frame, categories=None):
+    def detect(self, frame, categories=None, resampled=False):
         """
         Devolve as detecções aprovadas, ordenadas por
         confiança (maior primeiro).
@@ -472,10 +484,26 @@ class Detector:
         categories: se informado, só procura essas
         categorias. É o que permite a StateMachine buscar
         2 templates em vez de 43.
+
+        resampled: este frame passou por resize antes de chegar
+        aqui? Se sim, os thresholds ganham
+        RESAMPLED_THRESHOLD_SLACK de folga — eles foram
+        calibrados em frame nativo, onde o match é quase pixel a
+        pixel. Quem sabe a resposta é o VisionWorker, que fez o
+        resize; o detector não tem como adivinhar.
         """
 
         if frame is None:
             return []
+
+        slack = (
+            RESAMPLED_THRESHOLD_SLACK if resampled else 0.0
+        )
+
+        if DETECTOR_DEBUG_MISSES:
+
+            self._best = {}
+            self._best_color = {}
 
         if frame.ndim == 3:
 
@@ -549,11 +577,21 @@ class Detector:
                 self.threshold,
             )
 
+            # A folga é do frame, não da categoria: um frame
+            # reamostrado baixa o teto de TODAS elas.
+            if slack:
+
+                min_threshold = max(0.0, min_threshold - slack)
+
             roi = self._resolve_roi(
                 category,
                 frame_width,
                 frame_height,
             )
+
+            # Qual categoria está sendo procurada agora, para
+            # o _match saber onde anotar o melhor match.
+            self._debug_category = category
 
             candidates = self._search(
                 frame_gray,
@@ -576,6 +614,13 @@ class Detector:
                     y,
                     template["mask"],
                 )
+
+                if DETECTOR_DEBUG_MISSES:
+
+                    self._best_color[category] = max(
+                        self._best_color.get(category, 0.0),
+                        color_similarity,
+                    )
 
                 if color_similarity < self.color_threshold:
                     continue
@@ -608,6 +653,10 @@ class Detector:
         # Vários templates da mesma categoria acertam o
         # mesmo ícone. Sem isto, uma comida vira 5 detecções.
         #
+
+        if DETECTOR_DEBUG_MISSES:
+
+            self._report_misses(wanted, detections, slack)
 
         detections = self._suppress(detections)
 
@@ -740,6 +789,80 @@ class Detector:
 
         return results
 
+    def _report_misses(self, wanted, detections, slack):
+        """
+        Diz, por categoria procurada e não encontrada, de quanto
+        foi o melhor match.
+
+        É a diferença entre dois diagnósticos opostos:
+
+            upgrade: melhor formato 0.93 (corta em 0.98)
+                -> o objeto ESTÁ na tela e o threshold cortou.
+                   Baixe o número, ou suba a folga de
+                   reamostragem.
+
+            upgrade: melhor formato 0.41 (corta em 0.98)
+                -> o template não parece com o que está na tela.
+                   Threshold nenhum resolve; precisa de template
+                   dessa tela.
+        """
+
+        agora = time.monotonic()
+
+        if agora - self._debug_at < DETECTOR_DEBUG_INTERVAL:
+            return
+
+        self._debug_at = agora
+
+        encontradas = {d["category"] for d in detections}
+
+        procuradas = (
+            wanted
+            if wanted is not None
+            else {t["category"] for t in self.templates}
+        )
+
+        faltando = sorted(procuradas - encontradas)
+
+        if not faltando:
+            return
+
+        partes = []
+
+        for categoria in faltando:
+
+            corte = self.category_thresholds.get(
+                categoria,
+                self.threshold,
+            )
+
+            if slack:
+                corte = max(0.0, corte - slack)
+
+            forma = self._best.get(categoria)
+            cor = self._best_color.get(categoria)
+
+            texto = f"{categoria} F:"
+
+            texto += (
+                "-" if forma is None else f"{forma:.3f}"
+            )
+
+            texto += f"/{corte:.2f}"
+
+            # Cor só aparece quando o formato passou: senão a
+            # comparação de cor nem foi feita, e um "C:-" sem
+            # explicação parece falha.
+            if cor is not None:
+                texto += f" C:{cor:.3f}/{self.color_threshold:.2f}"
+
+            partes.append(texto)
+
+        logger.info(
+            "não detectado (melhor match / corte): %s",
+            "  ".join(partes),
+        )
+
     def _match(
         self,
         image,
@@ -796,6 +919,20 @@ class Detector:
             posinf=0.0,
             neginf=0.0,
         )
+
+        # O máximo bruto, antes de qualquer corte. É o número
+        # que o diagnóstico precisa: o threshold esconde
+        # exatamente a informação de quanto faltou.
+        if DETECTOR_DEBUG_MISSES and result.size:
+
+            categoria = getattr(self, "_debug_category", None)
+
+            if categoria is not None:
+
+                self._best[categoria] = max(
+                    self._best.get(categoria, 0.0),
+                    float(result.max()),
+                )
 
         # -------------------------------------------------
         # Apenas o melhor ponto
