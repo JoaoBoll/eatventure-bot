@@ -1,4 +1,4 @@
-"""
+﻿"""
 Configuração central do EatVenture AI.
 
 Todo valor ajustável do projeto mora aqui.
@@ -469,8 +469,13 @@ DATASET_MAX_DISK_MB = 20_000
 #
 # O treino funciona sem banco nenhum — o samples.jsonl basta.
 #
-# Preencha o DSN e ligue. Rode antes o DDL de docs/dataset.md.
-DATASET_DB_ENABLED = True
+# O banco é opcional e fica desligado por padrão. Só ligue quando
+# houver PostgreSQL realmente funcionando e você quiser indexar o
+# dataset em banco. Rode antes o DDL de docs/dataset.md.
+DATASET_DB_ENABLED = os.environ.get(
+    "EATVENTURE_DB_ENABLED",
+    "false",
+).strip().lower() in {"1", "true", "yes", "on"}
 
 # ATENÇÃO: este arquivo está no git. Senha escrita aqui vai para
 # o histórico do repositório, e apagar depois não a remove dos
@@ -483,11 +488,11 @@ DATASET_DB_ENABLED = True
 # Forma KEYWORD/VALUE do libpq, e não URL, de propósito: a senha
 # tem "@", que numa URL precisaria virar %40 — e um %40 esquecido
 # faz o parser ler o host errado. Aqui não existe escape.
-DATASET_DB_DSN = os.environ.get(
-    "EATVENTURE_DB_DSN",
-    "host=192.168.1.100 port=5432 dbname=eatventure "
-    "user=admin password=admin@123",
-)
+DATASET_DB_DSN = os.environ.get("EATVENTURE_DB_DSN", "")
+
+
+
+
 
 DATASET_DB_SCHEMA = "public"
 

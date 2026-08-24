@@ -209,15 +209,14 @@ def emit_training_progress(current: int, total: int, phase: str, file_name: str 
     bar = render_progress_bar(percent)
     label = file_name or "arquivo"
     prefix = f"[train_ai] progresso {current}/{total} | {percent:.0f}% | {bar} | {phase}"
-    if file_name:
-        suffix = f" | {label}"
-    else:
-        suffix = ""
+    suffix = f" | {label}" if file_name else ""
 
     if inline:
-        print(f"\r{prefix}{suffix}", end="", flush=True)
-    else:
-        print(f"{prefix}{suffix}", flush=True)
+        sys.stdout.write(f"\r\033[2K{prefix}{suffix}")
+        sys.stdout.flush()
+        return
+
+    print(f"{prefix}{suffix}", flush=True)
 
 
 def load_image_features(image_path: Path) -> list[float]:
@@ -289,8 +288,7 @@ def train_model(
     for index, sample in enumerate(samples, start=1):
         X.append(load_image_features(sample["image"]))
         y.append(sample["label"])
-        if index == total_samples or index % max(1, total_samples // 20) == 0:
-            emit_training_progress(index, total_samples, "carregando imagens", file_name=sample["image"].name, inline=True)
+        emit_training_progress(index, total_samples, "carregando imagens", file_name=sample["image"].name, inline=True)
 
     print(flush=True)
     X_array = np.asarray(X, dtype=np.float32)

@@ -96,6 +96,7 @@ def main(argv=None):
         print("Se quiser realmente importar para um banco, passe --dsn ou preencha DATASET_DB_DSN em src/core/config.py")
         print("Formato:  ******host:5432/banco")
 
+
         return 0
 
     print(f"Importando {caminho}...")
