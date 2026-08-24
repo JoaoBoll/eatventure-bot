@@ -45,6 +45,25 @@ O QUE ESTAVA ERRADO NA VERSÃO ANTERIOR
    Se o stream vier em outra resolução, todo toque sai
    convertido errado.
 
+5. LAG MENTIDO (`maquina.update(deteccoes, 0.0)`).
+
+   Não ter worker assíncrono não faz o frame ser novo: entre a
+   captura e a decisão passam o detector e a floresta. Com
+   lag=0 a StateMachine acha que a tela em mão já mostra o
+   efeito da última ação e age de novo sobre a tela de antes —
+   duplo toque, painel que reabre, bot batendo no mesmo botão.
+
+6. METADADO ANTIGO LIDO ERRADO.
+
+   O metadado gravado pela versão anterior usa
+   `label_mode`, não `kind`. Lendo só `kind`, um modelo de
+   AÇÃO caía no default "category" e rodava como se
+   localizasse objetos: as previsões saíam "open_box",
+   "swipe_up"..., nenhuma casava com as regras da
+   StateMachine, nenhuma ação era escolhida. O bot ficava
+   PARADO, sem uma linha de erro. Agora isso é barrado no
+   load, por metadado E pelas classes.
+
 ==============================================================
 COMO FUNCIONA AGORA
 ==============================================================
@@ -118,6 +137,73 @@ CORES = {
 
 COR_PADRAO = (200, 200, 200)
 
+# Categorias que só existem em RENOVATE e que, se perdidas,
+# TRAVAM o bot: sem `renovate` ou `fly` a máquina de estados
+# nunca volta para NORMAL (ver RENOVATE_RULES em
+# core/state_machine.py).
+#
+# `fly` é o caso extremo: aparece pouquíssimo no dataset e a
+# caixa é muito larga (414x141, contra 95x94 da mediana), então
+# o modelo sai dela com confiança baixa. Com um único
+# --min-confidence global, `fly` é descartada exatamente no
+# frame em que ela é a ÚNICA saída do estado.
+CATEGORIAS_CRITICAS = ("renovate", "fly")
+
+# Piso por categoria, aplicado em vez do --min-confidence
+# global. Só ABAIXA: nunca deixa uma categoria passar com menos
+# do que o piso daqui, nem exige mais do que o global.
+#
+# Perder um `fly` custa um ciclo inteiro de reforma; um `fly`
+# falso custa um toque no lugar de um botão que a StateMachine
+# ia procurar de qualquer forma.
+CONFIANCA_MINIMA_POR_CATEGORIA = {
+    "fly": 0.30,
+    "renovate": 0.35,
+    "plane": 0.40,
+}
+
+
+def min_confidence_for(categoria, global_min):
+    """
+    Piso de confiança desta categoria.
+
+    Se a categoria tem piso próprio, usa o MENOR dos dois — o
+    piso específico existe para não perder classe rara, então
+    subir o global não deve voltar a perdê-la.
+    """
+
+    especifico = CONFIANCA_MINIMA_POR_CATEGORIA.get(categoria)
+
+    if especifico is None:
+        return global_min
+
+    return min(global_min, especifico)
+
+
+def known_categories():
+    """
+    Categorias que a StateMachine sabe usar.
+
+    Tiradas das próprias tabelas de regras, não de uma lista
+    copiada aqui: uma categoria nova em core/state_machine.py
+    passa a valer sozinha.
+    """
+
+    try:
+        from core.state_machine import STATE_RULES
+
+    except Exception:
+
+        # Sem o core importável (nem device, nem config), sobra
+        # a lista do overlay — pior, mas não impede a checagem.
+        return set(CORES)
+
+    return {
+        categoria
+        for regras in STATE_RULES.values()
+        for categoria, _acao, _proximo in regras
+    }
+
 
 # =========================================================
 # MODELO
@@ -135,7 +221,20 @@ class Model:
         self.meta = meta
         self.path = path
 
-        self.kind = meta.get("kind", "category")
+        # `kind` é o nome atual; `label_mode` é o do metadado
+        # antigo. Sem ler os dois, um modelo gravado pela versão
+        # anterior (label_mode="action") cai no default
+        # "category" e o bot roda um classificador de AÇÕES como
+        # se fosse de categorias: as previsões viram "open_box",
+        # "swipe_up"... nenhuma casa com as regras da
+        # StateMachine, nenhuma ação é escolhida, e o bot fica
+        # parado olhando a tela. É essa a "travada" sem erro
+        # nenhum no log.
+        self.kind = (
+            meta.get("kind")
+            or meta.get("label_mode")
+            or "category"
+        )
 
         self.labels = [str(c) for c in getattr(clf, "classes_", [])]
 
@@ -190,6 +289,8 @@ class Model:
 
         modelo._check_features()
 
+        modelo._check_labels()
+
         return modelo
 
     def _check_features(self):
@@ -223,6 +324,43 @@ class Model:
                 "Retreine:\n"
                 f"  python IA/train_ai.py --kind {self.kind}\n"
             )
+
+    def _check_labels(self):
+        """
+        Confere que as classes do modelo são CATEGORIAS de
+        visão, não ações.
+
+        O metadado pode estar ausente ou desatualizado; as
+        classes, não. Se nenhuma delas é categoria conhecida, o
+        modelo não tem como guiar a StateMachine — e o sintoma
+        é o bot parado, sem exceção nenhuma.
+        """
+
+        if self.kind != "category":
+            return
+
+        conhecidas = known_categories()
+
+        reconhecidas = [
+            r
+            for r in self.labels
+            if r in conhecidas or r == "background"
+        ]
+
+        if reconhecidas:
+            return
+
+        raise SystemExit(
+            f"As classes de {self.path.name} não são categorias "
+            "de visão:\n"
+            f"  {', '.join(self.labels[:12])}\n\n"
+            "Isso é um modelo de AÇÃO rodando como se fosse de "
+            "categoria. Nenhuma previsão casa com as regras da "
+            "StateMachine, então o bot não age — parece "
+            "travado, sem erro no log.\n\n"
+            "Retreine:\n"
+            "  python IA/train_ai.py --kind category\n"
+        )
 
     # -----------------------------------------------------
 
@@ -301,7 +439,7 @@ def detect_with_model(model, frame, caixas, min_confidence):
         if categoria == "background":
             continue
 
-        if confianca < min_confidence:
+        if confianca < min_confidence_for(categoria, min_confidence):
             continue
 
         x, y, w, h = _box_tuple(caixa)
@@ -651,6 +789,14 @@ def live(model, args):
     # O modelo entra só como fonte de detecção.
     maquina = StateMachine(acoes)
 
+    # Importado UMA vez, fora do loop: `import` por quadro paga
+    # lookup em sys.modules ~30x/s sem motivo.
+    modulo_proposer = None
+
+    if args.source == "proposer":
+
+        import proposer as modulo_proposer
+
     if not args.auto:
 
         # Sem --auto nada é tocado. O jeito de garantir isso é
@@ -678,7 +824,7 @@ def live(model, args):
 
         while True:
 
-            frame, versao, _ts = captura.get_frame(
+            frame, versao, capturado_em = captura.get_frame(
                 since_version=versao,
                 timeout=0.2,
             )
@@ -717,11 +863,8 @@ def live(model, args):
                 args.min_confidence,
             )
 
-            if args.source == "proposer":
-
-                import proposer
-
-                deteccoes = proposer.suppress(deteccoes)
+            if modulo_proposer is not None:
+                deteccoes = modulo_proposer.suppress(deteccoes)
 
             custo = (time.monotonic() - inicio) * 1000
 
@@ -756,10 +899,39 @@ def live(model, args):
 
             antes = maquina.state
 
-            # lag=0: as detecções são deste frame, calculadas
-            # agora. Ao contrário do bot de regras, aqui não há
-            # worker assíncrono.
-            maquina.update(deteccoes, 0.0)
+            # =========================================
+            # LAG REAL, NÃO ZERO
+            # =========================================
+            #
+            # A versão anterior passava lag=0.0 "porque não há
+            # worker assíncrono". Não ter worker não faz o
+            # frame ser novo: entre a captura e esta linha
+            # passaram o detector (~300 ms com 43 templates) e
+            # a floresta sobre dezenas de recortes.
+            #
+            # Mentir o lag desliga as DUAS proteções da
+            # StateMachine de uma vez:
+            #
+            #   _can_act  -> acha que a tela em mão já mostra o
+            #                efeito da última ação, e age de
+            #                novo sobre a tela de ANTES. É o
+            #                duplo toque: fecha o painel e
+            #                toca no mesmo ponto, que o reabre.
+            #                O bot fica batendo no mesmo botão
+            #                e não sai do lugar.
+            #
+            #   MAX_DETECTION_AGE -> nunca dispara, então um
+            #                detector lento nunca é denunciado.
+            #
+            # Com lag verdadeiro (~0.5 s) nada disso quebra:
+            # MAX_DETECTION_AGE é 2.0 s.
+            lag = (
+                max(0.0, time.monotonic() - capturado_em)
+                if capturado_em
+                else 0.0
+            )
+
+            maquina.update(deteccoes, lag)
 
             if maquina.state != antes:
 
@@ -776,6 +948,12 @@ def live(model, args):
                 "cand": len(candidatos),
                 "det": len(deteccoes),
                 "ms": f"{custo:.0f}",
+
+                # Lag e tempo no estado: é o par que diz se
+                # "travou" é detector lento ou estado sem
+                # saída.
+                "lag": f"{lag * 1000:.0f}",
+                "no est": f"{time.monotonic() - maquina.state_entered:.0f}s",
                 "auto": "SIM" if args.auto else "nao",
             }
 
@@ -825,6 +1003,16 @@ def live(model, args):
 
         for chave, quantas in contagem.most_common(15):
             print(f"  {chave:<24} {quantas}")
+
+    # Fora do most_common de propósito: `fly` é raro e cairia do
+    # corte de 15 justamente quando o que interessa saber é se
+    # ele apareceu ALGUMA vez.
+    print()
+    print("categorias que fecham RENOVATE:")
+
+    for categoria in CATEGORIAS_CRITICAS:
+
+        print(f"  {categoria:<24} {contagem.get(categoria, 0)}")
 
     return 0
 
@@ -966,6 +1154,26 @@ def main(argv=None):
         )
 
         return 1
+
+    # Um modelo sem `fly`/`renovate` nas classes NUNCA sai do
+    # estado RENOVATE: são as duas únicas regras de
+    # RENOVATE_RULES. Isso não dá erro nenhum em execução — o
+    # bot só fica parado na tela de reforma — então tem de ser
+    # dito aqui, no load.
+    ausentes = [
+        c for c in CATEGORIAS_CRITICAS if c not in model.labels
+    ]
+
+    if ausentes:
+
+        print(
+            f"AVISO: o modelo não conhece {', '.join(ausentes)}.\n"
+            "Essas são as únicas categorias que fecham o estado "
+            "RENOVATE, então o bot vai travar na tela de "
+            "reforma.\n"
+            "Grave dataset passando por uma reforma e retreine:\n"
+            "  python IA/train_ai.py --kind category\n"
+        )
 
     if args.demo:
         return demo(model, args)

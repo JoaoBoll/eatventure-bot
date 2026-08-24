@@ -82,6 +82,19 @@ for candidato in (str(ROOT), str(ROOT / "src"), str(ROOT / "IA")):
 DEFAULT_DATASET = ROOT / "dataset"
 DEFAULT_MODEL = ROOT / "IA" / "model.joblib"
 
+# Categorias que a máquina de estados precisa para SAIR de um
+# estado. Hoje são as duas regras de RENOVATE_RULES
+# (core/state_machine.py): sem `renovate` ou `fly` o bot fica
+# preso na tela de reforma.
+#
+# Elas entram aqui, e não numa lista genérica de "classes
+# raras", porque o custo de perdê-las não é acurácia: é o bot
+# travar. `fly` tem POUCAS caixas e a maior forma do dataset
+# (414x141 contra 95x94 da mediana), então é a primeira a sumir
+# num --limit, num --outcome apertado ou num split de sessão
+# infeliz — e nada nos números avisa.
+CATEGORIAS_CRITICAS = ("renovate", "fly")
+
 
 # =========================================================
 # DEPENDÊNCIAS
@@ -328,7 +341,7 @@ def build_classifier(trees, seed, jobs):
 # RELATÓRIO
 # =========================================================
 
-def report(clf, X_teste, y_teste, y_treino, referencias):
+def report(clf, X_teste, y_teste, y_treino, referencias, kind="category"):
     """
     Imprime o que permite julgar o modelo, não só um número.
     """
@@ -421,6 +434,11 @@ def report(clf, X_teste, y_teste, y_treino, referencias):
         if verdade != palpite:
             erros[(str(verdade), str(palpite))] += 1
 
+    # Só faz sentido no modelo de categoria: em --kind action os
+    # rótulos são ações ("renovate_click"), não categorias.
+    if kind == "category":
+        _report_criticas(y_teste, y_treino, previsto)
+
     if erros:
 
         print("  maiores confusões:")
@@ -435,6 +453,53 @@ def report(clf, X_teste, y_teste, y_treino, referencias):
         print()
 
     return acuracia
+
+
+def _report_criticas(y_teste, y_treino, previsto):
+    """
+    As críticas, sempre e nominalmente.
+
+    No classification_report elas passam batido no meio de 17
+    linhas, e no agregado um recall de 0% em `fly` custa ~0.1%
+    de acurácia — invisível no número, fatal no bot.
+    """
+
+    print("-" * 62)
+    print("  CATEGORIAS QUE FECHAM RENOVATE")
+    print("-" * 62)
+    print()
+
+    treino_contagem = Counter(str(v) for v in y_treino)
+    teste_contagem = Counter(str(v) for v in y_teste)
+
+    for categoria in CATEGORIAS_CRITICAS:
+
+        no_treino = treino_contagem.get(categoria, 0)
+        no_teste = teste_contagem.get(categoria, 0)
+
+        acertos = sum(
+            1
+            for verdade, palpite in zip(y_teste, previsto)
+            if str(verdade) == categoria and str(palpite) == categoria
+        )
+
+        recall = (acertos / no_teste) if no_teste else None
+
+        linha = (
+            f"  {categoria:<12} treino {no_treino:6d} | "
+            f"teste {no_teste:6d} | recall "
+            + (f"{recall:7.2%}" if recall is not None else "     n/d")
+        )
+
+        if not no_treino:
+            linha += "   <- NÃO TREINADA"
+
+        elif recall is not None and recall < 0.5:
+            linha += "   <- perde mais da metade"
+
+        print(linha)
+
+    print()
 
 
 # =========================================================
@@ -627,7 +692,9 @@ def train(args):
 
     print(f"  {time.monotonic() - inicio:.0f}s")
 
-    acuracia = report(clf, X_teste, y_teste, y_treino, referencias)
+    acuracia = report(
+        clf, X_teste, y_teste, y_treino, referencias, args.kind
+    )
 
     # -----------------------------------------------------
     # Gravação
