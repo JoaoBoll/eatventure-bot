@@ -50,7 +50,7 @@ from core.config import (
     WINDOW_WIDTH,
 )
 from core.state_machine import StateMachine
-from core.status import StatusPanel
+from core.status import StatusPanel, formata_bateria
 from vision.detector import Detector
 from vision.worker import VisionWorker
 
@@ -316,9 +316,17 @@ def run_loop(
         # chamar a cada volta não custa.
         if panel is not None:
 
+            # A bateria vem da leitura em memória do
+            # BatteryMonitor — `dumpsys` custa ~56 ms e não
+            # pode entrar no loop. Sessão que morre por bateria
+            # descarregada não deixa rastro no log: o bot só
+            # para de agir.
             panel.update(
                 state_machine.summary(),
-                extra=f"{vision.get_fps():.1f} fps",
+                extra=(
+                    f"{vision.get_fps():.1f} fps"
+                    f" | {formata_bateria(battery.get())}"
+                ),
             )
 
         # -------------------------------------------------

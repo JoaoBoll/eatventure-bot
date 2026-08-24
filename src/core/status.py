@@ -40,7 +40,40 @@ import os
 import sys
 import time
 
+from core.config import BATTERY_POLL_INTERVAL
 from core.metrics import formata_duracao
+
+
+def formata_bateria(leitura):
+    """
+    A leitura do BatteryMonitor em uma palavra curta.
+
+    `leitura` é (nível, carregando, idade_da_leitura) — ou None
+    antes da primeira medição.
+
+    Marca a leitura VELHA em vez de esconder: um número parado
+    parece atual, e é assim que se passa uma hora sem perceber
+    que o adb travou. O intervalo de medição é conhecido, então
+    passar do dobro dele já é sinal.
+    """
+
+    if not leitura:
+        return "bateria ?"
+
+    nivel, carregando, idade = leitura
+
+    if nivel is None:
+        return "bateria ?"
+
+    texto = f"bateria {nivel}%"
+
+    if carregando:
+        return texto + " carregando"
+
+    if idade and idade > BATTERY_POLL_INTERVAL * 2:
+        texto += f" ({idade:.0f}s atras)"
+
+    return texto
 
 
 # Quantas linhas o bloco ocupa. Fixo de propósito: a reescrita
