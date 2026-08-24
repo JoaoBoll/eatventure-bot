@@ -48,9 +48,10 @@ class VisionWorker:
 
         self.categories = None
 
-        # Escala e offset do letterbox do ultimo frame. None
-        # ate' o primeiro set_frame.
-        self.latest_norm_transform = None
+        # Buffer do letterbox, reaproveitado entre quadros.
+        # Só a thread do worker toca nele.
+        self._canvas = None
+        self._canvas_box = None
 
         self.frame_lock = threading.Lock()
         self.detection_lock = threading.Lock()
@@ -99,86 +100,125 @@ class VisionWorker:
     # =====================================================
 
     def set_frame(self, frame, timestamp=None):
-
         """
-        Recebe o frame bruto (resolução do device) e armazena
-        duas versões: a original (para dataset/visualização) e
-        uma versão normalizada com letterbox para o detector.
+        Guarda o frame bruto. NADA de processamento aqui.
+
+        Esta função roda no loop principal, a cada quadro
+        capturado (30-60 por segundo). O worker consome ~3 por
+        segundo — o resto é descartado.
+
+        Antes a normalização (resize do frame inteiro + canvas
+        de 7.8 MB) era feita AQUI, ou seja: 30 a 60 letterboxes
+        por segundo para 3 serem usados. 90% a 95% do trabalho
+        ia para o lixo, e ia no thread que também precisa manter
+        o imshow respondendo e o ESC funcionando.
+
+        Agora normaliza quem consome, no momento de consumir.
         """
 
         with self.frame_lock:
 
-            # Frame original
             self.latest_raw_frame = frame
 
-            # Timestamp do instante do frame (pode vir de quem
-            # capturou a imagem)
             self.latest_frame_time = (
                 time.monotonic() if timestamp is None else timestamp
             )
 
-            # Normaliza preservando proporção com padding (letterbox)
-            try:
-                src_h, src_w = frame.shape[:2]
+    # =====================================================
+    # NORMALIZAÇÃO
+    # =====================================================
 
-                # Tamanho de destino do detector
-                dst_w = REFERENCE_WIDTH
-                dst_h = REFERENCE_HEIGHT
+    def _normalize(self, frame):
+        """
+        Letterbox para o espaço de referência.
 
-                # Escala preservando aspecto
-                scale = min(dst_w / src_w, dst_h / src_h)
+        Devolve (canvas, (escala, x_offset, y_offset)).
 
-                new_w = int(round(src_w * scale))
-                new_h = int(round(src_h * scale))
+        O CANVAS É REAPROVEITADO entre quadros. Isso é seguro
+        porque normalizar e detectar acontecem na MESMA thread,
+        em sequência: quando o próximo quadro sobrescreve o
+        buffer, a detecção do anterior já terminou. Alocar 7.8
+        MB por quadro só alimentaria o coletor de lixo.
 
-                resized = cv2.resize(
-                    frame,
-                    (new_w, new_h),
-                    interpolation=cv2.INTER_AREA,
+        As detecções saem no espaço deste canvas e voltam ao
+        espaço do frame real em _to_raw_space — é por isso que a
+        transformação precisa ser devolvida junto.
+        """
+
+        try:
+
+            src_h, src_w = frame.shape[:2]
+
+            dst_w = REFERENCE_WIDTH
+            dst_h = REFERENCE_HEIGHT
+
+            escala = min(dst_w / src_w, dst_h / src_h)
+
+            new_w = int(round(src_w * escala))
+            new_h = int(round(src_h * escala))
+
+            x_offset = (dst_w - new_w) // 2
+            y_offset = (dst_h - new_h) // 2
+
+            # Já está no espaço de referência: devolve como
+            # está. Cobre o device 1080x2400, que é o caso
+            # comum, e economiza um resize inútil por quadro.
+            if (
+                new_w == src_w
+                and new_h == src_h
+                and (dst_w, dst_h) == (src_w, src_h)
+            ):
+                return frame, (1.0, 0, 0)
+
+            if (
+                self._canvas is None
+                or self._canvas.shape[:2] != (dst_h, dst_w)
+                or self._canvas.dtype != frame.dtype
+            ):
+
+                self._canvas = np.zeros(
+                    (dst_h, dst_w, 3),
+                    dtype=frame.dtype,
                 )
 
-                # Criar canvas preto e centralizar (letterbox)
-                canvas = np.zeros((dst_h, dst_w, 3), dtype=resized.dtype)
+                self._canvas_box = None
 
-                x_offset = (dst_w - new_w) // 2
-                y_offset = (dst_h - new_h) // 2
+            # As barras só precisam ser pintadas quando MUDAM de
+            # tamanho. Zerar 7.8 MB por quadro para reescrever a
+            # mesma faixa preta é trabalho puro.
+            box = (x_offset, y_offset, new_w, new_h)
 
-                canvas[y_offset : y_offset + new_h, x_offset : x_offset + new_w] = resized
+            if box != self._canvas_box:
 
-                self.latest_norm_frame = canvas
+                self._canvas[:] = 0
 
-                # =========================================
-                # A TRANSFORMACAO, GUARDADA
-                # =========================================
-                #
-                # Sem ela as deteccoes ficam presas no espaco
-                # normalizado, e o unico jeito de voltar para o
-                # frame real e' uma regra de tres por
-                # REFERENCE_* — que ignora tanto a escala que
-                # preserva aspecto quanto as barras do
-                # letterbox.
-                #
-                # Num device 1080x2400 isso passa: escala 1,
-                # offset 0. Em qualquer outro aspecto, o offset
-                # nao e' zero e o clique sai deslocado por
-                # dezenas ou centenas de pixels — sempre na
-                # mesma direcao, o que faz parecer erro de
-                # deteccao e nao de coordenada.
-                self.latest_norm_transform = (
-                    scale,
-                    x_offset,
-                    y_offset,
-                )
+                self._canvas_box = box
 
-            except Exception:
-                # Em caso de erro, usa o frame original como normalizado
-                self.latest_norm_frame = frame
+            cv2.resize(
+                frame,
+                (new_w, new_h),
 
-                # Sem letterbox nao ha o que desfazer.
-                self.latest_norm_transform = None
+                # dst= evita a alocação do resultado: escreve
+                # direto na fatia do canvas.
+                dst=self._canvas[
+                    y_offset:y_offset + new_h,
+                    x_offset:x_offset + new_w,
+                ],
 
-            # Limpeza para o consumidor: quando lido, a thread do
-            # worker limpa essas referências.
+                interpolation=cv2.INTER_AREA,
+            )
+
+            return self._canvas, (escala, x_offset, y_offset)
+
+        except Exception:
+
+            logger.exception(
+                "Falha ao normalizar o frame — usando o frame "
+                "cru. As coordenadas continuam certas; o que "
+                "muda é a escala vista pelo detector."
+            )
+
+            return frame, None
 
     # =====================================================
     # CATEGORIAS
@@ -335,28 +375,23 @@ class VisionWorker:
 
             with self.frame_lock:
 
-                raw_frame = getattr(self, "latest_raw_frame", None)
-                norm_frame = getattr(self, "latest_norm_frame", None)
-                transform = getattr(
-                    self,
-                    "latest_norm_transform",
-                    None,
-                )
+                raw_frame = self.latest_raw_frame
                 frame_time = self.latest_frame_time
 
                 # Limpa para sinalizar que foi consumido
                 self.latest_raw_frame = None
-                self.latest_norm_frame = None
 
-            if raw_frame is None and norm_frame is None:
+            if raw_frame is None:
 
                 time.sleep(0.005)
 
                 continue
 
-            # Preferir norm_frame para a detecção; se não houver,
-            # cai para o raw_frame.
-            frame_for_detection = norm_frame if norm_frame is not None else raw_frame
+            # Aqui, e não no set_frame: só o frame que vai ser
+            # DE FATO analisado paga o custo do letterbox.
+            frame_for_detection, transform = self._normalize(
+                raw_frame
+            )
 
             with self.detection_lock:
 
@@ -391,10 +426,7 @@ class VisionWorker:
                 detections = self.detector.detect(
                     frame_for_detection,
                     categories,
-                    resampled=(
-                        norm_frame is not None
-                        and abs(escala - 1.0) > 0.01
-                    ),
+                    resampled=abs(escala - 1.0) > 0.01,
                 )
 
             except Exception as error:
@@ -426,13 +458,11 @@ class VisionWorker:
             # raw_frame, e as caixas agora estao no espaco dela.
             # Antes, em device fora da referencia, gravava
             # imagem e rotulo em espacos diferentes.
-            if norm_frame is not None:
-
-                detections = self._to_raw_space(
-                    detections,
-                    transform,
-                    raw_frame,
-                )
+            detections = self._to_raw_space(
+                detections,
+                transform,
+                raw_frame,
+            )
 
             self.duration.add(self.last_duration)
 
@@ -444,6 +474,6 @@ class VisionWorker:
                 self.detections_time = frame_time
 
                 # O frame que PRODUZIU estas detecções (raw):
-                self.detections_frame = raw_frame if raw_frame is not None else frame_for_detection
+                self.detections_frame = raw_frame
 
             time.sleep(self.interval)

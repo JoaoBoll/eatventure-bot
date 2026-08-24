@@ -190,6 +190,24 @@ SHOW_DETECTION_LAG = True
 # clicando em nada há vinte minutos.
 SHOW_CYCLE_TIME = True
 
+# Intervalo mínimo entre decisões da StateMachine, em segundos.
+#
+# O loop principal gira a cada frame CAPTURADO (30-60 por
+# segundo), mas as detecções só mudam quando o detector termina
+# uma passada (~3 por segundo). Decidir 60 vezes sobre a mesma
+# lista de detecções é reavaliar as regras, reobservar o dataset
+# e reconsultar o cooldown para chegar exatamente na mesma
+# conclusão 57 vezes.
+#
+# Não dá para decidir SÓ quando chega detecção nova: o timeout
+# de estado e a espera do long press de comida precisam de
+# batida regular para disparar. 10 Hz cobre isso com folga — o
+# cooldown é de 0.5 s.
+#
+# 0 volta a decidir a cada frame.
+DECISION_INTERVAL = 0.1
+
+
 # ---------------------------------------------------------
 # PAINEL DE STATUS
 # ---------------------------------------------------------
@@ -617,7 +635,7 @@ CATEGORY_THRESHOLDS = {
 # baixe se aparecer falso positivo. O filtro de cor
 # (COLOR_THRESHOLD) continua valendo inteiro e é a segunda
 # barreira contra falso positivo.
-RESAMPLED_THRESHOLD_SLACK = 0.05
+RESAMPLED_THRESHOLD_SLACK = 0.02
 
 # ESCALAS TESTADAS NO ESTÁGIO FINO
 #
@@ -642,6 +660,31 @@ RESAMPLED_THRESHOLD_SLACK = 0.05
 #
 # (1.0,) desliga e volta ao comportamento anterior.
 DETECTOR_SCALES = (0.94, 0.97, 1.0, 1.03, 1.06)
+
+# Quantos acertos bastam para TRAVAR numa escala.
+#
+# Testar 5 escalas em todo template e todo quadro tem dois
+# custos, e os dois apareceram:
+#
+#   LENTIDÃO — 5x o custo da confirmação, mais o estágio
+#   grosso afrouxado deixando passar muito mais candidato.
+#
+#   FALSO POSITIVO — o máximo de 5 correlações é enviesado
+#   para cima. Dar 5 chances ao mesmo ruído faz um deles
+#   passar do corte, e o bot toca onde não tem nada.
+#
+# Mas a escala do device NÃO MUDA durante a sessão. Então
+# não há motivo para redescobri-la a cada quadro: depois de
+# N acertos concordando, o detector trava naquela escala e
+# volta ao custo e ao rigor de uma escala só.
+DETECTOR_SCALE_LOCK_AFTER = 12
+
+# Segundos sem detecção nenhuma para DESTRAVAR.
+#
+# Sem isto, uma trava numa escala errada (por azar nos
+# primeiros acertos) seria permanente e o bot ficaria cego
+# até alguém reiniciar.
+DETECTOR_SCALE_UNLOCK_AFTER = 20.0
 
 # Folga EXTRA no estágio grosso quando há multi-escala.
 #

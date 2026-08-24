@@ -40,6 +40,7 @@ Mudanças em relação à versão anterior:
    que muda.
 """
 
+from collections import Counter
 from pathlib import Path
 
 import math
@@ -59,6 +60,8 @@ from core.config import (
     DETECTOR_DEBUG_INTERVAL,
     DETECTOR_DEBUG_MISSES,
     DETECTOR_SCALE_COARSE_MARGIN,
+    DETECTOR_SCALE_LOCK_AFTER,
+    DETECTOR_SCALE_UNLOCK_AFTER,
     DETECTOR_SCALES,
     MAX_DETECTION_AGE,
     RESAMPLED_THRESHOLD_SLACK,
@@ -141,6 +144,18 @@ class Detector:
         # exatamente para quem usa o painel.
         self._miss_text = ""
         self._miss_at = 0.0
+
+        # =================================================
+        # TRAVA DE ESCALA
+        # =================================================
+        #
+        # A escala da UI do device não muda durante a sessão.
+        # Descobri-la a cada quadro é caro (5x a confirmação) e
+        # perigoso (o máximo de 5 correlações passa ruído do
+        # threshold). Então: descobre, trava, e segue com uma.
+        self._scale_locked = None
+        self._scale_votes = Counter()
+        self._scale_seen_at = 0.0
 
         self.load_templates()
 
@@ -329,6 +344,96 @@ class Detector:
             "width": width,
             "height": height,
         }
+
+    # --------------------------------------------------
+    # Trava de escala
+    # --------------------------------------------------
+
+    def _active_scales(self):
+        """
+        As escalas a testar AGORA.
+
+        Travada: uma só — o custo e o rigor voltam ao de antes
+        do multi-escala.
+
+        Destravada: todas, até juntar votos suficientes.
+        """
+
+        if self._scale_locked is not None:
+            return (self._scale_locked,)
+
+        return tuple(DETECTOR_SCALES)
+
+    def _vote_scale(self, detections):
+        """
+        Conta em que escala as detecções saíram e trava quando
+        houver consenso.
+
+        Vota só o que passou pelos DOIS filtros (formato e cor):
+        um candidato descartado não é evidência de escala.
+        """
+
+        if self._scale_locked is not None or not detections:
+            return
+
+        for deteccao in detections:
+            self._scale_votes[deteccao.get("scale", 1.0)] += 1
+
+        if sum(self._scale_votes.values()) < DETECTOR_SCALE_LOCK_AFTER:
+            return
+
+        escala, votos = self._scale_votes.most_common(1)[0]
+
+        self._scale_locked = escala
+
+        logger.info(
+            "Escala travada em %.2f (%d de %d acertos). "
+            "A busca volta a testar uma escala só.",
+            escala,
+            votos,
+            sum(self._scale_votes.values()),
+        )
+
+    def _check_unlock(self, detections):
+        """
+        Destrava depois de um tempo sem ver nada.
+
+        Uma trava na escala errada — azar nos primeiros acertos,
+        ou o device trocado no meio — deixaria o bot cego para
+        sempre. O silêncio prolongado é o sintoma, e destravar é
+        baratíssimo comparado a não detectar mais nada.
+        """
+
+        agora = time.monotonic()
+
+        if detections:
+
+            self._scale_seen_at = agora
+
+            return
+
+        if self._scale_locked is None:
+            return
+
+        if not self._scale_seen_at:
+
+            self._scale_seen_at = agora
+
+            return
+
+        if agora - self._scale_seen_at < DETECTOR_SCALE_UNLOCK_AFTER:
+            return
+
+        logger.warning(
+            "%.0fs sem detecção nenhuma — destravando a escala "
+            "%.2f e procurando de novo.",
+            agora - self._scale_seen_at,
+            self._scale_locked,
+        )
+
+        self._scale_locked = None
+        self._scale_votes.clear()
+        self._scale_seen_at = agora
 
     # --------------------------------------------------
     # Variantes por escala
@@ -759,6 +864,13 @@ class Detector:
 
         detections = self._suppress(detections)
 
+        # Depois da supressão: uma comida que casou em 5
+        # templates é UM acerto, e votaria 5 vezes se contada
+        # antes.
+        self._vote_scale(detections)
+
+        self._check_unlock(detections)
+
         # Maior confiança primeiro: a StateMachine passa a
         # agir sobre o MELHOR match, não sobre o primeiro
         # em ordem alfabética de arquivo.
@@ -794,7 +906,7 @@ class Detector:
 
         escalas = [
             escala
-            for escala in DETECTOR_SCALES
+            for escala in self._active_scales()
             if self._variant(template, escala) is not None
         ] or [1.0]
 

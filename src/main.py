@@ -36,6 +36,7 @@ from core.config import (
     DATASET_DB_DSN,
     DATASET_DB_ENABLED,
     DATASET_DB_SCHEMA,
+    DECISION_INTERVAL,
     DEVICE_SERIAL,
     LOG_LEVEL,
     DATASET_SAVE,
@@ -219,6 +220,11 @@ def run_loop(
     # a primeira espera é pelo primeiro frame de verdade.
     last_version = 0
 
+    # Quando a StateMachine decidiu por último, e sobre qual
+    # lote de detecções. Ver DECISION_INTERVAL.
+    last_decision = 0.0
+    last_detect_time = None
+
     while True:
 
         # -------------------------------------------------
@@ -296,13 +302,28 @@ def run_loop(
         # -------------------------------------------------
         # STATE MACHINE
         # -------------------------------------------------
+        #
+        # Decide quando há detecção NOVA, ou a cada
+        # DECISION_INTERVAL. Sem a segunda condição, timeout de
+        # estado e espera do long press ficariam sem batida
+        # quando o detector engasga; sem a primeira, o bot
+        # reagiria com até DECISION_INTERVAL de atraso a uma
+        # detecção que já chegou.
+        agora = time.monotonic()
 
-        state_machine.update(
-            detections,
-            lag,
-            detect_frame,
-            detect_time,
-        )
+        novas = detect_time != last_detect_time
+
+        if novas or agora - last_decision >= DECISION_INTERVAL:
+
+            last_decision = agora
+            last_detect_time = detect_time
+
+            state_machine.update(
+                detections,
+                lag,
+                detect_frame,
+                detect_time,
+            )
 
         # -------------------------------------------------
         # PAINEL
