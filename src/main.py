@@ -327,6 +327,9 @@ def run_loop(
                     f"{vision.get_fps():.1f} fps"
                     f" | {formata_bateria(battery.get())}"
                 ),
+
+                # Vazio com DETECTOR_DEBUG_MISSES desligado.
+                misses=detector.miss_report(),
             )
 
         # -------------------------------------------------

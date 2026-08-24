@@ -132,6 +132,14 @@ class Detector:
 
         self._debug_at = 0.0
 
+        # Último relatório de quase-acerto, em texto, para o
+        # painel de status poder mostrá-lo. Com STATUS_PANEL
+        # ligado o console está em WARNING e o log INFO abaixo
+        # não aparece — sem isto o diagnóstico ficaria invisível
+        # exatamente para quem usa o painel.
+        self._miss_text = ""
+        self._miss_at = 0.0
+
         self.load_templates()
 
     # --------------------------------------------------
@@ -825,6 +833,13 @@ class Detector:
         faltando = sorted(procuradas - encontradas)
 
         if not faltando:
+
+            # Nada faltando agora: apaga o relatório anterior em
+            # vez de deixá-lo na tela. Texto velho de problema
+            # resolvido é pior que texto nenhum.
+            self._miss_text = ""
+            self._miss_at = agora
+
             return
 
         partes = []
@@ -858,10 +873,39 @@ class Detector:
 
             partes.append(texto)
 
+        self._miss_text = "  ".join(partes)
+        self._miss_at = agora
+
+        # Continua no log: com STATUS_PANEL desligado é aqui que
+        # a informação aparece, e é o que fica gravado para ler
+        # depois.
         logger.info(
             "não detectado (melhor match / corte): %s",
-            "  ".join(partes),
+            self._miss_text,
         )
+
+    def miss_report(self):
+        """
+        O último relatório de quase-acerto, ou "" se não houver.
+
+        Vazio também quando o relatório envelheceu: um texto de
+        três minutos atrás descreve outra tela, e no painel ele
+        pareceria atual.
+        """
+
+        if not DETECTOR_DEBUG_MISSES:
+            return ""
+
+        if not self._miss_text:
+            return ""
+
+        if (
+            time.monotonic() - self._miss_at
+            > DETECTOR_DEBUG_INTERVAL * 3
+        ):
+            return ""
+
+        return self._miss_text
 
     def _match(
         self,

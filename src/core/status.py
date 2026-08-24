@@ -37,6 +37,7 @@ config.
 """
 
 import os
+import shutil
 import sys
 import time
 
@@ -79,7 +80,7 @@ def formata_bateria(leitura):
 # Quantas linhas o bloco ocupa. Fixo de propósito: a reescrita
 # precisa saber quantas linhas subir, e descobrir isso contando
 # o que foi impresso é como o desenho sai torto.
-LINHAS = 5
+LINHAS = 6
 
 
 class StatusPanel:
@@ -169,7 +170,28 @@ class StatusPanel:
     # CONTEÚDO
     # -----------------------------------------------------
 
-    def _linhas(self, resumo, extra=None):
+    def _largura(self):
+        """
+        Largura útil do terminal.
+
+        Importa mais do que parece: linha mais comprida que o
+        terminal QUEBRA em duas, o bloco passa a ocupar 7 linhas
+        e o `\033[6A` sobe pouco — o painel começa a se
+        reescrever em cima de si mesmo. Cortar é feio; quebrar
+        estraga o desenho todo.
+        """
+
+        try:
+            colunas = shutil.get_terminal_size().columns
+
+        except Exception:
+            return 100
+
+        # -1: escrever na última coluna já provoca a quebra em
+        # alguns terminais.
+        return max(20, colunas - 1)
+
+    def _linhas(self, resumo, extra=None, misses=None):
 
         acao = resumo.get("acao") or "—"
 
@@ -200,22 +222,43 @@ class StatusPanel:
 
         linhas.append(rodape)
 
+        # -------------------------------------------------
+        # QUASE-ACERTO
+        # -------------------------------------------------
+        #
+        # A linha existe sempre, mesmo vazia: o painel tem
+        # altura fixa, e uma linha que aparece e desaparece
+        # deslocaria o bloco inteiro a cada redesenho.
+        linhas.append(
+            f"Sem deteccao: {misses}"
+            if misses
+            else "Sem deteccao: —"
+        )
+
         # Trava o tamanho: se um dia alguém acrescentar uma
         # linha sem mexer em LINHAS, o painel comeria a linha
         # de cima em vez de falhar visivelmente.
         assert len(linhas) == LINHAS, (len(linhas), LINHAS)
 
-        return linhas
+        largura = self._largura()
+
+        return [
+            linha
+            if len(linha) <= largura
+            else linha[: largura - 1] + "…"
+            for linha in linhas
+        ]
 
     # -----------------------------------------------------
     # DESENHO
     # -----------------------------------------------------
 
-    def update(self, resumo, extra=None, force=False):
+    def update(self, resumo, extra=None, misses=None, force=False):
         """
         Redesenha se já passou o intervalo.
 
         `resumo` é o dict de StateMachine.summary().
+        `misses` é o texto de Detector.miss_report().
         """
 
         agora = time.monotonic()
@@ -225,7 +268,7 @@ class StatusPanel:
 
         self.ultimo = agora
 
-        linhas = self._linhas(resumo, extra)
+        linhas = self._linhas(resumo, extra, misses)
 
         if not self.ansi:
 

@@ -158,7 +158,7 @@ CAPTURE_START_TIMEOUT = 6.0
 # Janela da IA: o frame com as caixas de detecção desenhadas.
 # É a única que recebe teclado, então o ESC só funciona com
 # ela ligada. Desligada, encerre com Ctrl+C.
-SHOW_AI_VISION = True
+SHOW_AI_VISION = False
 
 # Espelho do scrcpy (scrcpy.exe).
 #
@@ -352,7 +352,7 @@ SELECTOR_FALLBACK_HEIGHT = 1000
 # treino de visão não roda de jeito nenhum (`features.py`
 # recorta pixel), então "só o índice" não era um modo útil o
 # bastante para justificar a segunda chave.
-DATASET_SAVE = True
+DATASET_SAVE = False
 
 # Pasta de destino. É também a pasta que o treino LÊ.
 #
