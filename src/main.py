@@ -36,7 +36,6 @@ from core.config import (
     DATASET_DB_DSN,
     DATASET_DB_ENABLED,
     DATASET_DB_SCHEMA,
-    DECISION_INTERVAL,
     DEVICE_SERIAL,
     LOG_LEVEL,
     DATASET_SAVE,
@@ -220,10 +219,9 @@ def run_loop(
     # a primeira espera é pelo primeiro frame de verdade.
     last_version = 0
 
-    # Quando a StateMachine decidiu por último, e sobre qual
-    # lote de detecções. Ver DECISION_INTERVAL.
-    last_decision = 0.0
-    last_detect_time = None
+    # A visão já caiu alguma vez? Só para não repetir o aviso
+    # a cada quadro.
+    vision_avisada = False
 
     while True:
 
@@ -300,30 +298,38 @@ def run_loop(
         )
 
         # -------------------------------------------------
+        # A VISÃO ESTÁ VIVA?
+        # -------------------------------------------------
+        #
+        # A thread do detector morrer não parava o programa: a
+        # captura seguia a 60 fps, a janela seguia aberta e o
+        # bot simplesmente nunca mais agia. Era o sintoma
+        # relatado, e não havia uma linha no log dizendo isso.
+        if not vision.is_alive() and not vision_avisada:
+
+            logger.error(
+                "A thread da visão não está rodando (%s) — "
+                "não vão existir detecções e o bot não vai "
+                "agir.",
+                vision.last_error or "motivo desconhecido",
+            )
+
+            vision_avisada = True
+
+        # -------------------------------------------------
         # STATE MACHINE
         # -------------------------------------------------
         #
-        # Decide quando há detecção NOVA, ou a cada
-        # DECISION_INTERVAL. Sem a segunda condição, timeout de
-        # estado e espera do long press ficariam sem batida
-        # quando o detector engasga; sem a primeira, o bot
-        # reagiria com até DECISION_INTERVAL de atraso a uma
-        # detecção que já chegou.
-        agora = time.monotonic()
-
-        novas = detect_time != last_detect_time
-
-        if novas or agora - last_decision >= DECISION_INTERVAL:
-
-            last_decision = agora
-            last_detect_time = detect_time
-
-            state_machine.update(
-                detections,
-                lag,
-                detect_frame,
-                detect_time,
-            )
+        # A cada frame, sem intervalo mínimo. Quem decide QUANDO
+        # agir é o cooldown da própria StateMachine, que já leva
+        # em conta a idade do frame — pôr um segundo relógio
+        # aqui só somava atraso à reação.
+        state_machine.update(
+            detections,
+            lag,
+            detect_frame,
+            detect_time,
+        )
 
         # -------------------------------------------------
         # PAINEL
@@ -362,8 +368,48 @@ def run_loop(
         if not SHOW_AI_VISION:
             continue
 
+        # =================================================
+        # REDUZIR ANTES DE DESENHAR
+        # =================================================
+        #
+        # Mesma taxa de antes — um desenho por frame, sem
+        # intervalo mínimo. O que mudou é o custo de cada um.
+        #
+        # A janela tem 500x900 e o frame tem 1080x2400. O
+        # caminho antigo era: copiar 7.8 MB, rabiscar 2.6 Mpx e
+        # mandar o `imshow` reduzir — três trabalhos em
+        # resolução cheia para caber num quinto do tamanho.
+        #
+        # Reduzindo primeiro, o `resize` substitui a cópia (o
+        # resultado já é array novo) e o desenho toca 0.45 Mpx.
+        # As detecções são convertidas pelo mesmo fator dentro
+        # do `draw`.
+        escala_janela = min(
+            WINDOW_WIDTH / largura_frame,
+            WINDOW_HEIGHT / altura_frame,
+            1.0,
+        )
+
+        if escala_janela < 1.0:
+
+            ai_frame = cv2.resize(
+                frame,
+                (
+                    int(round(largura_frame * escala_janela)),
+                    int(round(altura_frame * escala_janela)),
+                ),
+                interpolation=cv2.INTER_AREA,
+            )
+
+        else:
+
+            # Frame já pequeno: aí a cópia é necessária, porque
+            # o `draw` escreve no array que recebe e este é o
+            # buffer compartilhado da captura.
+            ai_frame = frame.copy()
+
         ai_frame = detector.draw(
-            frame.copy(),
+            ai_frame,
             detections,
             {
                 "capture_fps": capture.get_fps(),
@@ -376,7 +422,24 @@ def run_loop(
                 "battery": battery.get(),
 
                 "cycle": state_machine.cycle_stats(),
+
+                # O que o bot está procurando e o que achou:
+                # sem isto, overlay vazio não diz se o
+                # problema é o template, o threshold ou o
+                # estado errado.
+                "state": state_machine.state,
+                "searched": detector.last_searched,
+                "detections": len(detections),
+                "vision_error": (
+                    None
+                    if vision.is_alive()
+                    else (
+                        vision.last_error
+                        or "thread da visão parada"
+                    )
+                ),
             },
+            scale=escala_janela,
         )
 
         cv2.imshow(AI_WINDOW_NAME, ai_frame)

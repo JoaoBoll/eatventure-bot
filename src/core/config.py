@@ -158,7 +158,7 @@ CAPTURE_START_TIMEOUT = 6.0
 # Janela da IA: o frame com as caixas de detecção desenhadas.
 # É a única que recebe teclado, então o ESC só funciona com
 # ela ligada. Desligada, encerre com Ctrl+C.
-SHOW_AI_VISION = False
+SHOW_AI_VISION = True
 
 # Espelho do scrcpy (scrcpy.exe).
 #
@@ -189,24 +189,6 @@ SHOW_DETECTION_LAG = True
 # dizem se o bot está PROGREDINDO — ele pode estar a 30 fps
 # clicando em nada há vinte minutos.
 SHOW_CYCLE_TIME = True
-
-# Intervalo mínimo entre decisões da StateMachine, em segundos.
-#
-# O loop principal gira a cada frame CAPTURADO (30-60 por
-# segundo), mas as detecções só mudam quando o detector termina
-# uma passada (~3 por segundo). Decidir 60 vezes sobre a mesma
-# lista de detecções é reavaliar as regras, reobservar o dataset
-# e reconsultar o cooldown para chegar exatamente na mesma
-# conclusão 57 vezes.
-#
-# Não dá para decidir SÓ quando chega detecção nova: o timeout
-# de estado e a espera do long press de comida precisam de
-# batida regular para disparar. 10 Hz cobre isso com folga — o
-# cooldown é de 0.5 s.
-#
-# 0 volta a decidir a cada frame.
-DECISION_INTERVAL = 0.1
-
 
 # ---------------------------------------------------------
 # PAINEL DE STATUS
@@ -548,9 +530,6 @@ DATASET_DB_ENABLED = os.environ.get(
 DATASET_DB_DSN = os.environ.get("EATVENTURE_DB_DSN", "")
 
 
-
-
-
 DATASET_DB_SCHEMA = "public"
 
 # Amostras por ida ao banco. Uma ida por amostra colocaria
@@ -612,87 +591,6 @@ CATEGORY_THRESHOLDS = {
     "box": 0.95,
 }
 
-
-# FOLGA PARA FRAME REAMOSTRADO
-#
-# Os thresholds acima foram calibrados em frame NATIVO
-# 1080x2400: o template foi recortado dessa tela, então o match
-# é quase pixel a pixel e chega a ~0.99.
-#
-# Em qualquer outra resolução o frame passa pelo letterbox e é
-# reamostrado. Isso não muda o objeto, mas suaviza borda e mexe
-# em subpixel — e o TM_CCOEFF_NORMED cai alguns pontos. Com
-# `upgrade` em 0.98, uma queda de 0.04 significa NENHUMA
-# detecção: o bot não age, e nada no log diz por quê.
-#
-# Era esse o sintoma de "em outra tela não detecta o upgrade".
-#
-# A folga é aplicada SÓ quando o frame foi reamostrado (escala
-# diferente de 1). No device de referência nada muda, então o
-# ajuste fino já feito continua valendo exatamente como está.
-#
-# 0 desliga. Suba se ainda faltar detecção em tela diferente;
-# baixe se aparecer falso positivo. O filtro de cor
-# (COLOR_THRESHOLD) continua valendo inteiro e é a segunda
-# barreira contra falso positivo.
-RESAMPLED_THRESHOLD_SLACK = 0.02
-
-# ESCALAS TESTADAS NO ESTÁGIO FINO
-#
-# O `matchTemplate` é RÍGIDO em escala: ele não tem tolerância
-# nenhuma. Um botão 3% maior que o template já desalinha as
-# bordas e derruba o TM_CCOEFF_NORMED vários pontos — e não é
-# ruído que a folga de reamostragem cobre, é o objeto com outro
-# tamanho.
-#
-# Por que isso acontece em outra tela: o letterbox iguala o
-# QUADRO a 1080x2400, não o tamanho dos elementos. O jogo
-# dimensiona a UI conforme a tela dele, então um botão que tinha
-# 200 px no device de referência pode ter 194 ou 212 no outro. O
-# objeto está lá, visível, e o template passa raspando.
-#
-# `build` (0.95) e `upgrade` (0.98) são os primeiros a sumir,
-# porque são os cortes mais altos.
-#
-# Custa pouco porque o estágio fino roda numa janela pequena, já
-# recortada pelo estágio grosso: 5 escalas ali não são 5x o
-# custo da passada, são 5x o custo da confirmação.
-#
-# (1.0,) desliga e volta ao comportamento anterior.
-DETECTOR_SCALES = (0.94, 0.97, 1.0, 1.03, 1.06)
-
-# Quantos acertos bastam para TRAVAR numa escala.
-#
-# Testar 5 escalas em todo template e todo quadro tem dois
-# custos, e os dois apareceram:
-#
-#   LENTIDÃO — 5x o custo da confirmação, mais o estágio
-#   grosso afrouxado deixando passar muito mais candidato.
-#
-#   FALSO POSITIVO — o máximo de 5 correlações é enviesado
-#   para cima. Dar 5 chances ao mesmo ruído faz um deles
-#   passar do corte, e o bot toca onde não tem nada.
-#
-# Mas a escala do device NÃO MUDA durante a sessão. Então
-# não há motivo para redescobri-la a cada quadro: depois de
-# N acertos concordando, o detector trava naquela escala e
-# volta ao custo e ao rigor de uma escala só.
-DETECTOR_SCALE_LOCK_AFTER = 12
-
-# Segundos sem detecção nenhuma para DESTRAVAR.
-#
-# Sem isto, uma trava numa escala errada (por azar nos
-# primeiros acertos) seria permanente e o bot ficaria cego
-# até alguém reiniciar.
-DETECTOR_SCALE_UNLOCK_AFTER = 20.0
-
-# Folga EXTRA no estágio grosso quando há multi-escala.
-#
-# O estágio grosso continua usando o template em escala 1. Se o
-# objeto está 6% fora, ele quase não passa lá — e o que o
-# estágio grosso descarta, o fino nunca vê. Sem esta folga, as
-# escalas extras não serviriam para nada.
-DETECTOR_SCALE_COARSE_MARGIN = 0.08
 
 # Diz no log, por categoria, qual foi o MELHOR match quando
 # nenhum passou.
@@ -820,7 +718,6 @@ CATEGORY_ROIS = {}
 
 # Cliques repetidos do upgrade de item.
 UPGRADE_ITEM_CLICKS = 5
-UPGRADE_ITEM_DELAY = (0.08, 0.18)
 
 # Long press do upgrade de comida (segundos).
 UPGRADE_FOOD_PRESS = 4.0
@@ -874,9 +771,6 @@ SCROLL_BOTTOM_DIRECTION = "up"
 # chegar ao fim de qualquer restaurante.
 SCROLL_BOTTOM_SWIPES = 6
 
-# Pausa entre os swipes da sequência, para o jogo animar.
-SCROLL_BOTTOM_PAUSE = 0.25
-
 # Duração do toque MANTIDO no ponto neutro, em segundos.
 #
 # Da ação "dismiss": um tap seco do adb às vezes não registra
@@ -917,6 +811,34 @@ VISION_INTERVAL = 0.01
 # com "o detector parou de achar".
 VISION_FILTER_BY_STATE = True
 
+# Para de procurar na primeira CATEGORIA que for encontrada.
+#
+# As categorias chegam ao detector na ORDEM DAS REGRAS do
+# estado, e a StateMachine age na PRIMEIRA regra que casar —
+# então procurar as de baixo depois de um acerto é trabalho que
+# nunca vira ação.
+#
+# MEDIDO em tests/images/eatventure.png, estado NORMAL:
+#
+#   procurando tudo ............. 264 ms   (182 templates)
+#   parando na prioridade .......  ~20 ms  quando casa em cima
+#
+# O ganho vem de onde estava o custo: `food` são 124 dos 185
+# templates e 174 dos 312 ms, e é a ÚLTIMA prioridade em NORMAL.
+#
+# A parada é por CATEGORIA, nunca dentro dela: duas comidas na
+# mesma tela são duas detecções da mesma categoria, e cortar no
+# primeiro template faria o bot ver uma só.
+#
+# O QUE SE PERDE: o overlay passa a mostrar só até a categoria
+# que venceu, não a tela inteira. Desligue enquanto estiver
+# recortando template ou ajustando threshold — ali você quer ver
+# tudo o que está na tela, mesmo o que o bot ignoraria.
+#
+# Sem filtro por estado (VISION_FILTER_BY_STATE desligado) isto
+# não tem efeito: não há ordem de prioridade para respeitar.
+VISION_PRIORITY_STOP = True
+
 # Idade máxima de uma detecção para a StateMachine agir
 # sobre ela (segundos).
 #
@@ -954,6 +876,40 @@ ACTION_COOLDOWN = 0.5
 # aumente: o custo é o bot agir um pouco mais devagar, contra
 # uma ação errada que desfaz a anterior.
 ACTION_SETTLE = 0.4
+
+# Espera depois de um SWIPE, antes de agir de novo.
+#
+# O mesmo papel do ACTION_SETTLE, com valor próprio porque
+# swipe não é toque: ele move a VISTA INTEIRA, e o jogo continua
+# deslizando por inércia depois de o dedo sair. Um toque mexe um
+# painel; um swipe muda a posição de tudo na tela.
+#
+# O sintoma sem isto: o bot rola a tela, detecta um alvo num
+# frame capturado enquanto a vista ainda escorregava, e toca
+# onde o alvo ESTAVA. O clique cai no cenário — ou pior, no que
+# passou a ocupar aquele ponto.
+#
+# Como o ACTION_SETTLE, a condição é CAUSAL e não temporal: o
+# bot só age sobre um frame CAPTURADO pelo menos este tanto
+# depois de o swipe TERMINAR. Não é "dormir meio segundo" —
+# subir o cooldown não resolveria, porque um detector mais lento
+# voltaria a estourar a margem.
+#
+# Contado do FIM do swipe, não do início: o swipe leva
+# SWIPE_DURATION_MS (500 ms) só para executar, mais o overhead
+# do adb. Medir da submissão faria esta espera ser consumida
+# pelo próprio gesto e o valor não teria efeito nenhum.
+SWIPE_WAITING_TIME = 0.5
+
+# Ações que movem a VISTA INTEIRA, e por isso usam a espera do
+# swipe em vez da de um toque.
+#
+# A exploração (swipe_up/swipe_down) não precisa estar aqui: ela
+# chama o ActionManager por outro caminho e já é tratada como
+# swipe. Quem precisa é `scroll_bottom`, que passa pelo caminho
+# das ações normais e é SEIS swipes seguidos — ou seja, mexe a
+# vista mais que qualquer swipe solto.
+VIEW_MOVING_ACTIONS = {"scroll_bottom"}
 
 # Tempo sem detectar nada antes de fazer swipe.
 EXPLORATION_DELAY = 5.0

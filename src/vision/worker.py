@@ -10,16 +10,44 @@ Mudanças em relação à versão anterior:
 
 2. O worker aceita um FILTRO DE CATEGORIAS. Dentro da tela
    de upgrade só interessam 2 categorias, não 43.
+
+3. NADA MATA ESTA THREAD.
+   Duas falhas estavam derrubando o worker na PRIMEIRA volta,
+   e as duas tinham o mesmo sintoma: bot parado, HUD sem
+   detecção nenhuma, nenhum erro visível depois do start.
+
+     - `latest_raw_frame` só existia depois do primeiro
+       set_frame, e o _run lia esse atributo antes disso:
+       AttributeError na primeira volta, thread morta.
+
+     - o detect era chamado com um argumento `resampled=`
+       que o Detector nunca aceitou: TypeError em toda
+       passada.
+
+   Agora o corpo do laço é protegido por inteiro, o erro é
+   logado uma vez por tipo (e não 60x por segundo), e
+   is_alive() deixa o loop principal ver que a visão caiu.
+
+4. SAI O LETTERBOX.
+   Normalizar o FRAME para o espaço de referência custava um
+   canvas de 7.8 MB e um resize por passada, exigia inverter
+   as coordenadas depois, e numa tela deitada encolhia a
+   imagem a ~0.45 — o que derrubava toda confiança abaixo do
+   threshold. Quem se adapta à resolução agora é o Detector,
+   reescalando os TEMPLATES uma vez por resolução de frame.
+   As detecções já nascem no espaço do frame real.
+
+5. ESPERA BLOQUEANTE.
+   Era um sleep(0.005) em laço: 200 acordadas por segundo
+   para, na maioria, não achar frame novo. Agora dorme numa
+   Condition e acorda no frame.
 """
 
 import threading
 import time
 
-import numpy as np
-import cv2
-
 from core import log
-from core.config import VISION_INTERVAL, REFERENCE_WIDTH, REFERENCE_HEIGHT
+from core.config import VISION_INTERVAL
 from core.metrics import DurationMeter, RateMeter
 
 logger = log.get("vision")
@@ -36,7 +64,14 @@ class VisionWorker:
         self.running = False
         self.thread = None
 
-        self.latest_frame = None
+        # O frame à espera de análise.
+        #
+        # INICIALIZADO AQUI. Não é detalhe: o _run lê este
+        # atributo na primeira volta, antes de qualquer
+        # set_frame, e sem esta linha o que acontecia era
+        # AttributeError — a thread da visão morria no start e
+        # o bot passava a sessão inteira sem uma detecção.
+        self.latest_raw_frame = None
         self.latest_frame_time = 0.0
 
         self.detections = []
@@ -48,13 +83,17 @@ class VisionWorker:
 
         self.categories = None
 
-        # Buffer do letterbox, reaproveitado entre quadros.
-        # Só a thread do worker toca nele.
-        self._canvas = None
-        self._canvas_box = None
+        # Um frame novo acorda o worker. Substitui o
+        # sleep(0.005) em laço, que acordava 200 vezes por
+        # segundo para na maioria não achar nada.
+        self.frame_lock = threading.Condition()
 
-        self.frame_lock = threading.Lock()
         self.detection_lock = threading.Lock()
+
+        # Última falha da thread, para o loop principal e o
+        # HUD poderem dizer POR QUE não há detecção.
+        self.last_error = None
+        self._error_kinds = set()
 
         # Custo real de uma passada, e quantas por segundo.
         #
@@ -113,7 +152,9 @@ class VisionWorker:
         ia para o lixo, e ia no thread que também precisa manter
         o imshow respondendo e o ESC funcionando.
 
-        Agora normaliza quem consome, no momento de consumir.
+        Agora nem o letterbox existe: quem se adapta à
+        resolução é o Detector, reescalando os templates uma
+        vez por resolução de frame.
         """
 
         with self.frame_lock:
@@ -124,101 +165,7 @@ class VisionWorker:
                 time.monotonic() if timestamp is None else timestamp
             )
 
-    # =====================================================
-    # NORMALIZAÇÃO
-    # =====================================================
-
-    def _normalize(self, frame):
-        """
-        Letterbox para o espaço de referência.
-
-        Devolve (canvas, (escala, x_offset, y_offset)).
-
-        O CANVAS É REAPROVEITADO entre quadros. Isso é seguro
-        porque normalizar e detectar acontecem na MESMA thread,
-        em sequência: quando o próximo quadro sobrescreve o
-        buffer, a detecção do anterior já terminou. Alocar 7.8
-        MB por quadro só alimentaria o coletor de lixo.
-
-        As detecções saem no espaço deste canvas e voltam ao
-        espaço do frame real em _to_raw_space — é por isso que a
-        transformação precisa ser devolvida junto.
-        """
-
-        try:
-
-            src_h, src_w = frame.shape[:2]
-
-            dst_w = REFERENCE_WIDTH
-            dst_h = REFERENCE_HEIGHT
-
-            escala = min(dst_w / src_w, dst_h / src_h)
-
-            new_w = int(round(src_w * escala))
-            new_h = int(round(src_h * escala))
-
-            x_offset = (dst_w - new_w) // 2
-            y_offset = (dst_h - new_h) // 2
-
-            # Já está no espaço de referência: devolve como
-            # está. Cobre o device 1080x2400, que é o caso
-            # comum, e economiza um resize inútil por quadro.
-            if (
-                new_w == src_w
-                and new_h == src_h
-                and (dst_w, dst_h) == (src_w, src_h)
-            ):
-                return frame, (1.0, 0, 0)
-
-            if (
-                self._canvas is None
-                or self._canvas.shape[:2] != (dst_h, dst_w)
-                or self._canvas.dtype != frame.dtype
-            ):
-
-                self._canvas = np.zeros(
-                    (dst_h, dst_w, 3),
-                    dtype=frame.dtype,
-                )
-
-                self._canvas_box = None
-
-            # As barras só precisam ser pintadas quando MUDAM de
-            # tamanho. Zerar 7.8 MB por quadro para reescrever a
-            # mesma faixa preta é trabalho puro.
-            box = (x_offset, y_offset, new_w, new_h)
-
-            if box != self._canvas_box:
-
-                self._canvas[:] = 0
-
-                self._canvas_box = box
-
-            cv2.resize(
-                frame,
-                (new_w, new_h),
-
-                # dst= evita a alocação do resultado: escreve
-                # direto na fatia do canvas.
-                dst=self._canvas[
-                    y_offset:y_offset + new_h,
-                    x_offset:x_offset + new_w,
-                ],
-
-                interpolation=cv2.INTER_AREA,
-            )
-
-            return self._canvas, (escala, x_offset, y_offset)
-
-        except Exception:
-
-            logger.exception(
-                "Falha ao normalizar o frame — usando o frame "
-                "cru. As coordenadas continuam certas; o que "
-                "muda é a escala vista pelo detector."
-            )
-
-            return frame, None
+            self.frame_lock.notify()
 
     # =====================================================
     # CATEGORIAS
@@ -227,6 +174,11 @@ class VisionWorker:
     def set_categories(self, categories):
         """
         Restringe a busca. None = todas.
+
+        A ORDEM é preservada (tupla, não conjunto): ela é a
+        prioridade das regras do estado, e é o que deixa o
+        detector parar de procurar na primeira categoria que
+        encontrar. Um `set` aqui embaralhava isso em silêncio.
         """
 
         with self.detection_lock:
@@ -234,7 +186,7 @@ class VisionWorker:
             self.categories = (
                 None
                 if categories is None
-                else set(categories)
+                else tuple(categories)
             )
 
     # =====================================================
@@ -299,181 +251,146 @@ class VisionWorker:
         return self.duration.average()
 
     # =====================================================
-    # ESPACO DAS COORDENADAS
+    # SAÚDE
     # =====================================================
 
-    @staticmethod
-    def _to_raw_space(detections, transform, raw_frame):
+    def is_alive(self):
         """
-        Deteccoes do espaco normalizado -> espaco do frame real.
+        A thread da visão está de pé?
 
-        Inverte exatamente o que set_frame fez: tira o offset
-        das barras do letterbox e desfaz a escala.
-
-        transform None (normalizacao falhou, o detector rodou
-        no frame cru) = nada a inverter.
+        Existe porque a falha silenciosa era exatamente esta:
+        a thread morria no start e o resto do programa
+        continuava rodando como se estivesse tudo bem — janela
+        aberta, captura a 60 fps, e nenhuma detecção nunca.
         """
 
-        if not detections or transform is None:
-            return detections
+        return bool(
+            self.running
+            and self.thread is not None
+            and self.thread.is_alive()
+        )
 
-        scale, x_offset, y_offset = transform
+    def _fail(self, error):
+        """
+        Loga a falha UMA vez por tipo.
 
-        if not scale:
-            return detections
+        O laço roda várias vezes por segundo: sem isto, um erro
+        de programação (um argumento errado, por exemplo) enche
+        o terminal de tracebacks idênticos e esconde o resto.
+        """
 
-        if raw_frame is not None:
-            altura, largura = raw_frame.shape[:2]
-        else:
-            altura = largura = None
+        self.last_error = f"{type(error).__name__}: {error}"
 
-        convertidas = []
+        if type(error).__name__ in self._error_kinds:
+            return
 
-        for deteccao in detections:
+        self._error_kinds.add(type(error).__name__)
 
-            x = (deteccao["x"] - x_offset) / scale
-            y = (deteccao["y"] - y_offset) / scale
-
-            largura_caixa = deteccao["width"] / scale
-            altura_caixa = deteccao["height"] / scale
-
-            # Uma caixa que cai FORA do frame real veio das
-            # barras negras do letterbox. Nao existe objeto ali;
-            # tocar nesse ponto e' tocar em nada — ou, pior, no
-            # que estiver na borda.
-            if largura is not None:
-
-                if x + largura_caixa <= 0 or x >= largura:
-                    continue
-
-                if y + altura_caixa <= 0 or y >= altura:
-                    continue
-
-            convertida = dict(deteccao)
-
-            convertida["x"] = int(round(x))
-            convertida["y"] = int(round(y))
-            convertida["width"] = int(round(largura_caixa))
-            convertida["height"] = int(round(altura_caixa))
-
-            convertidas.append(convertida)
-
-        return convertidas
+        logger.exception(
+            "Falha na passada do detector — %s. A thread "
+            "continua; esta mensagem não repete.",
+            self.last_error,
+        )
 
     # =====================================================
     # WORKER
     # =====================================================
 
     def _run(self):
+        """
+        O corpo INTEIRO é protegido.
+
+        Qualquer exceção aqui deixava o bot parado sem sinal
+        nenhum: sem detecção não há ação, e o log do start já
+        tinha subido na tela. Errar e continuar é melhor do que
+        morrer em silêncio.
+        """
 
         while self.running:
 
-            # ---------------------------------------------
-            # Pega só o frame mais recente e descarta os
-            # atrasados, para não acumular backlog.
-            # ---------------------------------------------
-
-            with self.frame_lock:
-
-                raw_frame = self.latest_raw_frame
-                frame_time = self.latest_frame_time
-
-                # Limpa para sinalizar que foi consumido
-                self.latest_raw_frame = None
-
-            if raw_frame is None:
-
-                time.sleep(0.005)
-
-                continue
-
-            # Aqui, e não no set_frame: só o frame que vai ser
-            # DE FATO analisado paga o custo do letterbox.
-            frame_for_detection, transform = self._normalize(
-                raw_frame
-            )
-
-            with self.detection_lock:
-
-                categories = (
-                    None
-                    if self.categories is None
-                    else set(self.categories)
-                )
-
-            # ---------------------------------------------
-            # Detector
-            # ---------------------------------------------
-            #
-            # Usar frame normalizado para a detecção, e guardar o
-            # raw_frame como a imagem que produziu as detecções
-            # (para o dataset).
-            #
-
-            started = time.monotonic()
-
             try:
 
-                # O detector não tem como saber que o frame
-                # passou por resize — quem redimensionou foi
-                # este worker. Sem contar, os thresholds
-                # calibrados em frame nativo cortam tudo numa
-                # tela de outra resolução.
-                escala = (
-                    transform[0] if transform else 1.0
-                )
-
-                detections = self.detector.detect(
-                    frame_for_detection,
-                    categories,
-                    resampled=abs(escala - 1.0) > 0.01,
-                )
+                self._pass()
 
             except Exception as error:
 
-                logger.exception(
-                    "Erro no detector: %s",
-                    error,
-                )
+                self._fail(error)
 
-                continue
+                # Sem isto, um erro imediato viraria laço
+                # quente consumindo uma CPU inteira.
+                time.sleep(0.1)
 
-            self.last_duration = time.monotonic() - started
+    def _pass(self):
+        """
+        Uma passada: espera frame novo, detecta, publica.
+        """
 
-            # =============================================
-            # DE VOLTA AO FRAME REAL
-            # =============================================
-            #
-            # A COMPARACAO e' relativa (tudo foi medido no
-            # espaco de referencia, e e' isso que faz um
-            # template valer em N telas). O CLIQUE nao pode
-            # ser: ele tem de cair exatamente onde o objeto
-            # esta no frame real.
-            #
-            # Aqui as duas coisas se encontram — e este e' o
-            # unico lugar onde a inversao pode acontecer, porque
-            # e' o unico que conhece a transformacao usada.
-            #
-            # Tambem conserta o dataset: a imagem gravada e' o
-            # raw_frame, e as caixas agora estao no espaco dela.
-            # Antes, em device fora da referencia, gravava
-            # imagem e rotulo em espacos diferentes.
-            detections = self._to_raw_space(
-                detections,
-                transform,
-                raw_frame,
+        # -------------------------------------------------
+        # Espera o frame mais recente
+        # -------------------------------------------------
+        #
+        # Só o mais novo interessa: os atrasados são
+        # descartados, senão a fila cresce e a detecção
+        # envelhece — e detecção velha não vira clique.
+        with self.frame_lock:
+
+            if self.latest_raw_frame is None:
+
+                # Dorme até chegar frame. O timeout é só para
+                # o self.running voltar a ser consultado.
+                self.frame_lock.wait(0.2)
+
+            raw_frame = self.latest_raw_frame
+            frame_time = self.latest_frame_time
+
+            # Limpa para sinalizar que foi consumido.
+            self.latest_raw_frame = None
+
+        if raw_frame is None:
+            return
+
+        with self.detection_lock:
+
+            categories = (
+                None
+                if self.categories is None
+                # Tupla: a ordem É a prioridade.
+                else self.categories
             )
 
-            self.duration.add(self.last_duration)
+        # -------------------------------------------------
+        # Detector
+        # -------------------------------------------------
+        #
+        # No frame NATIVO: o Detector reescala os templates
+        # para a resolução do frame, então as detecções já
+        # saem no espaço em que o clique precisa delas. Não há
+        # mais transformação para inverter — era ali que
+        # imagem e rótulo do dataset saíam de sincronia.
 
-            self.rate.tick()
+        started = time.monotonic()
 
-            with self.detection_lock:
+        detections = self.detector.detect(
+            raw_frame,
+            categories,
+        )
 
-                self.detections = detections
-                self.detections_time = frame_time
+        self.last_duration = time.monotonic() - started
 
-                # O frame que PRODUZIU estas detecções (raw):
-                self.detections_frame = raw_frame
+        self.duration.add(self.last_duration)
+
+        self.rate.tick()
+
+        with self.detection_lock:
+
+            self.detections = detections
+            self.detections_time = frame_time
+
+            # O frame que PRODUZIU estas detecções.
+            self.detections_frame = raw_frame
+
+        # Só para não monopolizar a CPU quando a passada for
+        # muito rápida (poucas categorias).
+        if self.interval:
 
             time.sleep(self.interval)

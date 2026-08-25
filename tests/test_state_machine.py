@@ -25,6 +25,7 @@ from core.config import (                         # noqa: E402
     MAX_DETECTION_AGE,
     REPEATED_ACTION_WARNING,
     STATE_TIMEOUTS,
+    SWIPE_WAITING_TIME,
     UP_FOOD_WAIT,
 )
 from core import state_machine as sm              # noqa: E402
@@ -324,8 +325,8 @@ def test_deteccao_reseta_exploracao():
 
 def test_categorias_do_estado_sao_reduzidas():
     """
-    É o que faz a passada do detector cair de ~320 ms para
-    ~20 ms dentro da tela de upgrade.
+    É o que faz a passada do detector cair de ~264 ms para
+    ~16 ms dentro da tela de upgrade.
     """
 
     machine, _, _ = build()
@@ -338,7 +339,34 @@ def test_categorias_do_estado_sao_reduzidas():
 
     assert "food" in normal
     assert "food" not in upgrade, upgrade
-    assert upgrade == {"up_upgrade", "close"}, upgrade
+    assert list(upgrade) == ["up_upgrade", "close"], upgrade
+
+
+def test_categorias_vem_na_ordem_da_prioridade():
+    """
+    A ORDEM é contrato, não detalhe: o detector para de
+    procurar na primeira categoria que encontrar, então uma
+    ordem embaralhada faria o bot agir na regra errada — e
+    `food`, que é 2/3 dos templates, deixaria de ser a última.
+    """
+
+    machine, _, _ = build()
+
+    categorias = list(machine.wanted_categories())
+
+    esperada = [
+        category
+        for category, _, _ in sm.NORMAL_RULES
+    ]
+
+    assert categorias == esperada, categorias
+
+    # Sem repetição: categoria repetida seria template
+    # procurado duas vezes na mesma passada.
+    assert len(categorias) == len(set(categorias)), categorias
+
+    # E `food` continua no fim, que é onde a economia vive.
+    assert categorias[-1] == "food", categorias
 
 
 def test_estado_nao_vaza_variavel():
@@ -753,6 +781,156 @@ def test_a_guarda_vale_para_todo_caminho_de_acao():
 
     # Passado o settle: liberado.
     machine._frame_time = clock.now + 0.41
+
+    assert machine._can_act()
+
+
+def test_swipe_espera_a_vista_parar():
+    """
+    O bug relatado: depois de rolar a tela, o bot detectava um
+    alvo num frame capturado enquanto a vista ainda escorregava
+    e tocava onde o alvo ESTAVA.
+
+    Um swipe não é um toque: ele move a VISTA INTEIRA, e o jogo
+    continua deslizando por inércia depois de o dedo sair. Daí a
+    espera própria (SWIPE_WAITING_TIME), contada do FIM do
+    gesto.
+    """
+
+    machine, actions, clock = build()
+
+    # Tela vazia agora mesmo: dispara a exploração.
+    machine.exploration_delay = 0.0
+
+    machine.update([], lag=0.0)
+
+    assert ("swipe", "down") in actions.calls, actions.calls
+
+    momento_do_swipe = clock.now
+
+    # -----------------------------------------------------
+    # O swipe LEVA TEMPO para executar (SWIPE_DURATION_MS).
+    # -----------------------------------------------------
+    #
+    # É o ponto do bug: medida da submissão, a espera seria
+    # consumida pelo próprio gesto e não sobraria nada.
+
+    clock.advance(0.5)
+
+    actions.last_finished_at = clock.now
+
+    fim_do_swipe = clock.now
+
+    # -----------------------------------------------------
+    # Alvo visível, mas a vista ainda está escorregando.
+    # -----------------------------------------------------
+    #
+    # PASSADA a espera de um toque, e ainda assim barrado: é aí
+    # que a espera do swipe se distingue da de toque. Testar num
+    # instante qualquer antes de ACTION_SETTLE não provaria nada
+    # — a espera curta já barraria sozinha.
+
+    clock.advance(ACTION_SETTLE + 0.01)
+
+    machine.update([detection("food")], lag=0.0)
+
+    assert machine.action_counts["food"] == 0, (
+        "tocou antes de a vista parar — é o clique que cai no "
+        "lugar errado"
+    )
+
+    # -----------------------------------------------------
+    # Passado SWIPE_WAITING_TIME do FIM do swipe: liberado.
+    # -----------------------------------------------------
+
+    clock.advance(SWIPE_WAITING_TIME)
+
+    assert clock.now > fim_do_swipe + SWIPE_WAITING_TIME
+
+    machine.update([detection("food")], lag=0.0)
+
+    assert machine.action_counts["food"] == 1, (
+        machine.action_counts
+    )
+
+    # E a espera foi contada do fim do gesto, não da submissão:
+    # senão este teste passaria com o bug dentro.
+    assert (
+        clock.now - momento_do_swipe
+        > SWIPE_WAITING_TIME + 0.5
+    )
+
+
+def test_swipe_espera_mais_que_um_toque():
+    """
+    SWIPE_WAITING_TIME abaixo de ACTION_SETTLE não teria
+    sentido: o swipe mexe MAIS na tela que um toque, então
+    esperar menos por ele seria o contrário do que se quer.
+    """
+
+    assert SWIPE_WAITING_TIME >= ACTION_SETTLE, (
+        SWIPE_WAITING_TIME,
+        ACTION_SETTLE,
+    )
+
+    # E não tanto que a exploração fique lenta: o bot faz
+    # MAX_SWIPES seguidos procurando conteúdo.
+    assert SWIPE_WAITING_TIME <= 2.0, SWIPE_WAITING_TIME
+
+
+def test_scroll_bottom_usa_a_espera_do_swipe():
+    """
+    `scroll_bottom` passa pelo caminho das ações normais, mas é
+    SEIS swipes seguidos — mexe a vista mais que qualquer swipe
+    solto. Se ele usasse a espera curta, a escada de escape
+    voltaria a tocar sobre tela em movimento.
+    """
+
+    machine, actions, clock = build()
+
+    machine.action_cooldown = 0.0
+
+    assert machine._act("scroll_bottom", None) is True
+
+    assert machine._last_was_swipe is True, (
+        "scroll_bottom tem de contar como movimento de vista"
+    )
+
+    actions.last_finished_at = clock.now
+
+    # Dentro da espera de swipe (mas fora da de toque): barrado.
+    machine._frame_time = clock.now + ACTION_SETTLE + 0.01
+
+    assert not machine._can_act(), (
+        "a espera curta de toque não serve para seis swipes"
+    )
+
+    machine._frame_time = clock.now + SWIPE_WAITING_TIME + 0.01
+
+    assert machine._can_act()
+
+
+def test_toque_comum_nao_herda_a_espera_do_swipe():
+    """
+    A bandeira tem de VOLTAR: um swipe seguido de toques não
+    pode deixar todos os toques seguintes pagando a espera
+    longa.
+    """
+
+    machine, actions, clock = build()
+
+    machine.action_cooldown = 0.0
+
+    machine._last_was_swipe = True
+
+    assert machine._act("food", detection("food")) is True
+
+    assert machine._last_was_swipe is False
+
+    actions.last_finished_at = clock.now
+
+    # Basta a espera de toque.
+    machine._frame_time = clock.now + ACTION_SETTLE + 0.01
 
     assert machine._can_act()
 

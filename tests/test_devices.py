@@ -314,6 +314,35 @@ def test_escolha_funciona_sem_getprop():
 # O SERIAL CHEGA NA CAPTURA
 # =========================================================
 
+# ---------------------------------------------------------
+# O BINÁRIO DO ADB NÃO É PARTE DO CONTRATO
+# ---------------------------------------------------------
+#
+# O que estes testes verificam é o "-s <serial>": sem ele, com
+# o mesmo celular listado por USB e por wifi, o adb recusa TODA
+# chamada com "more than one device".
+#
+# QUAL adb é usado é outra decisão, e ela mudou: o config passou
+# a resolver o caminho completo (PATH do sistema, ou o adb que
+# vem em tools/scrcpy). Comparar com o literal "adb" fazia estes
+# testes falharem por causa de um caminho como
+# "tools/scrcpy/adb.EXE" — que é o caminho CERTO, e nada tem a
+# ver com o serial.
+
+
+def _sem_o_binario(comando):
+    """
+    Confere que o comando começa por algum adb e devolve o
+    resto — que é onde mora o que está sendo testado.
+    """
+
+    assert comando, comando
+
+    assert "adb" in Path(comando[0]).name.lower(), comando
+
+    return comando[1:]
+
+
 def test_captura_usa_o_serial():
     """
     O ponto do bug: sem -s, com dois devices na lista o adb
@@ -326,7 +355,7 @@ def test_captura_usa_o_serial():
 
     comando = capture._adb("shell", "ls")
 
-    assert comando[:3] == ["adb", "-s", USB], comando
+    assert _sem_o_binario(comando)[:2] == ["-s", USB], comando
 
 
 def test_captura_sem_serial_continua_valendo():
@@ -337,7 +366,9 @@ def test_captura_sem_serial_continua_valendo():
 
     from capture.screen import ScreenCapture
 
-    assert ScreenCapture()._adb("devices") == ["adb", "devices"]
+    comando = ScreenCapture()._adb("devices")
+
+    assert _sem_o_binario(comando) == ["devices"], comando
 
 
 def test_toques_usam_o_serial():
@@ -346,7 +377,7 @@ def test_toques_usam_o_serial():
 
     comando = AndroidActions(USB)._base()
 
-    assert comando[:3] == ["adb", "-s", USB], comando
+    assert _sem_o_binario(comando)[:2] == ["-s", USB], comando
 
 
 def test_screenshot_usa_o_serial():
@@ -365,8 +396,7 @@ def test_screenshot_usa_o_serial():
         "-p",
     )
 
-    assert comando == [
-        "adb",
+    assert _sem_o_binario(comando) == [
         "-s",
         USB,
         "exec-out",
@@ -383,7 +413,7 @@ def test_screenshot_sem_serial_continua_valendo():
 
     comando = AndroidScreenshot()._adb("exec-out")
 
-    assert comando == ["adb", "exec-out"], comando
+    assert _sem_o_binario(comando) == ["exec-out"], comando
 
 
 def test_selector_repassa_o_serial():
@@ -401,7 +431,7 @@ def test_selector_repassa_o_serial():
 
     comando = selector.screenshot._adb("exec-out")
 
-    assert comando[:3] == ["adb", "-s", USB], comando
+    assert _sem_o_binario(comando)[:2] == ["-s", USB], comando
 
 
 # =========================================================

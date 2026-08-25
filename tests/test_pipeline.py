@@ -63,9 +63,37 @@ class FakeAndroid(AndroidActions):
                 f"{self.device_size[1]}\n"
             )
 
-        self.commands.append(args)
+        self.commands.extend(self._expande(args))
 
         return ""
+
+    @staticmethod
+    def _expande(args):
+        """
+        Um comando adb pode carregar VÁRIOS `input`.
+
+        tap_many e swipe_many mandam os N toques num único
+        `adb shell "input tap ...; input tap ..."`, para não
+        pagar N vezes o spawn do adb e a JVM do device. Aqui
+        isso é desmontado de volta na forma palavra-por-palavra,
+        que é o que as propriedades abaixo leem.
+
+        Sem esta expansão o dublê registrava a rolagem em lote
+        como um comando opaco, e `scrolls` via zero swipes num
+        caminho que no device manda seis.
+        """
+
+        if len(args) != 2 or args[0] != "shell":
+            return [args]
+
+        if ";" not in args[1]:
+            return [args]
+
+        return [
+            ("shell", *pedaco.split())
+            for pedaco in args[1].split(";")
+            if pedaco.strip()
+        ]
 
     @property
     def taps(self):

@@ -200,6 +200,64 @@ class AndroidActions:
             str(int(y)),
         ) is not None
 
+    def tap_many(self, x, y, times, timeout=None):
+        """
+        N toques no mesmo ponto, em UM comando adb.
+
+        Antes eram N chamadas `adb shell input tap`, cada
+        uma pagando spawn do cliente adb, round trip ao
+        servidor e uma JVM no device (o `input` é um script
+        que sobe o app_process). Com 5 toques isso passava
+        de um segundo — para uma ação que deveria ser
+        instantânea.
+
+        O espaçamento entre os toques não precisa de sleep
+        nosso: cada `input tap` leva ~60-100 ms para subir
+        no device, e é esse tempo que separa um toque do
+        outro. Um sleep em Python só somaria em cima.
+        """
+
+        vezes = max(1, int(times))
+
+        if vezes == 1:
+            return self.click(x, y)
+
+        um = f"input tap {int(x)} {int(y)}"
+
+        return self._run(
+            "shell",
+            "; ".join([um] * vezes),
+
+            # O adb tem de sobreviver aos N toques.
+            timeout=(
+                timeout
+                if timeout is not None
+                else 5.0 + 0.5 * vezes
+            ),
+        ) is not None
+
+    def swipe_many(self, x1, y1, x2, y2, times, duration=300):
+        """
+        N swipes iguais, em UM comando adb.
+
+        Mesmo motivo do tap_many. A rolagem até o fim eram
+        6 processos adb; agora é um.
+        """
+
+        vezes = max(1, int(times))
+
+        um = (
+            f"input swipe {int(x1)} {int(y1)} "
+            f"{int(x2)} {int(y2)} {int(duration)}"
+        )
+
+        return self._run(
+            "shell",
+            "; ".join([um] * vezes),
+
+            timeout=(duration / 1000.0 + 2.0) * vezes + 5.0,
+        ) is not None
+
     # =====================================================
     # PRESS / LONG PRESS
     # =====================================================

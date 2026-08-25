@@ -16,7 +16,6 @@ Duas mudanças estruturais em relação à versão anterior:
 """
 
 import queue
-import random
 import threading
 import time
 
@@ -26,7 +25,6 @@ from core.config import (
     DISMISS_HOLD_DURATION,
     DISMISS_POINT,
     SCROLL_BOTTOM_DIRECTION,
-    SCROLL_BOTTOM_PAUSE,
     SCROLL_BOTTOM_SWIPES,
     REFERENCE_HEIGHT,
     REFERENCE_WIDTH,
@@ -36,7 +34,6 @@ from core.config import (
     SWIPE_Y,
     UPGRADE_FOOD_PRESS,
     UPGRADE_ITEM_CLICKS,
-    UPGRADE_ITEM_DELAY,
 )
 
 logger = log.get("action")
@@ -140,6 +137,23 @@ class ActionManager:
 
         self.busy = False
         self.busy_lock = threading.Lock()
+
+        # -------------------------------------------------
+        # QUANDO A ÚLTIMA AÇÃO TERMINOU
+        # -------------------------------------------------
+        #
+        # As ações são assíncronas e algumas são LONGAS: o swipe
+        # leva SWIPE_DURATION_MS, o long press de comida leva
+        # UPGRADE_FOOD_PRESS (4 s). A StateMachine só conhecia o
+        # instante da SUBMISSÃO.
+        #
+        # A diferença importa porque a espera pelo efeito
+        # (ACTION_SETTLE / SWIPE_WAITING_TIME) é contada a
+        # partir daqui. Medindo da submissão, um settle de 0.4 s
+        # já estava vencido quando um press de 4 s terminava — o
+        # bot agia sobre um frame capturado no MEIO da ação
+        # anterior.
+        self.last_finished_at = 0.0
 
     # =====================================================
     # SETUP
@@ -420,6 +434,12 @@ class ActionManager:
             finally:
 
                 with self.busy_lock:
+
+                    # Antes de liberar o busy: quem acordar
+                    # vendo "livre" precisa ver também QUANDO
+                    # ficou livre.
+                    self.last_finished_at = time.monotonic()
+
                     self.busy = False
 
     def _dispatch(self, job):
@@ -502,6 +522,14 @@ class ActionManager:
         self.android.click(x, y)
 
     def _repeat(self, name, x, y):
+        """
+        Os N cliques num único comando adb.
+
+        Antes: N processos adb com sleeps entre eles, o que
+        dava 0.9 a 1.8 s para evoluir um item. O tempo era
+        todo overhead de processo — nada disso é o jogo
+        precisando de pausa.
+        """
 
         logger.info(
             "%s -> %d clicks (%d, %d)",
@@ -511,20 +539,7 @@ class ActionManager:
             y,
         )
 
-        for index in range(UPGRADE_ITEM_CLICKS):
-
-            if not self.running:
-                break
-
-            self.android.click(x, y)
-
-            # O último clique não precisa de espera depois.
-            if index == UPGRADE_ITEM_CLICKS - 1:
-                break
-
-            time.sleep(
-                random.uniform(*UPGRADE_ITEM_DELAY)
-            )
+        self.android.tap_many(x, y, UPGRADE_ITEM_CLICKS)
 
     def _hold(self, name, x, y):
         """
@@ -580,17 +595,30 @@ class ActionManager:
             SCROLL_BOTTOM_DIRECTION,
         )
 
-        for index in range(SCROLL_BOTTOM_SWIPES):
+        # Os N swipes num único comando adb: eram 6
+        # processos mais 5 pausas, ~5 s só para rolar a
+        # tela.
+        if SCROLL_BOTTOM_DIRECTION == "up":
+            end_y = SWIPE_Y - SWIPE_DISTANCE
 
-            if not self.running:
-                break
+        else:
+            end_y = SWIPE_Y + SWIPE_DISTANCE
 
-            self._swipe(SCROLL_BOTTOM_DIRECTION)
+        start_x, start_y = self._from_reference(
+            SWIPE_X,
+            SWIPE_Y,
+        )
 
-            if index == SCROLL_BOTTOM_SWIPES - 1:
-                break
+        _, target_y = self._from_reference(SWIPE_X, end_y)
 
-            time.sleep(SCROLL_BOTTOM_PAUSE)
+        self.android.swipe_many(
+            start_x,
+            start_y,
+            start_x,
+            target_y,
+            SCROLL_BOTTOM_SWIPES,
+            SWIPE_DURATION_MS,
+        )
 
     # =====================================================
     # SWIPE

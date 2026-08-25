@@ -49,7 +49,9 @@ from core.config import (
     REPEATED_ACTION_WARNING,
     STATE_TIMEOUTS,
     SWIPE_START_DIRECTION,
+    SWIPE_WAITING_TIME,
     UP_FOOD_WAIT,
+    VIEW_MOVING_ACTIONS,
 )
 
 logger = log.get("state")
@@ -167,6 +169,20 @@ class StateMachine:
         self.action_cooldown = ACTION_COOLDOWN
         self.action_settle = ACTION_SETTLE
 
+        # Espera própria do swipe, maior que a de um toque: um
+        # toque mexe um painel, um swipe move a VISTA INTEIRA e
+        # o jogo segue deslizando por inércia.
+        self.swipe_settle = SWIPE_WAITING_TIME
+
+        # A última ação foi um swipe?
+        #
+        # Guardado como BANDEIRA, e não como uma cópia do valor
+        # do settle, de propósito: assim `machine.action_settle
+        # = 0` continua desligando a espera de toque (é o que os
+        # testes fazem) sem que exista um segundo número
+        # desatualizado em algum lugar.
+        self._last_was_swipe = False
+
         # Frame atual, guardado para o gravador do dataset.
         self._frame = None
         self._detections = []
@@ -250,20 +266,40 @@ class StateMachine:
 
     def wanted_categories(self):
         """
-        Categorias que importam no estado atual.
+        Categorias que importam no estado atual, NA ORDEM DE
+        PRIORIDADE.
 
-        É o filtro que o detector usa para não procurar 43
-        templates quando 2 bastam. Em UPGRADE isso é a
-        diferença entre ~320 ms e ~20 ms por passada.
+        É o filtro que o detector usa para não procurar 185
+        templates quando 4 bastam. Em UPGRADE isso é a
+        diferença entre ~264 ms e ~16 ms por passada.
+
+        A ORDEM é significativa, e é por isso que isto devolve
+        lista e não conjunto: as regras são avaliadas de cima
+        para baixo e a primeira que casar é a que age, então o
+        detector pode parar de procurar na primeira categoria
+        que encontrar (VISION_PRIORITY_STOP). `food`, a última
+        prioridade em NORMAL, é sozinha 2/3 dos templates.
         """
 
         rules = STATE_RULES.get(self.state, NORMAL_RULES)
 
-        categories = {category for category, _, _ in rules}
+        categories = []
+
+        for category, _, _ in rules:
+
+            if category not in categories:
+
+                categories.append(category)
 
         # Fora de NORMAL, ainda queremos ver o "X": é a
         # saída de emergência de qualquer modal.
-        categories.add("close")
+        #
+        # No FIM da lista: é rede de segurança, não prioridade.
+        # Nos estados em que o "X" importa de verdade ele já
+        # está nas regras, na posição certa.
+        if "close" not in categories:
+
+            categories.append("close")
 
         return categories
 
@@ -462,6 +498,11 @@ class StateMachine:
         )
 
         self.last_action_time = time.monotonic()
+
+        # `scroll_bottom` é seis swipes seguidos: move a vista
+        # mais que qualquer swipe solto, e por isso merece a
+        # espera longa igual. Um toque comum fica na curta.
+        self._last_was_swipe = action in VIEW_MOVING_ACTIONS
 
         # Mesmo raciocínio do ciclo, abaixo: só conta o que
         # realmente saiu.
@@ -729,11 +770,47 @@ class StateMachine:
         # animação de fechar não termina, um frame posterior
         # ainda mostra o painel. Daí o action_settle.
         #
+        # =============================================
+        # DE QUANDO SE CONTA, E QUANTO
+        # =============================================
+        #
+        # DE QUANDO: do FIM da ação, não da submissão dela. As
+        # ações são assíncronas e algumas são longas — o swipe
+        # leva 500 ms, o long press de comida leva 4 s. Contando
+        # da submissão, o settle já estava vencido no instante em
+        # que a ação terminava, e o bot decidia sobre um frame
+        # capturado no MEIO dela.
+        #
+        # O max() cobre a janela em que a ação foi submetida mas
+        # ainda não terminou (aí vale a submissão) e o caso de um
+        # ActionManager que não reporte o fim (aí o
+        # comportamento é o antigo, nunca pior).
+        #
+        # QUANTO: swipe tem espera própria. Um toque mexe um
+        # painel; um swipe move a vista inteira e o jogo segue
+        # deslizando depois de o dedo sair. Era exatamente o
+        # buraco: o bot rolava a tela, detectava um alvo num
+        # frame em que a vista ainda escorregava, e tocava onde
+        # o alvo ESTAVA.
+        base = max(
+            self.last_action_time,
+            getattr(
+                self.action_manager,
+                "last_finished_at",
+                0.0,
+            ),
+        )
+
+        settle = (
+            self.swipe_settle
+            if self._last_was_swipe
+            else self.action_settle
+        )
+
         if (
             self._frame_time is not None
             and self.last_action_time
-            and self._frame_time
-            <= self.last_action_time + self.action_settle
+            and self._frame_time <= base + settle
         ):
 
             if (
@@ -742,14 +819,10 @@ class StateMachine:
             ):
 
                 logger.debug(
-                    "esperando frame que mostre o efeito da "
-                    "ação (falta %.0f ms)",
-                    (
-                        self.last_action_time
-                        + self.action_settle
-                        - self._frame_time
-                    )
-                    * 1000,
+                    "esperando frame que mostre o efeito de "
+                    "%s (falta %.0f ms)",
+                    "um swipe" if self._last_was_swipe else "ação",
+                    (base + settle - self._frame_time) * 1000,
                 )
 
                 self._waited_warned = agora
@@ -961,6 +1034,11 @@ class StateMachine:
 
         self.last_action_time = now
         self.last_detection_time = now
+
+        # A partir daqui vale SWIPE_WAITING_TIME, não
+        # ACTION_SETTLE: a vista acabou de se mover inteira, e
+        # nenhuma detecção de antes dela parar vale um toque.
+        self._last_was_swipe = True
 
         # A exploração não passa por _act, então precisa gravar
         # aqui. É decisão do bot como qualquer outra: "não achei
