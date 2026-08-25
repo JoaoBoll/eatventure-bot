@@ -516,6 +516,106 @@ def test_medidores_reportam_taxa():
     )
 
 
+def test_piso_descarta_frame_velho_sem_perder_o_anterior():
+    """
+    Depois de uma ação, o frame que o worker tem na mão mostra a
+    tela de ANTES do efeito dela: o _can_act descartaria o
+    resultado de qualquer forma, então gastar uma passada nele é
+    perda dupla — a passada em si, e o atraso até a primeira
+    passada ÚTIL, que só começa depois dela.
+
+    O que NÃO pode acontecer é o piso apagar a última leitura
+    boa: o overlay ficaria vazio e pareceria detector travado.
+    """
+
+    frame = cv2.imread(str(IMAGE))
+
+    _, vision, _, _ = build()
+
+    vision.set_categories({"upgrade"})
+
+    vision.start()
+
+    try:
+
+        # Uma leitura boa primeiro.
+        deadline = time.monotonic() + 5.0
+
+        while time.monotonic() < deadline:
+
+            vision.set_frame(frame)
+
+            deteccoes, _ = vision.get_detections()
+
+            if deteccoes:
+                break
+
+            time.sleep(0.02)
+
+        assert deteccoes, "nem detectou antes de testar o piso"
+
+        antes = vision.detections_time
+
+        # -------------------------------------------------
+        # Piso no futuro: TODO frame de agora é velho.
+        # -------------------------------------------------
+
+        vision.set_frame_floor(time.monotonic() + 30.0)
+
+        pulados = vision.skipped_stale
+
+        for _ in range(30):
+
+            vision.set_frame(frame)
+
+            time.sleep(0.02)
+
+        assert vision.skipped_stale > pulados, (
+            "não descartou frame anterior ao piso"
+        )
+
+        # A leitura anterior continua de pé.
+        ainda, _ = vision.get_detections()
+
+        assert ainda == deteccoes, "apagou a última leitura boa"
+
+        assert vision.detections_time == antes, (
+            "publicou análise de frame que devia ter pulado"
+        )
+
+        assert vision.waiting_settle is True
+
+        # E a thread não morreu pulando.
+        assert vision.is_alive()
+
+        # -------------------------------------------------
+        # Piso liberado: volta a analisar.
+        # -------------------------------------------------
+
+        vision.set_frame_floor(0.0)
+
+        deadline = time.monotonic() + 5.0
+
+        while time.monotonic() < deadline:
+
+            vision.set_frame(frame)
+
+            if vision.detections_time > antes:
+                break
+
+            time.sleep(0.02)
+
+        assert vision.detections_time > antes, (
+            "não voltou a analisar depois de liberar o piso"
+        )
+
+        assert vision.waiting_settle is False
+
+    finally:
+
+        vision.stop()
+
+
 def test_worker_reporta_fps_e_custo():
     """
     Os dois números do HUD vêm daqui, e são diferentes do

@@ -861,6 +861,51 @@ def test_swipe_espera_a_vista_parar():
     )
 
 
+def test_piso_do_frame_concorda_com_o_can_act():
+    """
+    `frame_floor()` é o MESMO prazo que o `_can_act` aplica —
+    ele existe para o VisionWorker poder pular frame que a
+    máquina descartaria de todo jeito.
+
+    Se os dois divergirem, o worker joga fora frame que serviria
+    (bot cego) ou analisa frame que não serve (passada perdida).
+    Este teste é a amarra entre eles.
+    """
+
+    # Máquina recém-nascida (o build() adianta o relógio da
+    # última ação para vencer o cooldown, então não serve para
+    # este caso): sem ação nenhuma, não há o que descartar, e um
+    # piso qualquer aqui cegaria o bot no arranque.
+    assert sm.StateMachine(FakeActions()).frame_floor() == 0.0
+
+    machine, actions, clock = build()
+
+    machine.action_cooldown = 0.0
+
+    assert machine._act("food", detection("food")) is True
+
+    actions.last_finished_at = clock.now
+
+    piso = machine.frame_floor()
+
+    assert piso == clock.now + ACTION_SETTLE, piso
+
+    # Exatamente no piso: barrado pelos dois.
+    machine._frame_time = piso
+
+    assert not machine._can_act()
+
+    # Um fio acima: liberado pelos dois.
+    machine._frame_time = piso + 0.001
+
+    assert machine._can_act()
+
+    # E o piso do swipe é o maior dos dois.
+    machine._last_was_swipe = True
+
+    assert machine.frame_floor() == clock.now + SWIPE_WAITING_TIME
+
+
 def test_swipe_espera_mais_que_um_toque():
     """
     SWIPE_WAITING_TIME abaixo de ACTION_SETTLE não teria

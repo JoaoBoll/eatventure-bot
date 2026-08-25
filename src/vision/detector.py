@@ -1699,15 +1699,31 @@ class Detector:
 
         # Quantas detecções o frame analisado produziu. Zero em
         # vermelho: é a informação que faltava.
+        #
+        # Menos enquanto a tela estabiliza: ali o worker está
+        # PULANDO frames de propósito (mostram a tela de antes
+        # do efeito da ação), e pintar isso de vermelho acusaria
+        # de defeito o que é o comportamento certo.
         quantas = stats.get("detections")
+
+        aguardando = stats.get("waiting_settle")
 
         if quantas is not None:
 
+            label = f"deteccoes {quantas:4d}"
+
+            if aguardando:
+                label += "  (aguardando a tela parar)"
+
             self._hud_text(
                 output,
-                f"deteccoes {quantas:4d}",
+                label,
                 y,
-                self.HUD_OK if quantas else self.HUD_BAD,
+                self.HUD_NEUTRAL
+                if aguardando
+                else (
+                    self.HUD_OK if quantas else self.HUD_BAD
+                ),
             )
 
             y += 40

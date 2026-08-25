@@ -95,6 +95,35 @@ class VisionWorker:
         self.last_error = None
         self._error_kinds = set()
 
+        # -------------------------------------------------
+        # PISO DE FRESCOR
+        # -------------------------------------------------
+        #
+        # Instante de captura abaixo do qual um frame não serve
+        # para decidir: ele mostra a tela de ANTES do efeito da
+        # última ação. Quem calcula é a StateMachine
+        # (frame_floor), que é quem sabe quando a ação terminou
+        # e quanto de espera ela pede.
+        #
+        # Por que o worker se importa: sem isto ele pegava o
+        # frame que estava na mão logo depois de uma ação e
+        # gastava uma passada INTEIRA nele — resultado que o
+        # _can_act ia descartar de qualquer forma. Duas perdas:
+        # a passada em si, e o atraso até a primeira passada
+        # ÚTIL, porque a próxima só começava depois dessa.
+        #
+        # Pular custa quase nada: a captura entrega um frame
+        # novo a cada 16-33 ms, e a janela pulada é justamente
+        # aquela em que o bot não pode agir.
+        self.frame_floor = 0.0
+
+        # Frames descartados por serem velhos demais para
+        # decidir. Para o HUD explicar um overlay parado.
+        self.skipped_stale = 0
+
+        # Esperando a tela estabilizar depois de uma ação?
+        self.waiting_settle = False
+
         # Custo real de uma passada, e quantas por segundo.
         #
         # É o número que diz se o bot está enxergando rápido
@@ -166,6 +195,19 @@ class VisionWorker:
             )
 
             self.frame_lock.notify()
+
+    def set_frame_floor(self, timestamp):
+        """
+        Instante de captura abaixo do qual um frame não serve
+        para decidir. Chamado pelo loop principal com o
+        frame_floor() da StateMachine.
+
+        0.0 = nada a descartar (nenhuma ação ainda).
+        """
+
+        with self.frame_lock:
+
+            self.frame_floor = timestamp or 0.0
 
     # =====================================================
     # CATEGORIAS
@@ -346,8 +388,34 @@ class VisionWorker:
             # Limpa para sinalizar que foi consumido.
             self.latest_raw_frame = None
 
+            floor = self.frame_floor
+
         if raw_frame is None:
             return
+
+        # -------------------------------------------------
+        # FRAME VELHO DEMAIS PARA DECIDIR
+        # -------------------------------------------------
+        #
+        # Capturado antes de a última ação assentar: mostra a
+        # tela de ANTES do efeito dela, e o _can_act ia
+        # descartar o resultado de qualquer maneira. Analisar
+        # seria gastar uma passada inteira para nada — e, pior,
+        # atrasar a primeira passada ÚTIL, que só começa depois
+        # desta terminar.
+        #
+        # As detecções anteriores NÃO são apagadas: o overlay
+        # continua mostrando a última leitura boa, e quem
+        # pergunta "posso agir?" já é barrado pelo settle.
+        if floor and frame_time and frame_time <= floor:
+
+            self.skipped_stale += 1
+
+            self.waiting_settle = True
+
+            return
+
+        self.waiting_settle = False
 
         with self.detection_lock:
 

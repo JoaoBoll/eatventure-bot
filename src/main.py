@@ -283,6 +283,14 @@ def run_loop(
                 state_machine.wanted_categories()
             )
 
+        # Frame capturado antes de a última ação assentar não
+        # pode autorizar nada (o _can_act descarta), então o
+        # worker também não deve gastar uma passada nele. Sem
+        # isto, cada ação custava uma análise jogada fora MAIS o
+        # atraso até a primeira análise útil, que só começava
+        # depois dela.
+        vision.set_frame_floor(state_machine.frame_floor())
+
         vision.set_frame(frame, timestamp)
 
         # -------------------------------------------------
@@ -430,6 +438,13 @@ def run_loop(
                 "state": state_machine.state,
                 "searched": detector.last_searched,
                 "detections": len(detections),
+
+                # Overlay parado logo depois de uma ação é
+                # ESPERADO, não defeito: o worker está pulando
+                # frames que mostram a tela de antes do efeito.
+                # Sem esta linha, a pausa parece detector
+                # travado.
+                "waiting_settle": vision.waiting_settle,
                 "vision_error": (
                     None
                     if vision.is_alive()

@@ -735,6 +735,57 @@ class StateMachine:
             self.state,
         )
 
+    def frame_floor(self):
+        """
+        O instante de CAPTURA que um frame precisa passar para
+        poder autorizar uma ação. Frame anterior a isto é
+        inútil para decidir — mostra a tela de antes do efeito
+        da última ação.
+
+        Uma definição só, em um lugar só: o `_can_act` usa para
+        barrar a decisão, e o VisionWorker usa para não gastar
+        uma passada inteira num frame que já se sabe que não vai
+        autorizar nada. Se os dois calculassem por conta
+        própria, um dia divergiriam — e o sintoma seria o bot
+        agindo sobre tela velha de novo.
+
+        DE QUANDO SE CONTA: do FIM da ação, não da submissão
+        dela. As ações são assíncronas e algumas são longas — o
+        swipe leva 500 ms, o long press de comida leva 4 s.
+        Contando da submissão, o prazo já estava vencido quando
+        a ação terminava, e o bot decidia sobre um frame
+        capturado no MEIO dela.
+
+        O max() cobre a janela em que a ação foi submetida mas
+        ainda não terminou (aí vale a submissão) e o caso de um
+        ActionManager que não reporte o fim (aí o comportamento
+        é o antigo, nunca pior).
+
+        QUANTO: swipe tem espera própria. Um toque mexe um
+        painel; um swipe move a vista inteira e o jogo segue
+        deslizando depois de o dedo sair.
+        """
+
+        if not self.last_action_time:
+            return 0.0
+
+        base = max(
+            self.last_action_time,
+            getattr(
+                self.action_manager,
+                "last_finished_at",
+                0.0,
+            ),
+        )
+
+        settle = (
+            self.swipe_settle
+            if self._last_was_swipe
+            else self.action_settle
+        )
+
+        return base + settle
+
     def _can_act(self):
 
         # Ação em andamento (ex.: long press de 4 s) precisa
@@ -792,25 +843,10 @@ class StateMachine:
         # buraco: o bot rolava a tela, detectava um alvo num
         # frame em que a vista ainda escorregava, e tocava onde
         # o alvo ESTAVA.
-        base = max(
-            self.last_action_time,
-            getattr(
-                self.action_manager,
-                "last_finished_at",
-                0.0,
-            ),
-        )
-
-        settle = (
-            self.swipe_settle
-            if self._last_was_swipe
-            else self.action_settle
-        )
-
         if (
             self._frame_time is not None
             and self.last_action_time
-            and self._frame_time <= base + settle
+            and self._frame_time <= self.frame_floor()
         ):
 
             if (
@@ -822,7 +858,10 @@ class StateMachine:
                     "esperando frame que mostre o efeito de "
                     "%s (falta %.0f ms)",
                     "um swipe" if self._last_was_swipe else "ação",
-                    (base + settle - self._frame_time) * 1000,
+                    (
+                        self.frame_floor() - self._frame_time
+                    )
+                    * 1000,
                 )
 
                 self._waited_warned = agora
