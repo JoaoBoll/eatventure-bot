@@ -516,6 +516,91 @@ def test_medidores_reportam_taxa():
     )
 
 
+def test_gray_coin_toca_no_ponto_proprio():
+    """
+    `gray_coin` dispensa igual ao `gray_max`: ponto FIXO,
+    ignorando onde a detecção apareceu. O que difere é o ponto.
+    """
+
+    from actions.manager import ACTION_TABLE, DISMISS
+    from core.config import DISMISS_POINT, GRAY_COIN_POINT
+
+    # Mesmo comportamento do gray_max, ponto diferente.
+    assert (
+        ACTION_TABLE["gray_coin"]
+        == ACTION_TABLE["gray_max"]
+        == DISMISS
+    )
+
+    assert GRAY_COIN_POINT != DISMISS_POINT
+
+    deteccao = {
+        "category": "gray_coin",
+        "name": "item_001.png",
+        "confidence": 0.95,
+        "color_similarity": 0.95,
+        "min_threshold": 0.8,
+
+        # Longe do ponto fixo, de propósito: é o que prova que a
+        # detecção foi ignorada.
+        "x": 500,
+        "y": 900,
+        "width": 80,
+        "height": 80,
+    }
+
+    centro = (
+        deteccao["x"] + deteccao["width"] // 2,
+        deteccao["y"] + deteccao["height"] // 2,
+    )
+
+    for tamanho in ((1080, 2400), (2400, 1080), (720, 1600)):
+
+        _, _, actions, _ = build(tamanho)
+
+        actions.start()
+
+        try:
+
+            actions.set_frame_size(*tamanho)
+
+            assert actions.execute("gray_coin", deteccao)
+
+            deadline = time.monotonic() + 5.0
+
+            while (
+                actions.is_busy()
+                and time.monotonic() < deadline
+            ):
+                time.sleep(0.02)
+
+            esperado = actions._from_reference(
+                *GRAY_COIN_POINT
+            )
+
+            assert actions.android.taps[-1] == esperado, (
+                tamanho,
+                actions.android.taps,
+            )
+
+            assert actions.android.taps[-1] != centro, (
+                "tocou no centro da detecção — devia ignorar a "
+                "detecção e usar o ponto fixo"
+            )
+
+            # O rótulo do dataset aponta para o MESMO lugar que
+            # o dedo tocou. Se os dois divergirem, o treino
+            # aprende um ponto que o bot nunca toca.
+            assert actions.target_frame(
+                "gray_coin",
+                deteccao,
+            ) == actions._reference_to_frame(*GRAY_COIN_POINT)
+
+        finally:
+
+            actions.stop()
+
+
 def test_proporcao_diferente_nao_encolhe_o_template():
     """
     O bug de "não detecta em outro aparelho".

@@ -1523,6 +1523,7 @@ class Detector:
         "build": (180, 180, 255),
         "fly": (200, 255, 255),
         "gray_max": (128, 128, 128),
+        "gray_coin": (90, 160, 200),
         "open_store": (255, 180, 0),
         "renovate_coin": (0, 255, 255),
     }

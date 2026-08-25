@@ -339,6 +339,85 @@ def test_espera_de_entrada_cabe_no_timeout_do_estado():
         )
 
 
+def test_gray_coin_dispensa_como_o_gray_max():
+    """
+    `gray_coin` faz o que o `gray_max` faz — dispensa o painel e
+    volta para NORMAL. O que muda é só o ponto tocado, e isso é
+    assunto do ActionManager
+    (test_pipeline::test_gray_coin_toca_no_ponto_proprio).
+    """
+
+    for categoria in ("gray_max", "gray_coin"):
+
+        machine, actions, _ = build()
+
+        machine.update([detection(categoria)])
+
+        assert actions.actions == [categoria], (
+            categoria,
+            actions.actions,
+        )
+
+        # E em FOOD também: é lá que o painel esgotado aparece.
+        machine, actions, _ = build()
+
+        machine._enter(sm.FOOD)
+
+        machine.update([detection(categoria)])
+
+        assert actions.actions == [categoria], (
+            categoria,
+            actions.actions,
+        )
+
+        assert machine.state == sm.NORMAL, machine.state
+
+
+def test_dispensa_em_food_acontece_antes_de_desistir():
+    """
+    Em FOOD, a dispensa tem de ser avaliada ANTES do
+    _wait_or_give_up.
+
+    O _wait_or_give_up pode chamar _enter(NORMAL). Se a dispensa
+    vier depois dele, a ação sai quando a máquina JÁ SE CONSIDERA
+    em NORMAL — decidindo por uma regra de FOOD num estado que
+    não é mais FOOD, e rotulando a amostra do dataset com o
+    estado errado.
+    """
+
+    machine, actions, clock = build()
+
+    # Espia o estado NO MOMENTO em que a ação é despachada.
+    estados = []
+
+    original = actions.execute
+
+    def espiao(action, deteccao):
+
+        estados.append(machine.state)
+
+        return original(action, deteccao)
+
+    actions.execute = espiao
+
+    machine._enter(sm.FOOD)
+
+    # Timer de desistência JÁ VENCIDO: é a situação em que o
+    # _wait_or_give_up agiria.
+    machine.up_food_wait_start = clock.now
+
+    clock.advance(UP_FOOD_WAIT + 0.1)
+
+    machine.update([detection("gray_coin")])
+
+    assert actions.actions == ["gray_coin"], actions.actions
+
+    assert estados == [sm.FOOD], (
+        f"dispensou já em {estados} — o _wait_or_give_up correu "
+        f"antes e trocou o estado debaixo da ação"
+    )
+
+
 def test_food_desiste_depois_da_espera():
 
     machine, actions, clock = build()

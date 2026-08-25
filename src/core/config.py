@@ -429,6 +429,7 @@ DATASET_ACTIONS = {
 
     # Ponto fixo, ignora a detecção.
     "gray_max",
+    "gray_coin",
     "dismiss",
 
     # Sem alvo pontual.
@@ -810,6 +811,27 @@ UPGRADE_FOOD_PRESS = 4.0
 # Em coordenadas da resolução de referência.
 DISMISS_POINT = (10, 2200)
 
+# Ponto tocado pela ação `gray_coin`.
+#
+# Em coordenadas da resolução de referência, como o
+# DISMISS_POINT — convertido para o device em runtime, então vale
+# em qualquer aparelho.
+#
+# `gray_coin` funciona como o `gray_max`: dispensa o painel
+# tocando num PONTO FIXO, ignorando onde a detecção apareceu. A
+# única diferença é o ponto, e é por isso que ela existe como
+# ação separada em vez de reusar o gray_max.
+GRAY_COIN_POINT = (1070, 250)
+
+# Ponto fixo por ação, para as que ignoram a detecção.
+#
+# Ação ausente aqui usa o DISMISS_POINT. É a tabela que permite
+# uma ação nova de dispensa não mexer no despacho do
+# ActionManager — só numa linha aqui.
+ACTION_POINTS = {
+    "gray_coin": GRAY_COIN_POINT,
+}
+
 # ESCALONAMENTO DE FECHAMENTO
 #
 # O problema: o "ponto seguro" não é seguro. Ele pode abrir um
@@ -839,7 +861,11 @@ DISMISS_POINT = (10, 2200)
 # rolagem onde o ponto funciona.
 
 # Ações que servem para fechar painel, e por isso escalam.
-DISMISS_ACTIONS = {"dismiss", "gray_max"}
+#
+# `gray_coin` entra junto com o `gray_max`: as duas dispensam
+# painel tocando em ponto fixo, e o ponto fixo é justamente o que
+# pode abrir outra coisa em vez de fechar.
+DISMISS_ACTIONS = {"dismiss", "gray_max", "gray_coin"}
 
 # Tentativas no ponto antes de rolar a tela até o fim.
 DISMISS_ATTEMPTS_BEFORE_SCROLL = 5

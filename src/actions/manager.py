@@ -22,6 +22,7 @@ import time
 from actions.android import AndroidActions
 from core import log
 from core.config import (
+    ACTION_POINTS,
     DISMISS_HOLD_DURATION,
     DISMISS_POINT,
     SCROLL_BOTTOM_DIRECTION,
@@ -93,6 +94,13 @@ ACTION_TABLE = {
     "gray_max": DISMISS,
     "dismiss": HOLD,
 
+    # Mesmo comportamento do gray_max — tap num ponto fixo,
+    # ignorando onde a detecção apareceu — em OUTRO ponto
+    # (GRAY_COIN_POINT). O ponto de cada ação sai de
+    # ACTION_POINTS, então uma dispensa nova é uma linha no
+    # config e uma aqui, sem tocar no despacho.
+    "gray_coin": DISMISS,
+
     # Rola a tela até o fim. Não fecha nada por si — serve para
     # chegar na posição de rolagem em que o canto de baixo fica
     # vazio, e aí o toque no ponto finalmente fecha em vez de
@@ -103,6 +111,24 @@ ACTION_TABLE = {
     # continua implementado, mas fora da tabela.
     "scroll_bottom": SCROLL,
 }
+
+
+def ponto_fixo(action):
+    """
+    O ponto que esta ação toca, em coordenadas de REFERÊNCIA.
+
+    Só vale para as ações que ignoram a detecção (DISMISS/HOLD).
+    Ação sem ponto próprio usa o DISMISS_POINT, que era o único
+    que existia antes de haver mais de uma dispensa.
+
+    Função de módulo, e não método, porque as duas leitoras são
+    o despacho (que converte para o device) e o rótulo do
+    dataset (que converte para o frame) — as duas precisam sair
+    do MESMO lugar, ou o dataset grava um ponto e o dedo toca
+    outro.
+    """
+
+    return ACTION_POINTS.get(action, DISMISS_POINT)
 
 
 class ActionManager:
@@ -321,7 +347,9 @@ class ActionManager:
 
         if kind in (DISMISS, HOLD):
 
-            return self._reference_to_frame(*DISMISS_POINT)
+            return self._reference_to_frame(
+                *ponto_fixo(action)
+            )
 
         if detection is None:
             return None
@@ -492,13 +520,13 @@ class ActionManager:
 
         elif kind == DISMISS:
 
-            x, y = self._from_reference(*DISMISS_POINT)
+            x, y = self._from_reference(*ponto_fixo(name))
 
             self._click(name, x, y)
 
         elif kind == HOLD:
 
-            x, y = self._from_reference(*DISMISS_POINT)
+            x, y = self._from_reference(*ponto_fixo(name))
 
             self._hold(name, x, y)
 

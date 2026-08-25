@@ -985,29 +985,35 @@ class StateMachine:
 
             return
 
+        # -------------------------------------------------
         # Painel de upgrade esgotado: dispensa.
-        gray_max = self._find(detections, "gray_max")
+        # -------------------------------------------------
+        #
+        # As duas dispensam o painel tocando num ponto fixo; o
+        # ponto é que difere (DISMISS_POINT contra
+        # GRAY_COIN_POINT).
+        #
+        # ANTES do _wait_or_give_up, e não depois: o
+        # _wait_or_give_up pode chamar _enter(NORMAL), e um
+        # _act(..., NORMAL) depois dele agiria já fora do estado
+        # FOOD — decidindo por uma regra de FOOD numa tela que a
+        # máquina já considera NORMAL.
+        for categoria, acao in (
+            ("gray_max", "gray_max"),
+            ("gray_coin", "gray_coin"),
+        ):
 
-        if gray_max is not None:
+            deteccao = self._find(detections, categoria)
 
-            self._reset_exploration()
+            if deteccao is not None:
 
-            self._act("gray_max", gray_max, NORMAL)
+                self._reset_exploration()
 
-            return
+                self._act(acao, deteccao, NORMAL)
+
+                return
 
         self._wait_or_give_up()
-
-        #Painel de upgrade esgotado: dispensa.
-        gray_coin = self._find(detections, "gray_coin")
-
-        if gray_coin is not None:
-
-            self._reset_exploration()
-
-            self._act("gray_coin", gray_coin, NORMAL)
-
-            return
 
     # =====================================================
     # NEW POINT
