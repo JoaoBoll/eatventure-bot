@@ -1032,6 +1032,42 @@ REPEATED_ACTION_WARNING = 8
 # Sem isto o bot trava para sempre se aparecer um modal
 # sem template: RENOVATE só sai achando a moeda, UPGRADE
 # só sai achando o botão de fechar.
+# Espera ao ENTRAR num estado, antes de agir nele.
+#
+# O caso concreto: ao abrir a tela de upgrade, o bot fechava ela
+# na hora ("insta fecha").
+#
+# Por que: as regras de UPGRADE são, em ordem,
+#
+#   1. up_upgrade -> evolui o item
+#   2. close      -> fecha e volta para NORMAL
+#
+# O painel abre com ANIMAÇÃO. No meio dela o "X" já está
+# desenhado e casa com o template, mas os botões de upgrade
+# ainda não — estão entrando, com tamanho e posição errados. Aí
+# a regra 1 não encontra nada, a regra 2 encontra, e o bot fecha
+# o painel que ele mesmo acabou de abrir.
+#
+# ACTION_SETTLE não resolve: ele é contado do TOQUE que abriu, e
+# cobre animação de fechar painel (0.15-0.3 s), não a de abrir
+# uma tela inteira. Aumentar o ACTION_SETTLE global deixaria
+# TODA ação do bot mais lenta para consertar uma tela.
+#
+# Como toda espera deste projeto, a condição é CAUSAL e não
+# temporal: o bot só age sobre um frame CAPTURADO pelo menos
+# este tanto depois de entrar no estado. Não é um sleep — o
+# VisionWorker também usa isto para não gastar passada em frame
+# que mostra a animação.
+#
+# Estado ausente = sem espera de entrada.
+#
+# Custo de errar para cima: o estado tem timeout
+# (STATE_TIMEOUTS), então uma espera longa demais come o tempo
+# que o bot tem para agir lá dentro.
+STATE_ENTRY_SETTLE = {
+    "UPGRADE": 0.5,
+}
+
 STATE_TIMEOUTS = {
     "RENOVATE": 12.0,
     "UPGRADE": 15.0,

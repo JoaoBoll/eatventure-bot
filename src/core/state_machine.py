@@ -47,6 +47,7 @@ from core.config import (
     MAX_DETECTION_AGE,
     MAX_SWIPES,
     REPEATED_ACTION_WARNING,
+    STATE_ENTRY_SETTLE,
     STATE_TIMEOUTS,
     SWIPE_START_DIRECTION,
     SWIPE_WAITING_TIME,
@@ -764,10 +765,39 @@ class StateMachine:
         QUANTO: swipe tem espera própria. Um toque mexe um
         painel; um swipe move a vista inteira e o jogo segue
         deslizando depois de o dedo sair.
+
+        E, por cima de tudo: a espera de ENTRADA no estado
+        (STATE_ENTRY_SETTLE), que não depende de ação nenhuma —
+        uma tela que abre com animação não fica pronta só porque
+        o toque que a abriu assentou. O piso é o MAIOR dos dois.
         """
 
+        # =============================================
+        # ESPERA DE ENTRADA NO ESTADO
+        # =============================================
+        #
+        # Independente da última ação: uma tela que abriu com
+        # animação não fica pronta só porque o toque assentou.
+        #
+        # Sem isto, a tela de upgrade era fechada na hora — no
+        # meio da animação o "X" já casa e os botões de upgrade
+        # ainda não, então a regra de fechar (que vem depois na
+        # prioridade) era a única a encontrar alvo.
+        # O `if` não é otimização: sem ele, um estado SEM espera
+        # de entrada teria piso == state_entered, e o primeiro
+        # frame de idade zero cairia no `<=` e seria barrado por
+        # empate. Estado sem espera precisa de piso zero, não de
+        # piso "agora".
+        entrada = STATE_ENTRY_SETTLE.get(self.state, 0.0)
+
+        piso = (
+            self.state_entered + entrada
+            if entrada
+            else 0.0
+        )
+
         if not self.last_action_time:
-            return 0.0
+            return piso
 
         base = max(
             self.last_action_time,
@@ -784,7 +814,7 @@ class StateMachine:
             else self.action_settle
         )
 
-        return base + settle
+        return max(piso, base + settle)
 
     def _can_act(self):
 
@@ -843,10 +873,16 @@ class StateMachine:
         # buraco: o bot rolava a tela, detectava um alvo num
         # frame em que a vista ainda escorregava, e tocava onde
         # o alvo ESTAVA.
+        # Piso 0 = nada a esperar. Antes a condição era "houve
+        # ação alguma vez?", que ignorava a espera de ENTRADA no
+        # estado — e é ela que impede o painel de upgrade de ser
+        # fechado no meio da animação de abrir.
+        piso = self.frame_floor()
+
         if (
             self._frame_time is not None
-            and self.last_action_time
-            and self._frame_time <= self.frame_floor()
+            and piso
+            and self._frame_time <= piso
         ):
 
             if (
@@ -855,13 +891,15 @@ class StateMachine:
             ):
 
                 logger.debug(
-                    "esperando frame que mostre o efeito de "
-                    "%s (falta %.0f ms)",
-                    "um swipe" if self._last_was_swipe else "ação",
+                    "%s: esperando frame que mostre o efeito "
+                    "de %s (falta %.0f ms)",
+                    self.state,
                     (
-                        self.frame_floor() - self._frame_time
-                    )
-                    * 1000,
+                        "um swipe"
+                        if self._last_was_swipe
+                        else "ação"
+                    ),
+                    (piso - self._frame_time) * 1000,
                 )
 
                 self._waited_warned = agora

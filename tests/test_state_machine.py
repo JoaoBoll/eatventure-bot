@@ -24,6 +24,7 @@ from core.config import (                         # noqa: E402
     DISMISS_ATTEMPTS_BEFORE_SCROLL,
     MAX_DETECTION_AGE,
     REPEATED_ACTION_WARNING,
+    STATE_ENTRY_SETTLE,
     STATE_TIMEOUTS,
     SWIPE_WAITING_TIME,
     UP_FOOD_WAIT,
@@ -240,6 +241,11 @@ def test_upgrade_permanece_enquanto_houver_item():
 
     machine._enter(sm.UPGRADE)
 
+    # O painel abre com animação: STATE_ENTRY_SETTLE segura a
+    # mão antes de agir aqui dentro. Ver
+    # test_upgrade_nao_fecha_no_meio_da_animacao.
+    clock.advance(STATE_ENTRY_SETTLE[sm.UPGRADE] + 0.01)
+
     machine.update([detection("up_upgrade")])
 
     assert actions.actions == ["upgrade_item"], actions.actions
@@ -252,6 +258,85 @@ def test_upgrade_permanece_enquanto_houver_item():
 
     assert actions.actions[-1] == "close", actions.actions
     assert machine.state == sm.NORMAL, machine.state
+
+
+def test_upgrade_nao_fecha_no_meio_da_animacao():
+    """
+    O bug relatado: ao abrir a tela de upgrade, o bot fechava
+    ela na hora.
+
+    As regras de UPGRADE são, em ordem, `up_upgrade` (evolui) e
+    `close` (fecha e sai). Enquanto o painel entra na tela, o
+    "X" já casa com o template e os botões de upgrade ainda não
+    — então a regra 1 não acha nada, a regra 2 acha, e o bot
+    desfaz o que acabou de fazer.
+
+    ACTION_SETTLE não cobre isto: ele é contado do TOQUE que
+    abriu e é dimensionado para animação de FECHAR painel.
+    """
+
+    machine, actions, clock = build()
+
+    espera = STATE_ENTRY_SETTLE[sm.UPGRADE]
+
+    assert espera > ACTION_SETTLE, (
+        "uma espera de entrada menor que a de ação não teria "
+        "efeito nenhum"
+    )
+
+    machine._enter(sm.UPGRADE)
+
+    # -----------------------------------------------------
+    # No meio da animação: o "X" é a única coisa que casa.
+    # -----------------------------------------------------
+    #
+    # Já passado o ACTION_SETTLE, para provar que é a espera de
+    # ENTRADA que está segurando — e não a de ação.
+
+    clock.advance(ACTION_SETTLE + 0.01)
+
+    machine.update([detection("close")])
+
+    assert actions.actions == [], (
+        "fechou o painel no meio da animação de abrir"
+    )
+
+    assert machine.state == sm.UPGRADE, machine.state
+
+    # -----------------------------------------------------
+    # Painel montado: agora o upgrade aparece e é ele que vence.
+    # -----------------------------------------------------
+
+    clock.advance(espera)
+
+    machine.update([
+        detection("up_upgrade"),
+        detection("close"),
+    ])
+
+    assert actions.actions == ["upgrade_item"], actions.actions
+
+    assert machine.state == sm.UPGRADE, machine.state
+
+
+def test_espera_de_entrada_cabe_no_timeout_do_estado():
+    """
+    A espera de entrada come o tempo que o bot tem para agir
+    dentro do estado: os dois vêm do mesmo relógio.
+    """
+
+    for estado, espera in STATE_ENTRY_SETTLE.items():
+
+        limite = STATE_TIMEOUTS.get(estado)
+
+        if limite is None:
+            continue
+
+        assert espera < limite / 2, (
+            estado,
+            espera,
+            limite,
+        )
 
 
 def test_food_desiste_depois_da_espera():
