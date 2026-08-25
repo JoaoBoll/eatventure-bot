@@ -33,6 +33,7 @@ from core import log
 from core.metrics import RateMeter
 from core.config import (
     CAPTURE_CONNECT_TIMEOUT,
+    CAPTURE_MAX_FPS,
     CAPTURE_START_TIMEOUT,
     SCRCPY_DEVICE_JAR,
     SCRCPY_PORT,
@@ -90,6 +91,24 @@ class ScreenCapture:
 
         # Frames por segundo que o device está entregando.
         self.rate = RateMeter()
+
+        # -------------------------------------------------
+        # TETO DE FPS
+        # -------------------------------------------------
+        #
+        # Intervalo mínimo entre frames PUBLICADOS. O device
+        # manda 60; o bot não usa 60.
+        self._min_interval = (
+            1.0 / CAPTURE_MAX_FPS
+            if CAPTURE_MAX_FPS
+            else 0.0
+        )
+
+        self._published_at = 0.0
+
+        # Frames decodificados e descartados pelo teto. Serve
+        # para conferir que o teto está atuando (e quanto).
+        self.dropped = 0
 
         self.condition = threading.Condition()
 
@@ -425,6 +444,34 @@ class ScreenCapture:
         return True
 
     def _publish(self, frame):
+
+        # =================================================
+        # TETO DE FPS
+        # =================================================
+        #
+        # ANTES da conversão, que é o trabalho caro: um
+        # YUV->BGR de 1080x2400 mexe 7.8 MB por frame. Cortar
+        # aqui é o que economiza de verdade — cortar depois só
+        # jogaria fora trabalho já feito.
+        #
+        # A DECODIFICAÇÃO não é pulada, e não pode ser: H.264 é
+        # inter-quadro, então um frame descartado ainda serve de
+        # referência para os próximos. O que se pula é converter,
+        # publicar e acordar o loop principal.
+        if self._min_interval:
+
+            agora = time.monotonic()
+
+            if (
+                agora - self._published_at
+                < self._min_interval
+            ):
+
+                self.dropped += 1
+
+                return
+
+            self._published_at = agora
 
         yuv = frame.to_ndarray()
 

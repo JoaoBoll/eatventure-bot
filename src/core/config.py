@@ -145,6 +145,28 @@ CAPTURE_CONNECT_TIMEOUT = 12.0
 # Tempo para o primeiro frame DECODIFICADO depois de conectar.
 CAPTURE_START_TIMEOUT = 6.0
 
+# Teto de frames por segundo entregues ao resto do programa.
+#
+# 0 = sem teto (entrega tudo o que o device mandar).
+#
+# O device manda 60. O bot não usa 60: o detector faz ~30
+# passadas por segundo no caminho rápido, e a decisão ainda
+# espera ACTION_SETTLE (400 ms) depois de cada ação. Os frames
+# entre um e outro são convertidos, copiados e descartados.
+#
+# O corte é feito ANTES da conversão de cor, que é a parte
+# caríssima: cada frame de 1080x2400 custa um YUV->BGR de 7.8 MB
+# (a decodificação em si não pode ser pulada — H.264 é
+# inter-quadro, um frame descartado ainda é referência para os
+# seguintes).
+#
+# Em 30 fps isso corta metade dessas conversões, e metade das
+# acordadas do loop principal (que a cada frame novo redesenha a
+# janela da IA). O que se paga em troca é até 33 ms de idade
+# extra no frame mais recente — contra os 400 ms do settle, não
+# muda a reação do bot.
+CAPTURE_MAX_FPS = 30
+
 
 # =========================================================
 # VISUALIZAÇÃO
@@ -558,6 +580,68 @@ LOG_LEVEL = "INFO"
 
 REFERENCE_WIDTH = 1080
 REFERENCE_HEIGHT = 2400
+
+
+# ---------------------------------------------------------
+# TEMPLATE EM QUALQUER RESOLUÇÃO
+# ---------------------------------------------------------
+#
+# Os templates são reescalados para a resolução do frame (uma
+# vez por resolução vista, não por passada). Falta decidir POR
+# QUANTO — e é aí que device diferente deixava de detectar.
+#
+# O problema não é resolução, é PROPORÇÃO. Escalar pelo menor
+# dos dois fatores (largura e altura) só está certo quando a
+# proporção é a mesma da referência. Num 1080x1920 contra uma
+# referência 1080x2400:
+#
+#   min(1080/1080, 1920/2400) = 0.80
+#
+# ou seja, todo template encolhia 20% — quando a largura é
+# IDÊNTICA e o ícone na tela tem exatamente o mesmo tamanho em
+# pixels. Nada passava do threshold, e o sintoma era "não
+# detecta em outro aparelho".
+#
+# TEMPLATE_SCALE_BASIS escolhe de onde sai o fator:
+#
+#   "short_side" ... razão entre os LADOS CURTOS (padrão)
+#   "long_side" .... razão entre os lados longos
+#   "width" ........ só a largura
+#   "height" ....... só a altura
+#   "min" .......... o menor dos dois (o comportamento antigo)
+#
+# "short_side" é o padrão porque é assim que UI de jogo mobile
+# costuma escalar: o layout se ancora na dimensão estreita
+# (largura no retrato, altura no deitado) e o excedente da outra
+# dimensão vira mais cenário, não interface maior. É também o
+# único que dá 1.0 no caso acima, que é a resposta certa.
+#
+# A comparação é feita SEMPRE na mesma orientação: este jogo
+# roda deitado, então o frame chega 2400x1080 enquanto a
+# referência está escrita 1080x2400.
+TEMPLATE_SCALE_BASIS = "short_side"
+
+# Escalas EXTRA procuradas em volta da estimativa.
+#
+# Nenhuma regra acerta todo aparelho: densidade de tela, barra
+# de status e a própria escolha de layout do jogo mudam o
+# tamanho do ícone alguns por cento. E template matching é
+# intolerante a isso — 8% de erro de escala já derruba a
+# confiança abaixo de 0.95.
+#
+# Então, em vez de apostar num fator só, o detector procura o
+# template em VÁRIOS tamanhos e fica com o que casar melhor. A
+# supressão por sobreposição (NMS_IOU) já colapsa os acertos
+# repetidos das escalas vizinhas, e a ordenação por confiança
+# escolhe a melhor — não é preciso decidir a escala de antemão.
+#
+# CUSTO: multiplica os templates procurados. Só vale onde é
+# necessário, então NÃO é aplicado quando o frame está na
+# resolução de referência (aí é uma escala só, custo zero).
+#
+# Com o aparelho já conhecido e detectando bem, vale reduzir
+# para (1.0,): a passada volta ao custo cheio de uma escala.
+TEMPLATE_SCALE_STEPS = (0.92, 1.0, 1.08)
 
 
 # =========================================================

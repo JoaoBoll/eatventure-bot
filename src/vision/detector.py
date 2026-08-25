@@ -63,6 +63,8 @@ from core.config import (
     NMS_IOU,
     REFINE_SLACK,
     SHAPE_THRESHOLD,
+    TEMPLATE_SCALE_BASIS,
+    TEMPLATE_SCALE_STEPS,
     VISION_PRIORITY_STOP,
     COARSE_SCALE_MIN,
     COARSE_SCALE_STEP,
@@ -435,34 +437,101 @@ class Detector:
         }
 
     @staticmethod
-    def _frame_scale(frame_width, frame_height):
+    def _reference_size(frame_width, frame_height):
         """
-        Quanto o frame do device é maior ou menor que a
-        resolução em que os templates foram recortados.
+        A referência NA ORIENTAÇÃO do frame.
 
-        A referência é COMPARADA NA MESMA ORIENTAÇÃO: este
-        jogo roda deitado, então o frame chega 2400x1080
+        Este jogo roda deitado, então o frame chega 2400x1080
         enquanto a referência está escrita 1080x2400. Sem a
-        troca, min() daria 0.45 e todo template seria
-        reescalado para menos da metade — nenhum passaria do
-        threshold, que é exatamente o sintoma de "não detecta
+        troca, qualquer razão sai absurda (0.45) e nenhum
+        template passa do threshold — o sintoma de "não detecta
         nada".
         """
 
         ref_width = REFERENCE_WIDTH
         ref_height = REFERENCE_HEIGHT
 
-        if not ref_width or not ref_height:
-            return 1.0
-
         if (frame_width > frame_height) != (
             ref_width > ref_height
         ):
             ref_width, ref_height = ref_height, ref_width
 
-        return min(
-            frame_width / ref_width,
-            frame_height / ref_height,
+        return ref_width, ref_height
+
+    @classmethod
+    def _frame_scale(cls, frame_width, frame_height):
+        """
+        Quanto o template precisa mudar de tamanho para valer
+        neste frame.
+
+        O critério vem de TEMPLATE_SCALE_BASIS, porque não
+        existe um que sirva sempre: o que muda entre aparelhos
+        não é só resolução, é PROPORÇÃO. Escalar pelo menor dos
+        dois fatores (o antigo "min") só está certo quando a
+        proporção é a mesma da referência — num 1080x1920 contra
+        1080x2400 ele encolhia tudo 20% com a largura idêntica,
+        e aí não detectava nada.
+        """
+
+        if not REFERENCE_WIDTH or not REFERENCE_HEIGHT:
+            return 1.0
+
+        if not frame_width or not frame_height:
+            return 1.0
+
+        ref_width, ref_height = cls._reference_size(
+            frame_width,
+            frame_height,
+        )
+
+        por_largura = frame_width / ref_width
+        por_altura = frame_height / ref_height
+
+        if TEMPLATE_SCALE_BASIS == "width":
+            return por_largura
+
+        if TEMPLATE_SCALE_BASIS == "height":
+            return por_altura
+
+        if TEMPLATE_SCALE_BASIS == "min":
+            return min(por_largura, por_altura)
+
+        if TEMPLATE_SCALE_BASIS == "long_side":
+
+            return (
+                max(frame_width, frame_height)
+                / max(ref_width, ref_height)
+            )
+
+        if TEMPLATE_SCALE_BASIS != "short_side":
+
+            logger.warning(
+                "TEMPLATE_SCALE_BASIS desconhecido (%r) — "
+                "usando 'short_side'.",
+                TEMPLATE_SCALE_BASIS,
+            )
+
+        # UI de jogo mobile se ancora na dimensão ESTREITA: o
+        # excedente da outra vira mais cenário, não interface
+        # maior.
+        return (
+            min(frame_width, frame_height)
+            / min(ref_width, ref_height)
+        )
+
+    @classmethod
+    def _is_reference(cls, frame_width, frame_height):
+        """
+        O frame está exatamente na resolução de referência (em
+        qualquer das duas orientações)?
+
+        É o caso em que não há nada a reescalar e nem escala
+        extra a procurar — custo zero.
+        """
+
+        return (frame_width, frame_height) in (
+            (REFERENCE_WIDTH, REFERENCE_HEIGHT),
+            (REFERENCE_HEIGHT, REFERENCE_WIDTH),
         )
 
     def _rescale_template(self, template, scale):
@@ -470,6 +539,13 @@ class Detector:
         O mesmo template na escala do frame, ou None se
         encolher tanto que não sobra imagem.
         """
+
+        # Escala 1.0: devolve o original. Passar pelo resize
+        # daria a MESMA dimensão de volta, gastando tempo e
+        # perdendo nitidez em cima de uma imagem que já estava
+        # certa.
+        if abs(scale - 1.0) <= 0.005:
+            return template
 
         width = int(round(template["width"] * scale))
         height = int(round(template["height"] * scale))
@@ -514,48 +590,76 @@ class Detector:
         tamanho de frame visto, não uma vez por passada.
         """
 
-        scale = self._frame_scale(frame_width, frame_height)
-
-        # Tolerância larga de propósito: 2% de diferença de
-        # escala não muda match nenhum, e trocar a lista
-        # original por uma reescalada custa memória e detalhe.
-        if abs(scale - 1.0) <= 0.02:
+        # Já na referência: nada a reescalar, e nenhuma escala
+        # extra a procurar. É o caminho de custo zero.
+        if self._is_reference(frame_width, frame_height):
             return self.by_category
 
         chave = (frame_width, frame_height)
 
         cacheados = self._scaled_cache.get(chave)
 
-        if cacheados is None:
+        if cacheados is not None:
+            return cacheados
 
-            logger.info(
-                "Frame %dx%d fora da referência %dx%d — "
-                "templates reescalados por %.3f.",
-                frame_width,
-                frame_height,
-                REFERENCE_WIDTH,
-                REFERENCE_HEIGHT,
-                scale,
-            )
+        base = self._frame_scale(frame_width, frame_height)
 
-            cacheados = {}
+        # =================================================
+        # VÁRIAS ESCALAS, NÃO UMA APOSTA
+        # =================================================
+        #
+        # Nenhuma regra acerta todo aparelho: densidade de tela,
+        # barra de status e a escolha de layout do jogo mudam o
+        # tamanho do ícone alguns por cento — e template
+        # matching não tolera isso (8% de erro de escala já
+        # derruba a confiança abaixo de 0.95).
+        #
+        # Então o template entra em vários tamanhos e o melhor
+        # ganha: a supressão por sobreposição colapsa os acertos
+        # repetidos das escalas vizinhas, e a ordenação por
+        # confiança escolhe. Não é preciso adivinhar a escala.
+        escalas = sorted(
+            {
+                round(base * passo, 4)
+                for passo in TEMPLATE_SCALE_STEPS
+                if passo > 0
+            }
+        ) or [round(base, 4)]
 
-            for template in self.templates:
+        cacheados = {}
 
-                reescalado = self._rescale_template(
+        for template in self.templates:
+
+            for escala in escalas:
+
+                variante = self._rescale_template(
                     template,
-                    scale,
+                    escala,
                 )
 
-                if reescalado is None:
+                if variante is None:
                     continue
 
                 cacheados.setdefault(
-                    reescalado["category"],
+                    variante["category"],
                     [],
-                ).append(reescalado)
+                ).append(variante)
 
-            self._scaled_cache[chave] = cacheados
+        self._scaled_cache[chave] = cacheados
+
+        logger.info(
+            "Frame %dx%d fora da referência %dx%d — %d "
+            "templates em %d escala(s) %s (base %.3f por '%s').",
+            frame_width,
+            frame_height,
+            REFERENCE_WIDTH,
+            REFERENCE_HEIGHT,
+            sum(len(lista) for lista in cacheados.values()),
+            len(escalas),
+            escalas,
+            base,
+            TEMPLATE_SCALE_BASIS,
+        )
 
         return cacheados
 

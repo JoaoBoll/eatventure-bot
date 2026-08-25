@@ -516,6 +516,227 @@ def test_medidores_reportam_taxa():
     )
 
 
+def test_proporcao_diferente_nao_encolhe_o_template():
+    """
+    O bug de "não detecta em outro aparelho".
+
+    Num 1080x1920 contra uma referência 1080x2400, a LARGURA é
+    idêntica e o ícone na tela tem exatamente o mesmo tamanho em
+    pixels. Escalar pelo menor dos dois fatores encolhia todo
+    template 20%:
+
+        min(1080/1080, 1920/2400) = 0.80
+
+    e nada passava do threshold. É proporção diferente, não
+    resolução diferente.
+    """
+
+    from core.config import REFERENCE_HEIGHT, REFERENCE_WIDTH
+
+    base = cv2.imread(str(IMAGE))
+
+    assert base.shape[:2] == (
+        REFERENCE_HEIGHT,
+        REFERENCE_WIDTH,
+    ), "o fixture deixou de estar na referência"
+
+    # Mesma largura, menos altura: é o que um 16:9 mostra.
+    frame = base[: int(REFERENCE_WIDTH * 16 / 9), :]
+
+    largura, altura = frame.shape[1], frame.shape[0]
+
+    escala = Detector._frame_scale(largura, altura)
+
+    assert abs(escala - 1.0) < 0.01, (
+        f"largura idêntica tem de dar escala 1.0, deu {escala}"
+    )
+
+    detector = Detector()
+
+    deteccoes = detector.detect(frame)
+
+    assert deteccoes, (
+        "não detectou nada num aparelho de outra proporção — "
+        "é exatamente o bug que a escala por lado curto corrige"
+    )
+
+    # E o comportamento antigo REALMENTE falhava aqui: sem
+    # isto, o teste acima passaria mesmo com o bug de volta.
+    import vision.detector as vd
+
+    basis_original = vd.TEMPLATE_SCALE_BASIS
+    steps_original = vd.TEMPLATE_SCALE_STEPS
+
+    try:
+
+        vd.TEMPLATE_SCALE_BASIS = "min"
+        vd.TEMPLATE_SCALE_STEPS = (1.0,)
+
+        assert Detector._frame_scale(largura, altura) < 0.85, (
+            "o critério antigo deveria encolher o template"
+        )
+
+        assert not Detector().detect(frame), (
+            "se o critério antigo também detecta, este teste "
+            "não está medindo o que diz medir"
+        )
+
+    finally:
+
+        vd.TEMPLATE_SCALE_BASIS = basis_original
+        vd.TEMPLATE_SCALE_STEPS = steps_original
+
+
+def test_resolucao_proporcional_continua_valendo():
+    """
+    Mudar de resolução MANTENDO a proporção é o caso fácil, e
+    tem de continuar funcionando: os templates acompanham.
+    """
+
+    base = cv2.imread(str(IMAGE))
+
+    esperado = Detector().detect(base)
+
+    assert esperado, "nem detectou na referência"
+
+    for largura, altura, fator in (
+        (720, 1600, 2 / 3),
+        (1440, 3200, 4 / 3),
+    ):
+
+        frame = cv2.resize(
+            base,
+            (largura, altura),
+            interpolation=(
+                cv2.INTER_AREA
+                if fator < 1
+                else cv2.INTER_LINEAR
+            ),
+        )
+
+        escala = Detector._frame_scale(largura, altura)
+
+        assert abs(escala - fator) < 0.01, (largura, escala)
+
+        deteccoes = Detector().detect(frame)
+
+        assert deteccoes, f"não detectou em {largura}x{altura}"
+
+        # As MESMAS categorias da referência.
+        assert (
+            {d["category"] for d in deteccoes}
+            == {d["category"] for d in esperado}
+        ), (largura, altura, deteccoes)
+
+
+def test_referencia_nao_paga_pelas_escalas_extra():
+    """
+    As escalas extra existem para aparelho fora da referência.
+    No aparelho da referência elas seriam custo puro — o triplo
+    de templates por passada sem nada em troca.
+    """
+
+    from core.config import REFERENCE_HEIGHT, REFERENCE_WIDTH
+
+    detector = Detector()
+
+    originais = len(detector.templates)
+
+    # Nas duas orientações: o jogo roda deitado.
+    for largura, altura in (
+        (REFERENCE_WIDTH, REFERENCE_HEIGHT),
+        (REFERENCE_HEIGHT, REFERENCE_WIDTH),
+    ):
+
+        assert Detector._is_reference(largura, altura)
+
+        indice = detector._templates_for(largura, altura)
+
+        assert indice is detector.by_category, (
+            "referência não devia gerar variante de escala"
+        )
+
+        assert (
+            sum(len(lista) for lista in indice.values())
+            == originais
+        )
+
+    # Fora da referência, aí sim.
+    fora = detector._templates_for(1080, 1920)
+
+    assert (
+        sum(len(lista) for lista in fora.values())
+        > originais
+    ), "esperava templates em mais de uma escala"
+
+
+def test_teto_de_fps_corta_antes_de_converter():
+    """
+    O device manda 60 e o bot não usa 60. O corte tem de
+    acontecer ANTES da conversão de cor, que é o trabalho caro
+    (7.8 MB por frame), senão não economiza nada.
+    """
+
+    import numpy as np
+
+    from capture.screen import ScreenCapture
+    from core.config import CAPTURE_MAX_FPS
+
+    if not CAPTURE_MAX_FPS:
+
+        print("    (CAPTURE_MAX_FPS desligado, nada a testar)")
+
+        return
+
+    capture = ScreenCapture()
+
+    convertidos = []
+
+    class FrameFalso:
+        """
+        Acusa a conversão: se `to_ndarray` foi chamado, o frame
+        pagou o caminho caro.
+        """
+
+        def to_ndarray(self):
+
+            convertidos.append(1)
+
+            return np.zeros(
+                (2400 * 3 // 2, 1080),
+                dtype=np.uint8,
+            )
+
+    # Alimenta ao DOBRO do teto.
+    inicio = time.monotonic()
+    enviados = 0
+
+    while time.monotonic() - inicio < 1.5:
+
+        capture._publish(FrameFalso())
+
+        enviados += 1
+
+        time.sleep(1.0 / (CAPTURE_MAX_FPS * 2))
+
+    decorrido = time.monotonic() - inicio
+
+    entregues = capture.version / decorrido
+
+    assert entregues <= CAPTURE_MAX_FPS * 1.2, entregues
+
+    assert entregues >= CAPTURE_MAX_FPS * 0.7, entregues
+
+    assert capture.dropped > 0, "não descartou nada"
+
+    # O que foi descartado NÃO pagou a conversão.
+    assert len(convertidos) == capture.version, (
+        len(convertidos),
+        capture.version,
+        "frame descartado ainda pagou o YUV->BGR",
+    )
+
+
 def test_piso_descarta_frame_velho_sem_perder_o_anterior():
     """
     Depois de uma ação, o frame que o worker tem na mão mostra a
