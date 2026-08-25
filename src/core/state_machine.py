@@ -105,6 +105,7 @@ NORMAL_RULES = [
     ("open_store", "open_store_click", None),
     ("close", "close", None),
     ("gray_max", "gray_max", None),
+    ("gray_coin", "gray_coin", None),
     ("up_food", "upgrade_food", None),
 
     ("plane", "plane", RENOVATE),
@@ -139,6 +140,7 @@ STATE_RULES = {
     FOOD: [
         ("up_food", "upgrade_food", None),
         ("gray_max", "gray_max", None),
+        ("gray_coin", "gray_coin", None)
     ],
     NEW_POINT: [
         ("up_food", "new_point_click", None),
@@ -996,6 +998,17 @@ class StateMachine:
 
         self._wait_or_give_up()
 
+        #Painel de upgrade esgotado: dispensa.
+        gray_coin = self._find(detections, "gray_coin")
+
+        if gray_coin is not None:
+
+            self._reset_exploration()
+
+            self._act("gray_coin", gray_coin, NORMAL)
+
+            return
+
     # =====================================================
     # NEW POINT
     # =====================================================
@@ -1081,8 +1094,6 @@ class StateMachine:
     def _reset_exploration(self):
 
         self.last_detection_time = time.monotonic()
-
-        self.swipe_count = 0
 
     def _explore_screen(self):
 

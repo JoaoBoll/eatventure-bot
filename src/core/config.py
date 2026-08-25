@@ -1065,7 +1065,8 @@ REPEATED_ACTION_WARNING = 8
 # (STATE_TIMEOUTS), então uma espera longa demais come o tempo
 # que o bot tem para agir lá dentro.
 STATE_ENTRY_SETTLE = {
-    "UPGRADE": 0.5,
+    "UPGRADE": 1,
+    "GRAY_MAX": 1,
 }
 
 STATE_TIMEOUTS = {
