@@ -34,9 +34,22 @@ from vision.worker import VisionWorker          # noqa: E402
 
 IMAGE = ROOT / "tests" / "images" / "eatventure.png"
 
-# Onde o detector acha o botão de upgrade nessa tela.
-# Confirmado por tests/test_detection.py.
-UPGRADE_BOX = (914, 2194, 136, 134)
+# Mais ou menos onde o botão de upgrade está nessa tela.
+#
+# POSIÇÃO APROXIMADA, e nada de TAMANHO, de propósito: o tamanho
+# da caixa é o tamanho do PNG do template, e recortar o template
+# de novo muda esse número. Já mudou uma vez (136x134 -> 103x72)
+# e o que quebrou foi este teste, que não é sobre o template — é
+# sobre converter coordenada de frame em coordenada de toque.
+#
+# Serve só de âncora: garante que o detector achou o botão no
+# canto de baixo da tela, e não lixo em outro lugar. O ponto
+# esperado do toque sai da DETECÇÃO, não daqui.
+UPGRADE_NEAR = (914, 2194)
+
+# Folga da âncora. Generosa: template recortado com alguns
+# pixels de sobra desloca o canto da caixa.
+UPGRADE_TOLERANCE = 40
 
 
 # =========================================================
@@ -302,11 +315,28 @@ def test_frame_vira_toque_no_lugar_certo():
         ):
             time.sleep(0.02)
 
-        x, y, box_width, box_height = UPGRADE_BOX
+        # A detecção que MOTIVOU a ação — é o centro dela que o
+        # dedo tem de acertar. Derivado, não fixado: fixar o
+        # tamanho da caixa aqui é duplicar o tamanho do PNG do
+        # template, e o teste passa a quebrar quando alguém
+        # recorta o template de novo (foi o que aconteceu).
+        alvo = next(
+            d
+            for d in detections
+            if d["category"] == "upgrade"
+        )
+
+        # Âncora frouxa: o botão está onde se espera na tela?
+        assert (
+            abs(alvo["x"] - UPGRADE_NEAR[0])
+            <= UPGRADE_TOLERANCE
+            and abs(alvo["y"] - UPGRADE_NEAR[1])
+            <= UPGRADE_TOLERANCE
+        ), (alvo["x"], alvo["y"], UPGRADE_NEAR)
 
         expected = (
-            x + box_width // 2,
-            y + box_height // 2,
+            alvo["x"] + alvo["width"] // 2,
+            alvo["y"] + alvo["height"] // 2,
         )
 
         assert actions.android.taps == [expected], (

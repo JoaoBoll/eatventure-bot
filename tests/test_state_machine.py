@@ -22,6 +22,8 @@ from core.config import (                         # noqa: E402
     ACTION_SETTLE,
     DISMISS_ACTIONS,
     DISMISS_ATTEMPTS_BEFORE_SCROLL,
+    EXPLORATION_DELAY,
+    EXPLORATION_DELAY_AFTER_ACTION,
     MAX_DETECTION_AGE,
     REPEATED_ACTION_WARNING,
     STATE_ENTRY_SETTLE,
@@ -475,16 +477,172 @@ def test_exploracao_faz_swipe_e_inverte():
     )
 
 
-def test_deteccao_reseta_exploracao():
+def swipes_de(actions):
+
+    return [
+        call for call in actions.calls
+        if call[0] == "swipe"
+    ]
+
+
+def test_achar_algo_adia_a_exploracao_sem_cancelar():
+    """
+    Achar algo ADIA o swipe, não o cancela.
+
+    Antes, achar zerava a exploração, então o swipe só saía
+    depois de 5 s de tela COMPLETAMENTE vazia. Agora o swipe é
+    periódico e o que muda é o intervalo:
+
+        não achou nada .... a cada EXPLORATION_DELAY        (5 s)
+        achou algo ........ espera EXPLORATION_DELAY_AFTER_ACTION
+                            (15 s) e volta ao ritmo de 5 s
+    """
 
     machine, actions, clock = build()
+
+    machine.action_settle = 0.0
+    machine.action_cooldown = 0.0
 
     clock.advance(machine.exploration_delay + 0.1)
 
     machine.update([detection("box")])
 
-    # Achou algo: não está perdido, não deve fazer swipe.
-    assert ("swipe", "up") not in actions.calls, actions.calls
+    # No frame em que achou, não rola.
+    assert not swipes_de(actions), actions.calls
+
+    # O intervalo em vigor passou a ser o longo.
+    assert machine.exploration_interval() == (
+        EXPLORATION_DELAY_AFTER_ACTION
+    )
+
+    # Passado o intervalo CURTO, ainda não: está adiado.
+    clock.advance(machine.exploration_delay + 0.1)
+
+    machine.update([])
+
+    assert not swipes_de(actions), (
+        "rolou antes do intervalo longo — o adiamento não "
+        "está valendo"
+    )
+
+    # Passado o LONGO, rola.
+    clock.advance(
+        EXPLORATION_DELAY_AFTER_ACTION
+        - machine.exploration_delay
+    )
+
+    machine.update([])
+
+    assert len(swipes_de(actions)) == 1, actions.calls
+
+    # E volta ao ritmo curto.
+    assert machine.exploration_interval() == (
+        machine.exploration_delay
+    )
+
+    clock.advance(machine.exploration_delay + 0.1)
+
+    machine.update([])
+
+    assert len(swipes_de(actions)) == 2, actions.calls
+
+
+def test_achar_algo_nao_zera_o_ciclo_de_varredura():
+    """
+    O ciclo é 5 para um lado e 5 para o outro, e achar algo no
+    meio NÃO devolve a contagem para o começo.
+
+    Zerava antes, e o efeito era o bot varrer sempre o mesmo
+    pedaço da tela: como quase todo swipe revela algum alvo, a
+    contagem voltava a zero antes de a volta fechar e a metade
+    distante do restaurante nunca era visitada.
+    """
+
+    machine, actions, clock = build()
+
+    machine.action_settle = 0.0
+    machine.action_cooldown = 0.0
+
+    # Dois swipes, para ficar no MEIO da volta.
+    for _ in range(2):
+
+        clock.advance(machine.exploration_delay + 0.1)
+
+        machine.update([])
+
+    assert machine.swipe_count == 2, machine.swipe_count
+
+    contagem = machine.swipe_count
+    direcao = machine.swipe_direction
+
+    # Acha algo.
+    #
+    # `box` de propósito: a regra dela é (box, open_box, None),
+    # ou seja PERMANECE em NORMAL. Com `food` a máquina sairia
+    # para o estado FOOD, onde a exploração nem roda — e o teste
+    # mediria outra coisa.
+    clock.advance(0.1)
+
+    machine.update([detection("box")])
+
+    assert machine.swipe_count == contagem, (
+        f"a contagem voltou para {machine.swipe_count} — o "
+        f"ciclo zerou ao achar algo"
+    )
+
+    assert machine.swipe_direction == direcao
+
+    # O próximo swipe CONTINUA a volta.
+    clock.advance(EXPLORATION_DELAY_AFTER_ACTION + 0.1)
+
+    machine.update([])
+
+    assert machine.swipe_count == contagem + 1, (
+        machine.swipe_count
+    )
+
+    assert machine.swipe_direction == direcao
+
+
+def test_varredura_fecha_a_volta_e_inverte_indefinidamente():
+    """
+    5 para um lado, 5 para o outro, sem parar — inclusive
+    quando o bot acha algo a cada volta, que é o caso real.
+    """
+
+    machine, actions, clock = build()
+
+    machine.action_settle = 0.0
+    machine.action_cooldown = 0.0
+
+    for volta in range(12):
+
+        # Acha algo entre um swipe e o outro, sempre.
+        #
+        # `box` permanece em NORMAL (ver o teste acima).
+        clock.advance(0.1)
+
+        machine.update([detection("box")])
+
+        clock.advance(EXPLORATION_DELAY_AFTER_ACTION + 0.1)
+
+        machine.update([])
+
+    direcoes = [call[1] for call in swipes_de(actions)]
+
+    assert len(direcoes) == 12, direcoes
+
+    # Blocos de max_swipes na mesma direção, alternando.
+    primeira = direcoes[0]
+
+    esperado = [
+        primeira
+        if (i // machine.max_swipes) % 2 == 0
+        else ("up" if primeira == "down" else "down")
+        for i in range(12)
+    ]
+
+    assert direcoes == esperado, (direcoes, esperado)
 
 
 def test_categorias_do_estado_sao_reduzidas():

@@ -1024,6 +1024,24 @@ VIEW_MOVING_ACTIONS = {"scroll_bottom"}
 # Tempo sem detectar nada antes de fazer swipe.
 EXPLORATION_DELAY = 5.0
 
+# Espera antes de voltar a explorar depois de ENCONTRAR algo.
+#
+# Achou alvo = o bot está no lugar certo da tela, e rolar agora
+# só tiraria de vista o que ele acabou de achar. Mas também não
+# pode parar de explorar: o restaurante cresce para os lados, e
+# o que está fora da tela nunca vira detecção.
+#
+# Então achar não CANCELA a exploração, só a ADIA:
+#
+#   não achou nada .... swipe a cada EXPLORATION_DELAY (5 s)
+#   achou algo ........ espera 15 s e volta ao ritmo de 5 s
+#
+# O CICLO NÃO ZERA. São 5 swipes para um lado, 5 para o outro,
+# e achar algo no meio não devolve a contagem para o começo —
+# senão o bot passa a sessão inteira varrendo o mesmo pedaço da
+# tela, porque sempre acha algo antes de fechar a volta.
+EXPLORATION_DELAY_AFTER_ACTION = 15.0
+
 # Swipes consecutivos antes de inverter a direção.
 MAX_SWIPES = 5
 

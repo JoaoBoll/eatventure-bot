@@ -1061,8 +1061,10 @@ def test_swipe_de_exploracao_e_gravado():
         machine.last_action_time = 0.0
 
         # Tela vazia e tempo de exploração vencido.
-        machine.last_detection_time = (
-            time.monotonic() - machine.exploration_delay - 1.0
+        machine.explore_anchor = (
+            time.monotonic()
+            - machine.exploration_interval()
+            - 1.0
         )
 
         machine.update([], 0.1, frame(190), time.monotonic())

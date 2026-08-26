@@ -44,6 +44,7 @@ from core.config import (
     DISMISS_ACTIONS,
     DISMISS_ATTEMPTS_BEFORE_SCROLL,
     EXPLORATION_DELAY,
+    EXPLORATION_DELAY_AFTER_ACTION,
     MAX_DETECTION_AGE,
     MAX_SWIPES,
     REPEATED_ACTION_WARNING,
@@ -241,10 +242,42 @@ class StateMachine:
         # EXPLORAÇÃO DA TELA
         # =================================================
 
+        # Ritmo normal: um swipe a cada tanto, enquanto não
+        # aparecer nada.
         self.exploration_delay = EXPLORATION_DELAY
 
-        self.last_detection_time = time.monotonic()
+        # Depois de ACHAR algo, a exploração é ADIADA por este
+        # tanto — não cancelada.
+        self.exploration_action_delay = (
+            EXPLORATION_DELAY_AFTER_ACTION
+        )
 
+        # De quando se conta a espera do próximo swipe: o
+        # último swipe, ou a última vez que algo foi achado.
+        self.explore_anchor = time.monotonic()
+
+        # O âncora veio de um "achou"?
+        #
+        # Guardado como BANDEIRA, e o intervalo derivado dela na
+        # hora — não uma cópia do número. É o que mantém
+        # `machine.exploration_delay = 0` funcionando (os testes
+        # usam isso) sem existir um segundo valor guardado que
+        # possa ficar desatualizado. Mesmo padrão do
+        # _last_was_swipe.
+        self.explore_found = False
+
+        # =================================================
+        # O CICLO DE VARREDURA
+        # =================================================
+        #
+        # 5 swipes para um lado, 5 para o outro, indefinidamente.
+        #
+        # A contagem NÃO zera quando o bot acha algo. Zerava
+        # antes, e o efeito era o bot varrer sempre o mesmo
+        # pedaço da tela: como quase todo swipe revela algum
+        # alvo, a contagem voltava para 1 antes de a volta
+        # fechar, e a metade distante do restaurante nunca era
+        # visitada.
         self.swipe_direction = SWIPE_START_DIRECTION
         self.swipe_count = 0
         self.max_swipes = MAX_SWIPES
@@ -455,7 +488,7 @@ class StateMachine:
                     na_tela or "nada",
                 )
 
-            self._reset_exploration()
+            self._delay_exploration()
 
             self._act(
                 action,
@@ -938,7 +971,7 @@ class StateMachine:
         self._dismiss_attempts = 0
         self._dismiss_rounds = 0
 
-        self._reset_exploration()
+        self._delay_exploration()
 
     def _timed_out(self):
 
@@ -977,7 +1010,7 @@ class StateMachine:
 
         if up_food is not None:
 
-            self._reset_exploration()
+            self._delay_exploration()
 
             if self._act("upgrade_food", up_food):
 
@@ -1007,7 +1040,7 @@ class StateMachine:
 
             if deteccao is not None:
 
-                self._reset_exploration()
+                self._delay_exploration()
 
                 self._act(acao, deteccao, NORMAL)
 
@@ -1029,7 +1062,7 @@ class StateMachine:
 
         if unlock_food is not None:
 
-            self._reset_exploration()
+            self._delay_exploration()
 
             if self._act("new_point_click", unlock_food):
 
@@ -1097,17 +1130,48 @@ class StateMachine:
     # EXPLORAÇÃO
     # =====================================================
 
-    def _reset_exploration(self):
+    def _delay_exploration(self):
+        """
+        Algo foi encontrado: ADIA o próximo swipe.
 
-        self.last_detection_time = time.monotonic()
+        Não se chama mais `_reset_exploration` porque resetar é
+        exatamente o que ela não pode fazer. O ciclo de varredura
+        (5 para um lado, 5 para o outro) segue de onde estava; o
+        que muda é só quando o próximo swipe é permitido.
+
+        Antes a contagem voltava a zero aqui, e o bot varria
+        sempre o mesmo pedaço da tela: como quase todo swipe
+        revela algum alvo, a volta nunca chegava ao fim.
+        """
+
+        self.explore_anchor = time.monotonic()
+
+        self.explore_found = True
+
+    def exploration_interval(self):
+        """
+        Quanto esperar pelo próximo swipe.
+
+            não achou nada .... exploration_delay        (5 s)
+            achou algo ........ exploration_action_delay (15 s)
+
+        Derivado da bandeira em vez de guardado: ver
+        explore_found.
+        """
+
+        return (
+            self.exploration_action_delay
+            if self.explore_found
+            else self.exploration_delay
+        )
 
     def _explore_screen(self):
 
         now = time.monotonic()
 
         if (
-            now - self.last_detection_time
-            < self.exploration_delay
+            now - self.explore_anchor
+            < self.exploration_interval()
         ):
             return
 
@@ -1127,7 +1191,13 @@ class StateMachine:
             return
 
         self.last_action_time = now
-        self.last_detection_time = now
+
+        # Volta ao RITMO normal: a partir daqui o próximo swipe
+        # é em exploration_delay. Achar algo é o que troca isso
+        # pelos 15 s (_delay_exploration).
+        self.explore_anchor = now
+
+        self.explore_found = False
 
         # A partir daqui vale SWIPE_WAITING_TIME, não
         # ACTION_SETTLE: a vista acabou de se mover inteira, e
