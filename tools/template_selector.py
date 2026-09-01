@@ -16,6 +16,7 @@ from android_screenshot import AndroidScreenshot  # noqa: E402
 from renumerar import proximo_numero, renumerar   # noqa: E402
 import selector_layout as layout                  # noqa: E402
 from core import devices, log                     # noqa: E402
+from vision.detector import Detector               # noqa: E402
 from core.config import (                         # noqa: E402
     DEVICE_SERIAL,
     LOG_LEVEL,
@@ -476,6 +477,33 @@ class TemplateSelector:
             return
 
         # -------------------------------------------------
+        # Normalização para a resolução de REFERÊNCIA
+        # -------------------------------------------------
+        #
+        # O detector assume que TODO template foi recortado na
+        # resolução de referência: em runtime ele reescala o
+        # template por frame/referência. Um recorte salvo cru
+        # num device de outra resolução já vem nos pixels DELE,
+        # e ainda assim leva esse fator aplicado por cima — o
+        # template sai com escala errada até no próprio
+        # aparelho onde foi recortado.
+        #
+        # Salvando sempre em escala de referência, o recorte
+        # vale em qualquer device.
+        #
+
+        crop = self._para_referencia(crop, width, height)
+
+        if crop is None:
+
+            print(
+                "Recorte pequeno demais para "
+                "normalizar."
+            )
+
+            return
+
+        # -------------------------------------------------
         # Categoria
         # -------------------------------------------------
 
@@ -582,11 +610,57 @@ class TemplateSelector:
             f"{x1},{y1} → {x2},{y2}"
         )
         print(
-            f"Tamanho:   "
-            f"{x2 - x1} x {y2 - y1}"
+            f"Recorte:   "
+            f"{x2 - x1} x {y2 - y1} (device)"
+        )
+        print(
+            f"Salvo:     "
+            f"{crop.shape[1]} x {crop.shape[0]} "
+            f"(referência)"
         )
         print("===================================")
         print()
+
+    # -----------------------------------------------------
+    # Escala de referência
+    # -----------------------------------------------------
+
+    def _para_referencia(self, crop, frame_width, frame_height):
+
+        if Detector._is_reference(frame_width, frame_height):
+            return crop
+
+        base = Detector._frame_scale(frame_width, frame_height)
+
+        if not base or abs(base - 1.0) <= 0.005:
+            return crop
+
+        altura, largura = crop.shape[:2]
+
+        nova_largura = int(round(largura / base))
+        nova_altura = int(round(altura / base))
+
+        if nova_largura < 4 or nova_altura < 4:
+            return None
+
+        interpolacao = (
+            cv2.INTER_AREA
+            if base > 1.0
+            else cv2.INTER_LINEAR
+        )
+
+        print(
+            f"[ESCALA] Device {frame_width}x{frame_height} "
+            f"(fator {base:.3f}) -> template normalizado de "
+            f"{largura}x{altura} para "
+            f"{nova_largura}x{nova_altura}"
+        )
+
+        return cv2.resize(
+            crop,
+            (nova_largura, nova_altura),
+            interpolation=interpolacao,
+        )
 
     # -----------------------------------------------------
     # Reset

@@ -2,6 +2,11 @@
 
 ## Regra principal: economia de contexto
 
+- **Concisão Extrema**: Escreva apenas o código estritamente necessário. Não explique o código a menos que seja solicitado.
+- **Raciocínio Direto**: Vá direto ao ponto, não crie planos longos para tarefas simples.
+- **Estilo de Resposta**: Sem introduções ("Com certeza, vou ajudar...") ou conclusões. Mostre apenas o resultado ou diff.
+
+
 - Seja econômico com contexto e tokens.
 - Leia somente os arquivos estritamente necessários para realizar a tarefa.
 - NÃO faça varreduras completas do projeto sem necessidade.
@@ -11,6 +16,9 @@
 - Não leia arquivos grandes inteiros quando apenas uma parte for necessária.
 - Evite repetir a leitura de arquivos que já foram analisados nesta sessão.
 - Não procure informações em todo o projeto quando a tarefa puder ser resolvida localmente.
+- Não procure ou use nenhuma imagem para nenhum fim, apenas use o path dela, mas sem processar nada referente a ela.
+- Não comente instruções a cada coisa que é criada, métodos/funções devem ser intuítivos (criarXcoisa, editarXcoisa, encontrarXcoisa)
+- Não teste nenhuma parte do sistema, isso será feito pelo desenvolvedor, apenas auxilie no desenvolvimento.
 
 ## Imagens e arquivos binários
 
