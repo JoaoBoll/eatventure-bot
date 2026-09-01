@@ -898,7 +898,7 @@ DISMISS_HOLD_DURATION = 0.4
 # Swipe de exploração, em coordenadas de referência.
 SWIPE_X = 540
 SWIPE_Y = 1200
-SWIPE_DISTANCE = 600
+SWIPE_DISTANCE = 700
 SWIPE_DURATION_MS = 500
 
 
