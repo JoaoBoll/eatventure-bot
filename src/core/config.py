@@ -1021,6 +1021,10 @@ SWIPE_WAITING_TIME = 0.5
 # vista mais que qualquer swipe solto.
 VIEW_MOVING_ACTIONS = {"scroll_bottom"}
 
+# True: só explora depois de encontrar uma tela sem ação.
+# False: tenta explorar a cada EXPLORATION_DELAY, mesmo ao achar ação.
+SWIPE_WAIT_FOR_NO_ACTION = True
+
 # Tempo sem detectar nada antes de fazer swipe.
 EXPLORATION_DELAY = 5.0
 

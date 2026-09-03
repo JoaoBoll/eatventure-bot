@@ -51,6 +51,7 @@ from core.config import (
     STATE_ENTRY_SETTLE,
     STATE_TIMEOUTS,
     SWIPE_START_DIRECTION,
+    SWIPE_WAIT_FOR_NO_ACTION,
     SWIPE_WAITING_TIME,
     UP_FOOD_WAIT,
     VIEW_MOVING_ACTIONS,
@@ -442,7 +443,9 @@ class StateMachine:
 
             # Só NORMAL explora: nos outros estados estamos
             # dentro de um painel, e swipe atrapalharia.
-            if not acted and self.state == NORMAL:
+            if self.state == NORMAL and (
+                not SWIPE_WAIT_FOR_NO_ACTION or not acted
+            ):
 
                 self._explore_screen()
 
@@ -1143,6 +1146,9 @@ class StateMachine:
         sempre o mesmo pedaço da tela: como quase todo swipe
         revela algum alvo, a volta nunca chegava ao fim.
         """
+
+        if not SWIPE_WAIT_FOR_NO_ACTION:
+            return
 
         self.explore_anchor = time.monotonic()
 
