@@ -439,6 +439,28 @@ def test_food_desiste_depois_da_espera():
     assert machine.state == sm.NORMAL, machine.state
 
 
+def test_food_sem_up_food_nao_adia_a_exploracao():
+
+    machine, actions, clock = build()
+
+    machine.action_settle = 0.0
+    machine.action_cooldown = 0.0
+    machine.swipe_count = 2
+
+    machine.update([detection("food")])
+
+    assert actions.actions == ["food"], actions.actions
+    assert machine.state == sm.FOOD, machine.state
+    assert machine.swipe_count == 2, machine.swipe_count
+    assert not machine.explore_found
+
+    clock.advance(STATE_TIMEOUTS["FOOD"] + 0.1)
+    machine.update([])
+
+    assert machine.state == sm.NORMAL, machine.state
+    assert not machine.explore_found
+
+
 def test_exploracao_faz_swipe_e_inverte():
 
     machine, actions, clock = build()

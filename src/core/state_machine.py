@@ -974,7 +974,9 @@ class StateMachine:
         self._dismiss_attempts = 0
         self._dismiss_rounds = 0
 
-        self._delay_exploration()
+        if state != FOOD:
+
+            self._delay_exploration()
 
     def _timed_out(self):
 
@@ -1013,9 +1015,9 @@ class StateMachine:
 
         if up_food is not None:
 
-            self._delay_exploration()
-
             if self._act("upgrade_food", up_food):
+
+                self._delay_exploration()
 
                 self.up_food_wait_start = time.monotonic()
 
@@ -1043,7 +1045,7 @@ class StateMachine:
 
             if deteccao is not None:
 
-                self._delay_exploration()
+                # self._delay_exploration()
 
                 self._act(acao, deteccao, NORMAL)
 
