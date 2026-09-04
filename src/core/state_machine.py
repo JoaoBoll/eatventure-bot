@@ -491,7 +491,9 @@ class StateMachine:
                     na_tela or "nada",
                 )
 
-            self._delay_exploration()
+            if action != "food":
+
+                self._delay_exploration()
 
             self._act(
                 action,
@@ -955,6 +957,8 @@ class StateMachine:
         if state == self.state:
             return
 
+        previous_state = self.state
+
         logger.info(
             "%s -> %s",
             self.state,
@@ -974,7 +978,7 @@ class StateMachine:
         self._dismiss_attempts = 0
         self._dismiss_rounds = 0
 
-        if state != FOOD:
+        if state != FOOD and previous_state != FOOD:
 
             self._delay_exploration()
 
