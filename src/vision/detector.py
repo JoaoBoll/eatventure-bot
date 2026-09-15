@@ -147,6 +147,7 @@ class Detector:
         self.templates.clear()
         self.by_category.clear()
         self._scaled_cache.clear()
+        self._successful_scales.clear()
 
         if not TEMPLATES_DIR.exists():
 
@@ -468,19 +469,7 @@ class Detector:
 
         for template in self.templates:
 
-            # Prioriza escala memorizada para este template/resolução.
-            escala_bem_sucedida = self._successful_scales.get(
-                (frame_width, frame_height, template["name"])
-            )
-
-            if escala_bem_sucedida is not None:
-                escalas_prio = [escala_bem_sucedida] + [
-                    e for e in escalas_base if e != escala_bem_sucedida
-                ]
-            else:
-                escalas_prio = escalas_base
-
-            for escala in escalas_prio:
+            for escala in escalas_base:
 
                 variante = self._rescale_template(
                     template,
@@ -807,17 +796,6 @@ class Detector:
                         continue
 
                     achou = True
-
-                    # Memoriza escala bem-sucedida para esta resolução/template.
-                    escala_chave = (
-                        frame_width,
-                        frame_height,
-                        template["name"],
-                    )
-                    self._successful_scales[escala_chave] = template.get(
-                        "scale",
-                        1.0,
-                    )
 
                     detections.append(
                         {
