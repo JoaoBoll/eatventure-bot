@@ -14,6 +14,8 @@ from core.config import (
     DISMISS_ATTEMPTS_BEFORE_SCROLL,
     EXPLORATION_DELAY,
     EXPLORATION_DELAY_AFTER_ACTION,
+    FOOD_IGNORE_IOU,
+    FOOD_MAX_ATTEMPTS,
     MAX_DETECTION_AGE,
     MAX_SWIPES,
     REPEATED_ACTION_WARNING,
@@ -156,6 +158,22 @@ class StateMachine:
 
         # Espera depois do long press de comida.
         self.up_food_wait_start = None
+
+        # Item de "food" atual, esperando up_food. Guardado aqui (e
+        # não só na detecção local) porque _wait_or_give_up precisa
+        # dele para saber QUAL item ignorar ao desistir.
+        self._food_target = None
+
+        # Itens de "food" que esgotaram UP_FOOD_WAIT em
+        # FOOD_MAX_ATTEMPTS tentativas seguidas — ignorados até o
+        # próximo swipe real, senão o bot tenta o mesmo item para
+        # sempre (achar sempre adia o swipe).
+        self._ignored_food = []
+
+        # Última desistência (item + quantas vezes seguidas), para
+        # saber se a PRÓXIMA é no mesmo item ou um recomeço.
+        self._food_fail_target = None
+        self._food_fail_count = 0
 
         # Conta do start, não do primeiro build: o primeiro
         # trecho também é informação.
@@ -403,6 +421,12 @@ class StateMachine:
         # espera longa igual. Um toque comum fica na curta.
         self._last_was_swipe = action in VIEW_MOVING_ACTIONS
 
+        # Swipe real: itens ignorados podem estar em posição
+        # diferente agora, ou terem saído de tela. Vale a pena
+        # tentar de novo.
+        if self._last_was_swipe:
+            self._reset_food_tracking()
+
         # Mesmo raciocínio do ciclo, abaixo: só conta o que
         # realmente saiu.
         self.action_counts[action] += 1
@@ -427,6 +451,12 @@ class StateMachine:
         if next_state is not None and next_state != self.state:
 
             self._enter(next_state)
+
+        # Depois do _enter (que não toca em _food_target): guarda
+        # QUAL item entrou em FOOD, para _wait_or_give_up saber o
+        # que ignorar se ele desistir.
+        if action == "food":
+            self._food_target = detection
 
         return True
 
@@ -796,23 +826,108 @@ class StateMachine:
             UP_FOOD_WAIT,
         )
 
+        if self.state == FOOD and self._food_target is not None:
+
+            self._register_food_failure(self._food_target)
+            self._food_target = None
+
         self._enter(NORMAL)
+
+    def _register_food_failure(self, target):
+        """Conta desistências SEGUIDAS no mesmo item (por IoU); ao chegar em FOOD_MAX_ATTEMPTS, ignora até o próximo swipe — antes disso, volta a NORMAL e deixa tentar de novo (pode ter sido só o up_food demorando a aparecer)."""
+
+        if (
+            self._food_fail_target is not None
+            and self._iou(target, self._food_fail_target)
+            >= FOOD_IGNORE_IOU
+        ):
+            self._food_fail_count += 1
+
+        else:
+            self._food_fail_count = 1
+
+        self._food_fail_target = target
+
+        if self._food_fail_count < FOOD_MAX_ATTEMPTS:
+            return
+
+        logger.warning(
+            "'food' sem up_food em %d tentativas seguidas — "
+            "ignorando até o próximo swipe",
+            FOOD_MAX_ATTEMPTS,
+        )
+
+        self._ignored_food.append(target)
+
+        self._food_fail_target = None
+        self._food_fail_count = 0
+
+    def _reset_food_tracking(self):
+        """Esquece itens ignorados e a contagem de tentativas — chamado a cada swipe real, que muda o que está na tela."""
+
+        self._ignored_food = []
+
+        self._food_fail_target = None
+        self._food_fail_count = 0
 
     def _find(self, detections, category):
         """Primeira detecção da categoria. Sem refiltragem por threshold aqui de propósito: já existiu um segundo threshold neste método, divergente do detector, e o escolhido era o primeiro em ordem alfabética de arquivo, não o melhor."""
 
         for detection in detections:
 
-            if detection["category"] == category:
-                return detection
+            if detection["category"] != category:
+                continue
+
+            if category == "food" and self._is_ignored_food(
+                detection
+            ):
+                continue
+
+            return detection
 
         return None
+
+    def _is_ignored_food(self, detection):
+        """Mesmo item de um 'food' que já esgotou UP_FOOD_WAIT sem up_food (mesma posição na tela, comparada por IoU já que a tela não se move fora de um swipe)."""
+
+        return any(
+            self._iou(detection, ignored) >= FOOD_IGNORE_IOU
+            for ignored in self._ignored_food
+        )
+
+    @staticmethod
+    def _iou(a, b):
+
+        ax2 = a["x"] + a["width"]
+        ay2 = a["y"] + a["height"]
+
+        bx2 = b["x"] + b["width"]
+        by2 = b["y"] + b["height"]
+
+        inter_width = min(ax2, bx2) - max(a["x"], b["x"])
+        inter_height = min(ay2, by2) - max(a["y"], b["y"])
+
+        if inter_width <= 0 or inter_height <= 0:
+            return 0.0
+
+        intersection = inter_width * inter_height
+
+        union = (
+            a["width"] * a["height"]
+            + b["width"] * b["height"]
+            - intersection
+        )
+
+        return intersection / union
 
     def reset(self):
 
         self._enter(NORMAL)
 
         self.last_action_time = 0.0
+
+        self._food_target = None
+        self._reset_food_tracking()
 
     def _delay_exploration(self):
         """Algo foi encontrado: ADIA o próximo swipe, sem resetar o ciclo de varredura (renomeado de `_reset_exploration` — resetar a contagem aqui fazia o bot varrer sempre o mesmo pedaço da tela, já que quase todo swipe acha algo)."""
@@ -871,6 +986,9 @@ class StateMachine:
         # ACTION_SETTLE: a vista acabou de se mover inteira, e
         # nenhuma detecção de antes dela parar vale um toque.
         self._last_was_swipe = True
+
+        # Swipe real: dá nova chance aos itens ignorados.
+        self._reset_food_tracking()
 
         # A exploração não passa por _act, então precisa gravar
         # aqui. É decisão do bot como qualquer outra: "não achei
