@@ -96,6 +96,11 @@ class Detector:
         # ROI em pixels por (categoria, largura, altura).
         self._roi_cache = {}
 
+        # Cache de escalas bem-sucedidas: (frame_width, frame_height, template_name) -> escala.
+        # Quando um template é encontrado numa escala, memoriza — próxima busca testa
+        # aquela escala primeiro, evitando reescalagens desnecessárias.
+        self._successful_scales = {}
+
         # Templates olhados na última passada.
         self.last_searched = 0
 
@@ -419,12 +424,17 @@ class Detector:
                 interpolation=cv2.INTER_NEAREST,
             )
 
-        return self._build_template(
+        reescalado = self._build_template(
             template["category"],
             template["name"],
             image,
             mask,
         )
+
+        # Marca a escala usada para este resize — usado para memorizar escalas bem-sucedidas.
+        reescalado["scale"] = scale
+
+        return reescalado
 
     def _templates_for(self, frame_width, frame_height):
         """Templates deste frame por categoria, cacheados por resolução (resize 1x por tamanho de frame visto, não por passada)."""
@@ -446,7 +456,7 @@ class Detector:
         # Várias escalas, não uma aposta: 8% de erro de escala já derruba a
         # confiança abaixo de 0.95, então o template entra em vários tamanhos
         # e a supressão por sobreposição + ordenação por confiança escolhe o melhor.
-        escalas = sorted(
+        escalas_base = sorted(
             {
                 round(base * passo, 4)
                 for passo in TEMPLATE_SCALE_STEPS
@@ -458,7 +468,19 @@ class Detector:
 
         for template in self.templates:
 
-            for escala in escalas:
+            # Prioriza escala memorizada para este template/resolução.
+            escala_bem_sucedida = self._successful_scales.get(
+                (frame_width, frame_height, template["name"])
+            )
+
+            if escala_bem_sucedida is not None:
+                escalas_prio = [escala_bem_sucedida] + [
+                    e for e in escalas_base if e != escala_bem_sucedida
+                ]
+            else:
+                escalas_prio = escalas_base
+
+            for escala in escalas_prio:
 
                 variante = self._rescale_template(
                     template,
@@ -785,6 +807,17 @@ class Detector:
                         continue
 
                     achou = True
+
+                    # Memoriza escala bem-sucedida para esta resolução/template.
+                    escala_chave = (
+                        frame_width,
+                        frame_height,
+                        template["name"],
+                    )
+                    self._successful_scales[escala_chave] = template.get(
+                        "scale",
+                        1.0,
+                    )
 
                     detections.append(
                         {
