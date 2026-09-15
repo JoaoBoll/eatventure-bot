@@ -37,6 +37,7 @@ config.
 """
 
 import os
+import platform
 import shutil
 import sys
 import time
@@ -160,7 +161,7 @@ class StatusPanel:
         except Exception:
             return False
 
-        if os.name != "nt":
+        if platform.system() != "Windows":
             return True
 
         # No Windows o console só interpreta ANSI depois de

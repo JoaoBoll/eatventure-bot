@@ -5,7 +5,7 @@ Treino do modelo de visão, a partir de dataset/samples.jsonl.
     python IA/train_ai.py                       # modelo de categoria
     python IA/train_ai.py --kind action         # comparação
     python IA/train_ai.py --outcome changed     # só ações que funcionaram
-    python IA/train_ai.py --split session       # teste mais duro
+    python IA/train_ai.py --test-ratio 0.3      # teste com 30% aleatório
     python IA/train_ai.py --limit 5000          # ensaio rápido
 
 ==============================================================
@@ -353,12 +353,17 @@ def report(clf, X_teste, y_teste, y_treino, referencias, kind="category"):
     )
 
     from dataset_io import majority_baseline
+    from collections import Counter
 
     previsto = clf.predict(X_teste)
 
     acuracia = accuracy_score(y_teste, previsto)
 
     base, classe_base = majority_baseline(list(y_teste))
+
+    # Distribuição: treino vs teste
+    treino_dist = Counter(str(v) for v in y_treino)
+    teste_dist = Counter(str(v) for v in y_teste)
 
     print()
     print("=" * 62)
@@ -452,7 +457,56 @@ def report(clf, X_teste, y_teste, y_treino, referencias, kind="category"):
 
         print()
 
+    # Detectar divergência entre treino e teste
+    _check_distribution_divergence(treino_dist, teste_dist)
+
     return acuracia
+
+
+def _check_distribution_divergence(treino_dist, teste_dist):
+    """
+    Avisa se a distribuição de classes diverge muito entre treino e teste.
+    """
+
+    print("-" * 62)
+    print("  VERIFICAÇÃO: DISTRIBUIÇÃO TREINO vs TESTE")
+    print("-" * 62)
+    print()
+
+    todas_classes = set(treino_dist.keys()) | set(teste_dist.keys())
+
+    desvios = []
+
+    for classe in sorted(todas_classes):
+        treino_pct = (treino_dist.get(classe, 0) / sum(treino_dist.values())) * 100
+        teste_pct = (teste_dist.get(classe, 0) / sum(teste_dist.values())) * 100
+
+        desvio = abs(treino_pct - teste_pct)
+        desvios.append((desvio, classe, treino_pct, teste_pct))
+
+    desvios.sort(reverse=True)
+
+    problemas = []
+
+    for desvio, classe, treino_pct, teste_pct in desvios[:5]:
+
+        if desvio > 10:
+            problemas.append(
+                f"  {classe:<16} treino {treino_pct:5.1f}% | "
+                f"teste {teste_pct:5.1f}%  (desvio {desvio:.1f}%)"
+            )
+
+    if problemas:
+        print("  maiores divergências:")
+        for p in problemas:
+            print(p)
+        print()
+        print("  ⚠ Split desigual: o modelo foi treinado numa "
+              "distribuição diferente da que vai testar.")
+    else:
+        print("  ✓ distribuições balanceadas entre treino e teste")
+
+    print()
 
 
 def _report_criticas(y_teste, y_treino, previsto):
@@ -508,12 +562,13 @@ def _report_criticas(y_teste, y_treino, previsto):
 
 def train(args):
 
+    import random
+
     from dataset_io import (
         action_label,
         ceiling_state_categories,
         filter_by_outcome,
         read_index,
-        split_groups,
         state_baseline,
     )
 
@@ -573,36 +628,37 @@ def train(args):
         print(f"  {nome:<30} {valor:7.2%}")
 
     # -----------------------------------------------------
-    # Split por grupo
+    # Split: treino 100%, teste X% aleatório
     # -----------------------------------------------------
 
-    treino, teste, info = split_groups(
-        registros,
-        train_ratio=args.train_ratio,
-        mode=args.split,
-        seed=args.seed,
+    random.seed(args.seed)
+
+    amostras_teste_qtd = max(1, int(len(registros) * args.test_ratio))
+    indices_teste = sorted(
+        random.sample(range(len(registros)), amostras_teste_qtd)
     )
+    indices_teste_set = set(indices_teste)
+
+    treino = [r for i, r in enumerate(registros) if i not in indices_teste_set]
+    teste = [registros[i] for i in indices_teste]
 
     print()
-    print(
-        f"split por {info['mode']}: "
-        f"{info['grupos_treino']} grupos de treino / "
-        f"{info['grupos_teste']} de teste"
-    )
-    print(
-        f"  {info['amostras_treino']} amostras de treino, "
-        f"{info['amostras_teste']} de teste"
-    )
-    print(
-        "  nenhum grupo aparece nos dois lados — é o que faz a "
-        "acurácia significar algo"
-    )
+    print(f"treino 100%, teste {args.test_ratio*100:.0f}% aleatório:")
+    print(f"  {len(treino)} amostras de treino (100% do dataset)")
+    print(f"  {len(teste)} amostras de teste (selecionadas aleatoriamente)")
     print()
+
+    info = {
+        "mode": "random_test",
+        "amostras_treino": len(treino),
+        "amostras_teste": len(teste),
+        "test_ratio": args.test_ratio,
+    }
 
     if not teste:
 
         raise SystemExit(
-            "Conjunto de teste vazio. Baixe o --train-ratio."
+            "Conjunto de teste vazio."
         )
 
     # -----------------------------------------------------
@@ -653,6 +709,25 @@ def train(args):
         f"({time.monotonic() - inicio:.0f}s)"
     )
 
+    # Avisar se negativos forem desligados ou muito poucos
+    if args.kind == "category":
+        background_count = sum(1 for y in y_treino if str(y) == "background")
+        total_treino = len(y_treino)
+        background_pct = (background_count / total_treino * 100) if total_treino > 0 else 0
+
+        if args.negatives == 0:
+            print()
+            print("  ⚠ AVISO: --negatives=0")
+            print("    Sem recortes de fundo, o modelo pode detectar qualquer")
+            print("    pixel que não for do alvo. Recomendado: --negatives=2+")
+        elif background_pct < 15:
+            print()
+            print(f"  ⚠ AVISO: background apenas {background_pct:.1f}% do treino")
+            print("    Muito poucos negativos. Aumentar --negatives?")
+        else:
+            print()
+            print(f"  ✓ background {background_pct:.1f}% do treino (saudável)")
+
     contagem = Counter(y_treino.tolist())
 
     print()
@@ -676,6 +751,21 @@ def train(args):
             f"  aviso: {sorted(faltantes)} aparece(m) só no "
             "teste — o modelo não pode acertar essas"
         )
+
+    # Avisar se categorias críticas têm poucos exemplos
+    print()
+    print("verificação de categorias críticas:")
+
+    for categoria in CATEGORIAS_CRITICAS:
+        qtd = contagem.get(categoria, 0)
+        pct = (qtd / sum(contagem.values())) * 100 if sum(contagem.values()) > 0 else 0
+
+        if qtd == 0:
+            print(f"  ⚠ {categoria:<14} 0 exemplos!      <- coleta urgente")
+        elif qtd < 50:
+            print(f"  ⚠ {categoria:<14} {qtd:5d} ({pct:5.2f}%)  <- coleta recomendada")
+        else:
+            print(f"  ✓ {categoria:<14} {qtd:5d} ({pct:5.2f}%)")
 
     # -----------------------------------------------------
     # Treino
@@ -760,7 +850,56 @@ def train(args):
             "modelo para usar no bot é o `category`."
         )
 
+        return 0
+
+    # Recomendações para a próxima coleta
+    _recommendations(acuracia, referencias, contagem, background_pct)
+
     return 0
+
+
+def _recommendations(acuracia, referencias, contagem, background_pct):
+    """
+    Dicas para melhorar a próxima coleta/treino.
+    """
+
+    print("=" * 62)
+    print("  RECOMENDAÇÕES PARA A PRÓXIMA COLETA")
+    print("=" * 62)
+    print()
+
+    teto = referencias.get("estado + categorias (teto)", 0.96)
+    espaco = teto - acuracia
+
+    if acuracia >= teto * 0.95:
+        print("  ✓ Modelo alcança o teto teórico. Está bom.")
+    elif espaco > 0.10:
+        print(f"  ℹ Ainda há {espaco*100:.1f}% de margem até o teto.")
+        print()
+        print("  Prioridades:")
+
+        # Categorias raras
+        total = sum(contagem.values())
+        raras = [
+            (c, q, q/total*100)
+            for c, q in contagem.items()
+            if c != "background" and q/total*100 < 5
+        ]
+
+        if raras:
+            print()
+            print("  1. Categorias raras (<5%):")
+            for cat, qtd, pct in sorted(raras, key=lambda x: x[2]):
+                print(f"     - {cat:<14} {qtd:6d} ({pct:5.2f}%)")
+            print("     Coletar mais dessas, especialmente as com <1%")
+
+        if background_pct < 20:
+            print()
+            print("  2. Aumentar negativos (background):")
+            print(f"     Hoje {background_pct:.1f}% | Recomendado >20%")
+            print("     Retreine com --negatives=3 ou --negatives=4")
+
+    print()
 
 
 # =========================================================
@@ -802,21 +941,14 @@ def parse_args(argv=None):
     )
 
     parser.add_argument(
-        "--split",
-        choices=("phash", "session"),
-        default="phash",
-        help=(
-            "agrupamento do split. phash (padrão): quadros "
-            "iguais não cruzam treino/teste. session: sessão "
-            "inteira de um lado, o teste mais honesto."
-        ),
-    )
-
-    parser.add_argument(
-        "--train-ratio",
+        "--test-ratio",
         type=float,
-        default=0.8,
-        help="fração de GRUPOS para treino (padrão: 0.8)",
+        default=0.2,
+        help=(
+            "fração do dataset para teste (padrão: 0.2 = 20%). "
+            "O treino sempre usa 100% dos dados, incluindo "
+            "sucessos, falhas e erros."
+        ),
     )
 
     parser.add_argument(

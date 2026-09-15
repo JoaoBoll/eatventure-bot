@@ -6,6 +6,7 @@ Nenhum outro módulo deve ter número mágico.
 """
 
 import os
+import platform
 from pathlib import Path
 import shutil
 
@@ -16,6 +17,10 @@ import shutil
 
 # Raiz do repositório (dois níveis acima de src/core/).
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+
+# Extensão de executáveis dependendo do SO
+_IS_WINDOWS = platform.system() == "Windows"
+_EXE_SUFFIX = ".exe" if _IS_WINDOWS else ""
 
 # Device a usar, como aparece em `adb devices`.
 #
@@ -35,8 +40,8 @@ DEVICE_SERIAL = None
 # Prefer system scrcpy/adb in PATH if installed; else prefer project tools
 _scrcpy_dir = PROJECT_ROOT / "tools" / "scrcpy"
 
-# O binario do server pode vir como "scrcpy-server-v3.x.jar" (release do
-# GitHub) ou simplesmente "scrcpy-server" (build/zip do Windows).
+# O binário do server pode vir como "scrcpy-server-v3.x.jar" (release do
+# GitHub) ou simplesmente "scrcpy-server" (build/zip).
 _SERVER_NAMES = ("scrcpy-server*.jar", "scrcpy-server")
 
 
@@ -69,7 +74,7 @@ else:
     SCRCPY_SERVER_PATH = r""
     if _scrcpy_dir.exists():
         try:
-            _exe = next(_scrcpy_dir.rglob("scrcpy.exe"), None)
+            _exe = next(_scrcpy_dir.rglob(f"scrcpy{_EXE_SUFFIX}"), None)
             _jar = _find_server(_scrcpy_dir)
             SCRCPY_PATH = str(_exe) if _exe is not None else r""
             SCRCPY_SERVER_PATH = str(_jar) if _jar is not None else r""
@@ -88,23 +93,23 @@ else:
     try:
         if SCRCPY_PATH:
             scrcpy_p = Path(SCRCPY_PATH)
-            # look for adb.exe in the same directory
-            candidate = scrcpy_p.parent / 'adb.exe'
+            # look for adb in the same directory
+            candidate = scrcpy_p.parent / f'adb{_EXE_SUFFIX}'
             if candidate.exists():
                 _adb_from_scrcpy = str(candidate)
             else:
                 # also try sibling platform-tools or parent/platform-tools
-                sibling = scrcpy_p.parent / 'platform-tools' / 'adb.exe'
+                sibling = scrcpy_p.parent / 'platform-tools' / f'adb{_EXE_SUFFIX}'
                 if sibling.exists():
                     _adb_from_scrcpy = str(sibling)
     except Exception:
         _adb_from_scrcpy = None
 
     if not _adb_from_scrcpy:
-        # project tools/scrcpy may contain adb.exe somewhere under it
+        # project tools/scrcpy may contain adb somewhere under it
         _scrcpy_dir = PROJECT_ROOT / 'tools' / 'scrcpy'
         if _scrcpy_dir.exists():
-            _adb_candidate = next(_scrcpy_dir.rglob('adb.exe'), None)
+            _adb_candidate = next(_scrcpy_dir.rglob(f'adb{_EXE_SUFFIX}'), None)
             if _adb_candidate:
                 _adb_from_scrcpy = str(_adb_candidate)
 
@@ -331,7 +336,7 @@ SELECTOR_HEIGHT_FRACTION = 0.80
 # estreita — está aqui como proteção para monitor deitado.
 SELECTOR_WIDTH_FRACTION = 0.95
 
-# Sobrepõe a detecção de tela. None = detecta (Windows).
+# Sobrepõe a detecção de tela. None = detecta automaticamente.
 SELECTOR_MAX_WIDTH = None
 SELECTOR_MAX_HEIGHT = None
 

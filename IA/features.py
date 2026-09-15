@@ -108,6 +108,10 @@ def patch_features(patch):
       pixels 32x32 RGB ..... forma e layout (3072)
       histograma HSV ....... cor, invariante à posição (48)
 
+    Normalização de aspect ratio: redimensiona preservando a proporção
+    e adiciona padding preto, garantindo compatibilidade entre múltiplas
+    resoluções de tela.
+
     Devolve None se o recorte for vazio.
     """
 
@@ -117,17 +121,42 @@ def patch_features(patch):
     if patch.shape[0] < 2 or patch.shape[1] < 2:
         return None
 
+    h, w = patch.shape[:2]
+    ratio = w / h
+
+    if ratio > 1:
+        novo_w = PATCH_SIZE
+        novo_h = int(round(PATCH_SIZE / ratio))
+    else:
+        novo_h = PATCH_SIZE
+        novo_w = int(round(PATCH_SIZE * ratio))
+
+    novo_w = max(1, novo_w)
+    novo_h = max(1, novo_h)
+
     pequeno = cv2.resize(
         patch,
-        (PATCH_SIZE, PATCH_SIZE),
+        (novo_w, novo_h),
         interpolation=cv2.INTER_AREA,
     )
 
-    rgb = cv2.cvtColor(pequeno, cv2.COLOR_BGR2RGB)
+    top = (PATCH_SIZE - novo_h) // 2
+    bottom = PATCH_SIZE - novo_h - top
+    left = (PATCH_SIZE - novo_w) // 2
+    right = PATCH_SIZE - novo_w - left
+
+    quadrado = cv2.copyMakeBorder(
+        pequeno,
+        top, bottom, left, right,
+        cv2.BORDER_CONSTANT,
+        value=(0, 0, 0),
+    )
+
+    rgb = cv2.cvtColor(quadrado, cv2.COLOR_BGR2RGB)
 
     pixels = rgb.astype(np.float32).reshape(-1) / 255.0
 
-    hsv = cv2.cvtColor(pequeno, cv2.COLOR_BGR2HSV)
+    hsv = cv2.cvtColor(quadrado, cv2.COLOR_BGR2HSV)
 
     histogramas = []
 
@@ -143,8 +172,6 @@ def patch_features(patch):
 
         total = hist.sum()
 
-        # Normalizado: o recorte tem tamanho variável, então
-        # contagem crua não é comparável entre amostras.
         histogramas.append(
             hist / total if total > 0 else hist
         )

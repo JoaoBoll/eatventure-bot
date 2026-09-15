@@ -91,13 +91,17 @@ def tela_disponivel(fracao_altura=0.80, fracao_largura=0.95):
     largura é folgada de propósito — ela não deve limitar nada
     numa tela de device alta e estreita.
 
-    Fora do Windows devolve None e quem chama usa o fallback
-    do config.
+    Em Windows, obtém via WinAPI. Em Linux/Mac devolve None e quem
+    chama usa o fallback do config.
     """
 
     try:
 
         import ctypes
+        import platform
+
+        if platform.system() != "Windows":
+            return None
 
         usuario = ctypes.windll.user32
 
