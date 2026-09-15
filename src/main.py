@@ -77,6 +77,12 @@ def parse_args(argv=None):
         ),
     )
 
+    parser.add_argument(
+        "--ai-collect",
+        action="store_true",
+        help="Ativa coleta de dados de IA para o dataset.",
+    )
+
     return parser.parse_args(argv)
 
 
@@ -125,7 +131,7 @@ def setup_window():
 # DATASET
 # =========================================================
 
-def build_recorder():
+def build_recorder(ai_collect=None):
     """
     Gravador do dataset, ou None se estiver desligado.
 
@@ -134,7 +140,9 @@ def build_recorder():
     de verdade do treino.
     """
 
-    if not DATASET_SAVE:
+    dataset_enabled = ai_collect if ai_collect is not None else DATASET_SAVE
+
+    if not dataset_enabled:
         return None
 
     store = None
@@ -520,7 +528,7 @@ def main(argv=None):
 
     actions = ActionManager(device_id)
 
-    recorder = build_recorder()
+    recorder = build_recorder(ai_collect=args.ai_collect)
 
     state_machine = StateMachine(actions, recorder)
 
