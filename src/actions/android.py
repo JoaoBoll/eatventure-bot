@@ -1,10 +1,4 @@
-"""
-Camada mais baixa: comandos adb no device.
-
-Nada aqui derruba o bot. Um adb que engasgou devolve
-False e vira WARNING — antes qualquer falha transitória
-levantava CalledProcessError e matava o programa.
-"""
+"""Camada mais baixa: comandos adb no device. Falha transitória vira WARNING e devolve False, nunca derruba o bot."""
 
 import re
 import subprocess
@@ -21,10 +15,6 @@ class AndroidActions:
 
         self.serial = serial
 
-    # =====================================================
-    # COMANDO
-    # =====================================================
-
     def _base(self):
 
         command = [ADB]
@@ -36,10 +26,6 @@ class AndroidActions:
         return command
 
     def _run(self, *args, timeout=10.0):
-        """
-        Executa um comando adb. Devolve stdout ou None.
-        """
-
         command = self._base() + list(args)
 
         try:
@@ -83,19 +69,8 @@ class AndroidActions:
 
         return result.stdout
 
-    # =====================================================
-    # BATERIA
-    # =====================================================
-
     def battery(self, timeout=5.0):
-        """
-        (porcentagem, carregando) ou None se o adb não
-        respondeu.
-
-        Timeout curto de propósito: isto é informação de HUD.
-        Se o device engasgar, é melhor a leitura envelhecer do
-        que a thread ficar presa 10 s.
-        """
+        """(porcentagem, carregando) ou None. Timeout curto: é HUD, melhor envelhecer que travar a thread."""
 
         output = self._run(
             "shell",
@@ -142,17 +117,8 @@ class AndroidActions:
 
         return round(level * 100.0 / scale), carregando
 
-    # =====================================================
-    # TAMANHO DA TELA
-    # =====================================================
-
     def get_screen_size(self):
-        """
-        Resolução real do device, via 'wm size'.
-
-        É o que permite converter coordenada de frame em
-        coordenada de toque quando o stream vem reduzido.
-        """
+        """Resolução real do device ('wm size'), usada para converter coordenada de frame em toque quando o stream vem reduzido."""
 
         output = self._run("shell", "wm", "size")
 
@@ -186,10 +152,6 @@ class AndroidActions:
             int(match.group(2)),
         )
 
-    # =====================================================
-    # CLICK
-    # =====================================================
-
     def click(self, x, y):
 
         return self._run(
@@ -201,21 +163,7 @@ class AndroidActions:
         ) is not None
 
     def tap_many(self, x, y, times, timeout=None):
-        """
-        N toques no mesmo ponto, em UM comando adb.
-
-        Antes eram N chamadas `adb shell input tap`, cada
-        uma pagando spawn do cliente adb, round trip ao
-        servidor e uma JVM no device (o `input` é um script
-        que sobe o app_process). Com 5 toques isso passava
-        de um segundo — para uma ação que deveria ser
-        instantânea.
-
-        O espaçamento entre os toques não precisa de sleep
-        nosso: cada `input tap` leva ~60-100 ms para subir
-        no device, e é esse tempo que separa um toque do
-        outro. Um sleep em Python só somaria em cima.
-        """
+        """N toques em UM comando adb: N chamadas separadas pagavam spawn+JVM cada, passando de 1s com 5 toques."""
 
         vezes = max(1, int(times))
 
@@ -237,12 +185,7 @@ class AndroidActions:
         ) is not None
 
     def swipe_many(self, x1, y1, x2, y2, times, duration=300):
-        """
-        N swipes iguais, em UM comando adb.
-
-        Mesmo motivo do tap_many. A rolagem até o fim eram
-        6 processos adb; agora é um.
-        """
+        """N swipes iguais em UM comando adb (mesmo motivo do tap_many)."""
 
         vezes = max(1, int(times))
 
@@ -257,10 +200,6 @@ class AndroidActions:
 
             timeout=(duration / 1000.0 + 2.0) * vezes + 5.0,
         ) is not None
-
-    # =====================================================
-    # PRESS / LONG PRESS
-    # =====================================================
 
     def press(self, x, y, duration=4.0):
 
@@ -287,10 +226,6 @@ class AndroidActions:
             timeout=duration + 5.0,
         ) is not None
 
-    # =====================================================
-    # SWIPE
-    # =====================================================
-
     def swipe(self, x1, y1, x2, y2, duration=300):
 
         return self._run(
@@ -305,10 +240,6 @@ class AndroidActions:
 
             timeout=duration / 1000.0 + 5.0,
         ) is not None
-
-    # =====================================================
-    # BACK
-    # =====================================================
 
     def back(self):
 

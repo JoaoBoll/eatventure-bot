@@ -1,13 +1,7 @@
 """
-Testes da gravação do dataset.
-
-    python tests/test_dataset.py
-
-Grava em pasta temporária — nunca toca em DATASET_DIR.
-
-O que está em jogo: um rótulo errado aqui não dá erro nenhum.
-Ele produz um dataset que treina o modelo a clicar no lugar
-errado, e o defeito só aparece depois de horas de GPU.
+Testes da gravação do dataset. Grava em pasta temporária, nunca em
+DATASET_DIR. Um rótulo errado aqui não dá erro nenhum — treina o modelo
+a clicar no lugar errado, e o defeito só aparece depois de horas de GPU.
 """
 
 import json
@@ -42,20 +36,12 @@ from dataset.recorder import (                    # noqa: E402
 log.setup("ERROR")
 
 
-# =========================================================
-# HELPERS
-# =========================================================
-
 def frame(valor=40, largura=1080, altura=2400):
-    """
-    Frame com um gradiente, para o hash de similaridade
-    distinguir um do outro.
-    """
+    """Frame com gradiente, para o hash de similaridade distinguir um do outro."""
 
     img = np.full((altura, largura, 3), valor, np.uint8)
 
-    # Um bloco em posição dependente do valor: dois frames
-    # diferentes não podem colidir no hash.
+    # Posição dependente do valor: dois frames diferentes não colidem no hash.
     y = (valor * 7) % (altura - 200)
 
     img[y:y + 180, 100:400] = 255 - valor
@@ -80,12 +66,9 @@ def deteccao(category, x=100, y=200, w=80, h=80, conf=0.97):
 
 class Gravador:
     """
-    Recorder num diretório temporário, já iniciado.
-
-    As negativas são DESLIGADAS por padrão (intervalo 0): uma
-    negativa a mais mudaria o total nos testes de contagem. O
-    teste de negativas passa intervalo negativo... não: passa um
-    intervalo pequeno o bastante para cada observe() valer.
+    Recorder num diretório temporário, já iniciado. Negativas DESLIGADAS
+    por padrão (intervalo 0): uma a mais mudaria o total nos testes de
+    contagem.
     """
 
     def __init__(self, negativas=0.0):
@@ -119,9 +102,7 @@ class Gravador:
         shutil.rmtree(self.dir, ignore_errors=True)
 
     def registros(self, espera=5.0):
-        """
-        Lê o índice, esperando a thread drenar a fila.
-        """
+        """Lê o índice, esperando a thread drenar a fila."""
 
         indice = self.dir / "samples.jsonl"
 
@@ -149,10 +130,6 @@ class Gravador:
             if linha.strip()
         ]
 
-
-# =========================================================
-# GRAVAÇÃO BÁSICA
-# =========================================================
 
 def test_grava_imagem_e_rotulo():
 
@@ -209,11 +186,7 @@ def test_grava_imagem_e_rotulo():
 
 
 def test_grava_todas_as_caixas_do_frame():
-    """
-    O bot agiu em uma; o detector viu três. As outras duas são
-    rótulo grátis — jogá-las fora seria desperdiçar a maior
-    parte do sinal.
-    """
+    """O bot agiu em uma; o detector viu três — as outras são rótulo grátis."""
 
     with Gravador() as g:
 
@@ -257,10 +230,7 @@ def test_grava_todas_as_caixas_do_frame():
 
 
 def test_geometria_da_caixa_e_preservada():
-    """
-    x/y/width/height são o rótulo de detecção. Errar aqui
-    treina o modelo a enquadrar errado.
-    """
+    """x/y/width/height são o rótulo de detecção: errar aqui treina o modelo a enquadrar errado."""
 
     with Gravador() as g:
 
@@ -289,10 +259,6 @@ def test_geometria_da_caixa_e_preservada():
         ) == (317, 1523, 96, 88), caixa
 
 
-# =========================================================
-# RESULTADO DA AÇÃO
-# =========================================================
-
 def test_resultado_changed_quando_o_alvo_sai():
 
     with Gravador() as g:
@@ -320,10 +286,7 @@ def test_resultado_changed_quando_o_alvo_sai():
 
 
 def test_resultado_unchanged_quando_o_alvo_fica():
-    """
-    Este é o rótulo que quebra o teto do behavior cloning:
-    permite treinar só nas ações que funcionaram.
-    """
+    """O rótulo que quebra o teto do behavior cloning: permite treinar só nas ações que funcionaram."""
 
     with Gravador() as g:
 
@@ -352,11 +315,7 @@ def test_resultado_unchanged_quando_o_alvo_fica():
 
 
 def test_outra_instancia_da_categoria_nao_conta_como_unchanged():
-    """
-    Comparar só a categoria daria falso "não pegou" quando há
-    outra comida em outro canto da tela — e comida é justamente
-    a categoria com mais instâncias simultâneas.
-    """
+    """Comparar só a categoria daria falso "não pegou" quando há outra comida em outro canto."""
 
     with Gravador() as g:
 
@@ -385,11 +344,7 @@ def test_outra_instancia_da_categoria_nao_conta_como_unchanged():
 
 
 def test_frame_anterior_a_acao_nao_julga():
-    """
-    Um frame capturado antes da ação não pode dizer nada sobre
-    o efeito dela. Julgar por ele produziria "unchanged" para
-    toda ação que funcionou.
-    """
+    """Julgar por um frame de antes da ação produziria "unchanged" para toda ação que funcionou."""
 
     with Gravador() as g:
 
@@ -422,11 +377,7 @@ def test_frame_anterior_a_acao_nao_julga():
 
 
 def test_acao_sem_veredito_e_gravada_no_stop():
-    """
-    Se a sessão termina com ação pendente, a amostra não pode
-    ser perdida: a imagem e as caixas valem mesmo sem o
-    resultado.
-    """
+    """Sessão terminando com ação pendente: a imagem e as caixas valem mesmo sem o resultado."""
 
     d = Path(tempfile.mkdtemp())
 
@@ -464,17 +415,11 @@ def test_acao_sem_veredito_e_gravada_no_stop():
         shutil.rmtree(d, ignore_errors=True)
 
 
-# =========================================================
-# FILTROS
-# =========================================================
-
 def test_todas_as_acoes_do_bot_entram():
     """
-    Cada tipo de ação precisa de exemplo próprio para ser
-    aprendido. Uma que o bot faz e o dataset ignora é um buraco
-    que só aparece quando o modelo não sabe fazer aquilo.
-
-    Inclui `click` (o build) e `plane`, que ficavam de fora.
+    Ação que o bot faz e o dataset ignora é buraco que só aparece quando
+    o modelo não sabe fazer aquilo. Inclui `click` (build) e `plane`,
+    que ficavam de fora.
     """
 
     from actions.manager import ACTION_TABLE
@@ -490,11 +435,7 @@ def test_todas_as_acoes_do_bot_entram():
 
 
 def test_acao_desconhecida_nao_grava():
-    """
-    O filtro continua existindo: nome que não está na lista não
-    entra. É o que permite tirar uma ação do dataset sem tirar
-    do bot.
-    """
+    """O filtro permite tirar uma ação do dataset sem tirar do bot."""
 
     with Gravador() as g:
 
@@ -552,16 +493,12 @@ def test_build_e_plane_agora_gravam():
 
 def test_bot_travado_para_de_gravar():
     """
-    Substitui a deduplicação por conteúdo, que foi MEDIDA e não
-    serve aqui: a tela do jogo anima sozinha, e a diferença
-    média de miniatura entre frames da mesma tela (1.9 a 5.8) se
-    sobrepõe à de telas distintas (2.5 a 59.8). Qualquer limite
-    que pegasse o caso travado jogaria fora amostra boa.
-
-    O que separa limpo é o RESULTADO. Nos dados reais:
-
-        sessão travada ..... 35/35 unchanged, sempre a mesma ação
-        sessão produtiva ... open_box 5x seguidas, todas changed
+    Substitui a deduplicação por conteúdo, MEDIDA e descartada: a tela
+    anima sozinha, e a diferença de miniatura entre frames da mesma tela
+    (1.9-5.8) se sobrepõe à de telas distintas (2.5-59.8) — qualquer
+    limite jogaria fora amostra boa. O que separa limpo é o RESULTADO:
+    sessão travada = 35/35 unchanged na mesma ação; produtiva = open_box
+    5x seguidas, todas changed.
     """
 
     from core.config import DATASET_MAX_UNCHANGED_STREAK
@@ -603,11 +540,7 @@ def test_bot_travado_para_de_gravar():
 
 
 def test_repeticao_produtiva_grava_tudo():
-    """
-    O outro lado, e o que torna o corte seguro: abrir 5 caixas
-    seguidas é progresso, não bot travado. Nenhuma dessas pode
-    ser perdida — é justamente o dado que se quer.
-    """
+    """O que torna o corte seguro: abrir 5 caixas seguidas é progresso, não bot travado."""
 
     with Gravador() as g:
 
@@ -642,9 +575,7 @@ def test_repeticao_produtiva_grava_tudo():
 
 
 def test_contagem_zera_ao_mudar_de_acao():
-    """
-    Preso numa ação não pode calar as outras.
-    """
+    """Preso numa ação não pode calar as outras."""
 
     from core.config import DATASET_MAX_UNCHANGED_STREAK
 
@@ -704,10 +635,7 @@ def test_contagem_zera_ao_mudar_de_acao():
 
 
 def test_telas_diferentes_nao_sao_descartadas():
-    """
-    Nenhuma amostra produtiva é perdida por semelhança de
-    imagem — não existe mais filtro por conteúdo.
-    """
+    """Nenhuma amostra produtiva é perdida por semelhança de imagem — não há mais filtro por conteúdo."""
 
     with Gravador() as g:
 
@@ -737,9 +665,7 @@ def test_telas_diferentes_nao_sao_descartadas():
 
 
 def test_fila_cheia_descarta_sem_travar():
-    """
-    A garantia que mais importa: o bot NUNCA espera o disco.
-    """
+    """A garantia que mais importa: o bot NUNCA espera o disco."""
 
     d = Path(tempfile.mkdtemp())
 
@@ -789,10 +715,6 @@ def test_fila_cheia_descarta_sem_travar():
         shutil.rmtree(d, ignore_errors=True)
 
 
-# =========================================================
-# INTEGRAÇÃO COM A MÁQUINA DE ESTADOS
-# =========================================================
-
 class AcoesFalsas:
 
     def __init__(self, device=(1080, 2400), frame_size=(1080, 2400)):
@@ -828,10 +750,7 @@ class AcoesFalsas:
 
 
 def test_maquina_de_estados_grava_a_acao():
-    """
-    Fim a fim: a máquina age e a amostra aparece no disco, com
-    o ponto do clique no espaço da imagem.
-    """
+    """Fim a fim: a máquina age e a amostra aparece no disco, com o clique no espaço da imagem."""
 
     with Gravador() as g:
 
@@ -867,11 +786,7 @@ def test_maquina_de_estados_grava_a_acao():
 
 
 def test_click_do_dismiss_usa_o_ponto_neutro():
-    """
-    Ação de ponto fixo: o rótulo tem de ser o ponto neutro
-    convertido para o espaço do frame, não o centro da
-    detecção.
-    """
+    """Ação de ponto fixo: o rótulo é o ponto neutro no espaço do frame, não o centro da detecção."""
 
     with Gravador() as g:
 
@@ -899,10 +814,7 @@ def test_click_do_dismiss_usa_o_ponto_neutro():
 
 
 def test_ponto_neutro_escala_em_frame_menor():
-    """
-    Se o frame vier reduzido, o rótulo tem de escalar com ele —
-    a imagem gravada é o frame.
-    """
+    """Se o frame vier reduzido, o rótulo tem de escalar com ele — a imagem gravada é o frame."""
 
     with Gravador() as g:
 
@@ -951,11 +863,9 @@ def test_ponto_neutro_escala_em_frame_menor():
 
 def test_rotulo_bate_com_o_toque_real():
     """
-    O rótulo (target_frame) e o toque (_dispatch) são calculados
-    por caminhos diferentes de propósito — o toque não passa
-    pelo frame, para não acumular arredondamento.
-
-    Este teste é o que garante que os dois concordam.
+    O rótulo (target_frame) e o toque (_dispatch) são calculados por
+    caminhos diferentes de propósito — o toque não passa pelo frame, para
+    não acumular arredondamento. Este teste garante que os dois concordam.
     """
 
     from actions.manager import ActionManager
@@ -988,12 +898,9 @@ def test_rotulo_bate_com_o_toque_real():
 
 
 def test_negativas_sao_gravadas():
-    """
-    Um detector treinado só em telas com alvo aprende que
-    sempre existe um alvo.
-    """
+    """Um detector treinado só em telas com alvo aprende que sempre existe um alvo."""
 
-    # Intervalo minusculo: cada observe() gera uma negativa.
+    # Intervalo minúsculo: cada observe() gera uma negativa.
     with Gravador(negativas=0.0001) as g:
 
         for valor in (10, 70, 130):
@@ -1017,10 +924,7 @@ def test_negativas_sao_gravadas():
 
 
 def test_sem_recorder_a_maquina_funciona_igual():
-    """
-    O dataset é opcional: recorder=None não pode mudar nada no
-    comportamento do bot.
-    """
+    """O dataset é opcional: recorder=None não pode mudar nada no comportamento do bot."""
 
     acoes = AcoesFalsas()
 
@@ -1035,19 +939,11 @@ def test_sem_recorder_a_maquina_funciona_igual():
     assert acoes.executadas == ["open_box"], acoes.executadas
 
 
-# =========================================================
-# AÇÕES SEM ALVO PONTUAL
-# =========================================================
-
 def test_swipe_de_exploracao_e_gravado():
     """
-    A exploração não passa por _act, então precisava de gancho
-    próprio. É decisão do bot como outra qualquer: "não achei
-    nada, rolo a tela".
-
-    A direção vai no NOME porque para o treino subir e descer
-    são rótulos diferentes — e assim não precisa de coluna nova
-    no índice nem no banco.
+    A exploração não passa por _act, então precisava de gancho próprio.
+    A direção vai no NOME porque subir/descer são rótulos diferentes para
+    o treino, e assim não precisa de coluna nova no índice nem no banco.
     """
 
     with Gravador() as g:
@@ -1098,13 +994,9 @@ def test_swipe_de_exploracao_e_gravado():
 
 def test_acao_sem_alvo_julga_pela_mudanca_de_tela():
     """
-    Para swipe/scroll/dismiss não existe "o alvo saiu da tela" —
-    a pergunta é se a ação surtiu efeito.
-
-    Detectar mudança GRANDE é confiável (rolagem move a vista
-    inteira). É o inverso da deduplicação, onde o problema é
-    separar "nada mudou" de "mudou pouco", e que por isso não
-    funciona.
+    Para swipe/scroll/dismiss não existe "o alvo saiu da tela" — a
+    pergunta é se a ação surtiu efeito. Detectar mudança GRANDE é
+    confiável (rolagem move a vista inteira).
     """
 
     import numpy as np
@@ -1160,16 +1052,8 @@ def test_acao_sem_alvo_com_tela_parada_e_unchanged():
         assert g.registros()[0]["outcome"] == UNCHANGED
 
 
-# =========================================================
-# ÍNDICE
-# =========================================================
-
 def test_registro_tem_as_chaves_que_o_banco_espera():
-    """
-    O store faz INSERT posicional. Chave faltando viraria
-    KeyError na thread de gravação, e o log é o único lugar
-    onde isso apareceria.
-    """
+    """O store faz INSERT posicional; chave faltando viraria KeyError silencioso na thread de gravação."""
 
     esperadas = {
         "id", "session", "created_at",
@@ -1218,10 +1102,7 @@ def test_registro_tem_as_chaves_que_o_banco_espera():
 
 
 def test_sha256_confere_com_o_arquivo():
-    """
-    O hash existe para o treino detectar duplicata entre
-    sessões e conferir integridade. Errado, é pior que ausente.
-    """
+    """O hash detecta duplicata entre sessões e confere integridade — errado é pior que ausente."""
 
     import hashlib
 
@@ -1252,18 +1133,11 @@ def test_sha256_confere_com_o_arquivo():
         )
 
 
-# =========================================================
-# FORMATO DA IMAGEM
-# =========================================================
-
 def test_grava_em_jpg():
     """
-    O caminho JPG: é o formato configurado, e antes deste teste
-    nenhum teste o executava — todos rodavam no padrão PNG.
-
-    JPG é 4.3x menor (medido: 0.49 MB contra 2.10 MB por frame),
-    o que numa sessão de horas é a diferença entre 1.8 e 7.6
-    GB/hora.
+    Antes deste teste nenhum outro exercitava o caminho JPG (todos no
+    padrão PNG). JPG é 4.3x menor (0.49 MB vs 2.10 MB/frame) — numa sessão
+    de horas, 1.8 vs 7.6 GB/hora.
     """
 
     import dataset.recorder as mod
@@ -1313,8 +1187,7 @@ def test_grava_em_jpg():
 
             assert lido.shape[:2] == (2400, 1080), lido.shape
 
-            # O hash tem de ser dos bytes do JPG, não de outra
-            # coisa.
+            # O hash tem de ser dos bytes do JPG, não de outra coisa.
             import hashlib
 
             assert (
@@ -1329,23 +1202,11 @@ def test_grava_em_jpg():
 
 def test_jpg_e_bem_menor_que_png():
     """
-    A razão de ser da escolha. Se a qualidade subir para 100,
-    este teste avisa que a economia sumiu.
-
-    Usa um FIXTURE REAL de propósito. Com frame sintético a
-    conta se INVERTE: cor lisa o PNG comprime a quase nada e o
-    JPG paga um custo de base — medido, 16 KB de PNG contra
-    42 KB de JPG.
-
-    A margem depende da ORIGEM do frame:
-
-        adb screencap (este fixture) .... 661 KB / 366 KB, 1.8x
-        decodificado de H.264 (o real) .. 2.10 MB / 0.49 MB, 4.3x
-
-    O recorder grava o segundo caso — o H.264 introduz ruído em
-    tudo, que o PNG não consegue comprimir e o JPG descarta. Por
-    isso a afirmação aqui é só "menor", e não um fator: no
-    fixture o fator seria menor que na vida real.
+    Usa FIXTURE REAL de propósito: com frame sintético a conta se INVERTE
+    (cor lisa comprime a quase nada no PNG; JPG paga custo de base). A
+    margem depende da ORIGEM: adb screencap (este fixture) é 1.8x menor,
+    H.264 decodificado (o caso real, gravado pelo recorder) é 4.3x — por
+    isso a afirmação aqui é só "menor", não um fator.
     """
 
     import cv2
@@ -1400,19 +1261,12 @@ def test_jpg_e_bem_menor_que_png():
     assert tamanhos["jpg"] < tamanhos["png"], tamanhos
 
 
-# =========================================================
-# ÍNDICE NO POSTGRES
-# =========================================================
-
 class CursorFalso:
     """
-    Captura os SQL e as tuplas, sem servidor.
-
-    O que está sob teste é a correspondência COLUNA -> VALOR: o
-    INSERT de dataset_sample é posicional com 21 valores, e uma
-    troca de ordem faria click_x entrar em frame_width EM
-    SILÊNCIO. O banco aceitaria (ambos são inteiros) e o defeito
-    só apareceria no treino.
+    Captura os SQL e as tuplas, sem servidor. Sob teste: a correspondência
+    COLUNA -> VALOR — o INSERT é posicional com 21 valores, e uma troca de
+    ordem faria click_x entrar em frame_width EM SILÊNCIO (o banco aceita,
+    ambos inteiros; o defeito só apareceria no treino).
     """
 
     def __init__(self, conexao):
@@ -1470,9 +1324,7 @@ class ConexaoFalsa:
     # ---- conveniências para os testes ----
 
     def por_tabela(self, tabela):
-        """
-        As chamadas que mexem nesta tabela.
-        """
+        """As chamadas que mexem nesta tabela."""
 
         return [
             c for c in self.chamadas
@@ -1480,9 +1332,7 @@ class ConexaoFalsa:
         ]
 
     def colunas(self, sql):
-        """
-        Nomes das colunas do INSERT, na ordem em que aparecem.
-        """
+        """Nomes das colunas do INSERT, na ordem em que aparecem."""
 
         import re
 
@@ -1495,11 +1345,7 @@ class ConexaoFalsa:
         ]
 
     def linhas(self, tabela):
-        """
-        [{coluna: valor}] das linhas inseridas na tabela.
-
-        É aqui que a ordem posicional é conferida.
-        """
+        """[{coluna: valor}] das linhas inseridas na tabela — é aqui que a ordem posicional é conferida."""
 
         resultado = []
 
@@ -1670,11 +1516,7 @@ def test_caixas_vao_com_a_geometria_certa():
 
 
 def test_sessao_inserida_uma_vez_so():
-    """
-    Sem isto, cada lote tentaria registrar a sessão de novo —
-    barrado pelo ON CONFLICT, mas uma ida ao banco à toa por
-    lote, durante horas.
-    """
+    """Sem isto, cada lote tentaria registrar a sessão de novo — ida ao banco à toa por lote, por horas."""
 
     store, conexao = store_falso(batch_size=1)
 
@@ -1693,10 +1535,7 @@ def test_sessao_inserida_uma_vez_so():
 
 
 def test_lote_espera_o_batch_size():
-    """
-    Uma ida ao banco por amostra colocaria latência de rede na
-    thread que também codifica a imagem.
-    """
+    """Uma ida ao banco por amostra colocaria latência de rede na thread que também codifica a imagem."""
 
     store, conexao = store_falso(batch_size=3)
 
@@ -1713,11 +1552,7 @@ def test_lote_espera_o_batch_size():
 
 
 def test_close_grava_o_resto():
-    """
-    O último lote quase nunca fecha o batch_size. Sem flush no
-    close, ele se perderia — e no banco, não em arquivo, o que
-    esconderia o problema.
-    """
+    """O último lote quase nunca fecha o batch_size; sem flush no close, ele se perderia no banco."""
 
     store, conexao = store_falso(batch_size=100)
 
@@ -1735,12 +1570,9 @@ def test_close_grava_o_resto():
 
 def test_falha_faz_rollback_e_propaga():
     """
-    Sem rollback, a conexão fica inutilizável para todo lote
-    seguinte (Postgres aborta a transação inteira).
-
-    E a exceção tem de PROPAGAR: o recorder conta com isso para
-    logar e seguir gravando em arquivo, que é o que não se
-    recupera depois.
+    Sem rollback, a conexão fica inutilizável para todo lote seguinte
+    (Postgres aborta a transação). A exceção tem de PROPAGAR: o recorder
+    conta com isso para logar e seguir gravando em arquivo.
     """
 
     store, conexao = store_falso(batch_size=1)
@@ -1763,9 +1595,7 @@ def test_falha_faz_rollback_e_propaga():
 
 
 def test_recorder_sobrevive_a_falha_do_banco():
-    """
-    Fim a fim: banco quebrado, arquivo gravado.
-    """
+    """Fim a fim: banco quebrado, arquivo gravado."""
 
     class StoreQuebrado:
 
@@ -1832,10 +1662,7 @@ def test_recorder_sobrevive_a_falha_do_banco():
 
 
 def test_importar_jsonl():
-    """
-    O caminho recomendado: gravar em arquivo agora, carregar no
-    banco depois — inclusive sessões antigas.
-    """
+    """O caminho recomendado: gravar em arquivo agora, carregar no banco depois, inclusive sessões antigas."""
 
     import shutil
     import tempfile
@@ -1892,9 +1719,7 @@ def test_importar_jsonl():
 
 
 def test_schema_configuravel_aparece_no_sql():
-    """
-    Quem usa schema próprio precisa que ele chegue no SQL.
-    """
+    """Quem usa schema próprio precisa que ele chegue no SQL."""
 
     from dataset.store import PostgresStore
 
@@ -1918,14 +1743,10 @@ def test_schema_configuravel_aparece_no_sql():
 
 def test_ddl_cobre_as_colunas_do_insert():
     """
-    O DDL vive em docs/schema.sql, fora do alcance do
-    interpretador — nada impediria o código e o script de
-    divergirem, e o sintoma seria a PRIMEIRA execução com banco
-    falhando na cara do usuário.
-
-    Confere contra o schema.sql e não contra o .md porque o
-    .sql é o que se EXECUTA. Dois lugares com DDL seriam duas
-    fontes de verdade.
+    O DDL vive em docs/schema.sql, fora do alcance do interpretador —
+    sem isto, código e script podem divergir e o sintoma é a PRIMEIRA
+    execução com banco falhando na cara do usuário. Confere contra o
+    .sql, não o .md, porque é o .sql que se EXECUTA.
     """
 
     import re
@@ -1970,10 +1791,6 @@ def test_ddl_cobre_as_colunas_do_insert():
 
         assert not faltando, (tabela, faltando)
 
-
-# =========================================================
-# RUNNER
-# =========================================================
 
 def main():
 

@@ -1,20 +1,10 @@
 #!/usr/bin/env python3
-"""Mescla um dataset externo em dataset/ e renomeia arquivos em conflito.
+"""
+Mescla dataset_to_unify/ em dataset/, renomeando imagens em conflito
+e ajustando o campo `image` de cada amostra. Limpa dataset_to_unify
+ao final.
 
-Uso:
     python tools/unify_dataset.py
-
-Estrutura esperada:
-    dataset/
-    dataset_to_unify/
-        samples.jsonl
-        images/
-            ...
-
-O script lê o JSONL de dataset_to_unify, copia as imagens para o
-root do dataset principal, renomeia arquivos quando o nome já existe,
-ajusta o campo `image` em cada amostra e grava tudo em
-`dataset/samples.jsonl`. Depois limpa `dataset_to_unify`.
 """
 
 import argparse

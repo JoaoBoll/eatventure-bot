@@ -1,39 +1,11 @@
 """
-Painel de status: um bloco fixo, reescrito no lugar.
+Painel de status: bloco fixo reescrito no lugar, sem acumular linhas.
 
---------------------------------------------------------------
-O PROBLEMA QUE ELE RESOLVE
---------------------------------------------------------------
-
-O log conta a HISTÓRIA: cada ação, cada troca de estado, cada
-ciclo fechado, uma linha por evento. Isso é o que se quer quando
-algo deu errado e você vai ler depois.
-
-Não é o que se quer quando você está OLHANDO. Com o bot agindo
-~1x/s, o terminal rola sem parar e a pergunta simples — "em que
-device ele está, quantas vezes já voou, o que está fazendo
-agora" — exige ler linhas que já subiram.
-
-O painel responde essa pergunta e só ela. Ele não acumula: são
-sempre as mesmas linhas, reescritas no mesmo lugar. Nada de
-spam, porque nada é impresso duas vezes.
-
---------------------------------------------------------------
-CONVIVER COM O LOG
---------------------------------------------------------------
-
-Painel e log disputam o mesmo terminal: qualquer linha de log
-empurra o painel para cima, e a reescrita passa a apagar a
-linha errada.
-
-Não tem como resolver isso só aqui, e por isso o main BAIXA o
-log do console para WARNING quando o painel está ligado. Aviso e
-erro continuam aparecendo (eles interessam mais que o painel, e
-são raros o bastante para não bagunçar); o INFO de cada ação
-sai, porque é justamente o que o painel substitui.
-
-Para ver o log detalhado de novo, desligue STATUS_PANEL no
-config.
+Responde "o que está acontecendo AGORA" — o log conta a história
+evento a evento, o que exige rolar o terminal para achar a linha atual.
+Painel e log disputam o mesmo terminal, por isso o main baixa o log do
+console para WARNING enquanto o painel está ligado (desligue
+STATUS_PANEL para voltar ao log linha-por-linha).
 """
 
 import os
@@ -51,15 +23,10 @@ from core.metrics import formata_duracao
 
 def formata_bateria(leitura):
     """
-    A leitura do BatteryMonitor em uma palavra curta.
+    A leitura do BatteryMonitor (nível, carregando, idade) em palavra curta.
 
-    `leitura` é (nível, carregando, idade_da_leitura) — ou None
-    antes da primeira medição.
-
-    Marca a leitura VELHA em vez de esconder: um número parado
-    parece atual, e é assim que se passa uma hora sem perceber
-    que o adb travou. O intervalo de medição é conhecido, então
-    passar do dobro dele já é sinal.
+    Marca a leitura VELHA em vez de esconder — um número parado parece
+    atual, e é assim que se passa uma hora sem perceber que o adb travou.
     """
 
     if not leitura:
@@ -81,24 +48,15 @@ def formata_bateria(leitura):
     return texto
 
 
-# Quantas linhas o bloco ocupa. Fixo de propósito: a reescrita
-# precisa saber quantas linhas subir, e descobrir isso contando
-# o que foi impresso é como o desenho sai torto.
-#
-# A linha de quase-acerto é a única opcional, e a decisão é
-# tomada UMA vez, na construção do painel — não a cada
-# redesenho. Uma linha que entra e sai deslocaria o bloco e o
-# `\033[nA` passaria a subir a conta errada.
+# Fixo de propósito: a reescrita precisa saber quantas linhas subir, e
+# contar o que foi impresso deixa o desenho torto. A linha de
+# quase-acerto é a única opcional, decidida UMA vez na construção — se
+# entrasse e saísse, deslocaria o bloco e o `\033[nA` subiria errado.
 LINHAS_BASE = 5
 
 
 class StatusPanel:
-    """
-    Bloco de status reescrito no lugar.
-
-    Use `update(...)` a cada volta do loop — ele decide sozinho
-    se já é hora de redesenhar.
-    """
+    """Bloco de status reescrito no lugar; `update(...)` decide sozinho quando redesenhar."""
 
     def __init__(
         self,
@@ -110,10 +68,8 @@ class StatusPanel:
 
         self.device = device or "?"
 
-        # A linha "Sem deteccao" só faz sentido com
-        # DETECTOR_DEBUG_MISSES ligado: sem ele o detector nem
-        # calcula o melhor match, e a linha ficaria eternamente
-        # em "—" ocupando espaço.
+        # "Sem deteccao" só faz sentido com DETECTOR_DEBUG_MISSES ligado
+        # (sem ele o detector nem calcula o melhor match).
         self.misses_line = (
             DETECTOR_DEBUG_MISSES
             if misses_line is None
@@ -124,9 +80,6 @@ class StatusPanel:
             1 if self.misses_line else 0
         )
 
-        # Redesenhar a 30 fps não deixa ninguém mais informado e
-        # gasta syscall de escrita. Meio segundo é rápido o
-        # bastante para parecer vivo.
         self.interval = interval
 
         self.stream = stream or sys.stdout
@@ -136,20 +89,11 @@ class StatusPanel:
 
         self.iniciado = time.monotonic()
 
-        # Terminal que não entende ANSI (arquivo, pipe, log de
-        # CI) não pode receber sequência de cursor: viraria
-        # lixo no meio do texto. Aí o painel imprime uma vez e
-        # se cala.
+        # Sem ANSI (arquivo, pipe, log de CI) a sequência de cursor
+        # viraria lixo no meio do texto; aí o painel imprime uma vez e se cala.
         self.ansi = self._suporta_ansi()
 
-    # -----------------------------------------------------
-    # TERMINAL
-    # -----------------------------------------------------
-
     def _suporta_ansi(self):
-        """
-        O terminal aceita mover o cursor?
-        """
 
         if not hasattr(self.stream, "isatty"):
             return False
@@ -164,10 +108,9 @@ class StatusPanel:
         if platform.system() != "Windows":
             return True
 
-        # No Windows o console só interpreta ANSI depois de
-        # ENABLE_VIRTUAL_TERMINAL_PROCESSING. O Windows Terminal
-        # já vem com isso; o console legado, não — e sem ligar,
-        # o painel apareceria como "←[2K" na tela.
+        # O console legado do Windows só interpreta ANSI depois de
+        # ENABLE_VIRTUAL_TERMINAL_PROCESSING; sem ligar, o painel
+        # apareceria como "←[2K" na tela.
         try:
 
             import ctypes
@@ -195,20 +138,8 @@ class StatusPanel:
         except Exception:
             return False
 
-    # -----------------------------------------------------
-    # CONTEÚDO
-    # -----------------------------------------------------
-
     def _largura(self):
-        """
-        Largura útil do terminal.
-
-        Importa mais do que parece: linha mais comprida que o
-        terminal QUEBRA em duas, o bloco passa a ocupar 7 linhas
-        e o `\033[6A` sobe pouco — o painel começa a se
-        reescrever em cima de si mesmo. Cortar é feio; quebrar
-        estraga o desenho todo.
-        """
+        """Largura útil do terminal — linha mais comprida QUEBRA em duas e desalinha a contagem de `\033[nA`."""
 
         try:
             colunas = shutil.get_terminal_size().columns
@@ -216,8 +147,7 @@ class StatusPanel:
         except Exception:
             return 100
 
-        # -1: escrever na última coluna já provoca a quebra em
-        # alguns terminais.
+        # -1: escrever na última coluna já provoca quebra em alguns terminais.
         return max(20, colunas - 1)
 
     def _linhas(self, resumo, extra=None, misses=None):
@@ -251,13 +181,8 @@ class StatusPanel:
 
         linhas.append(rodape)
 
-        # -------------------------------------------------
-        # QUASE-ACERTO
-        # -------------------------------------------------
-        #
-        # Só existe com o debug ligado. Ligada, aparece sempre —
-        # mesmo sem nada a relatar — porque o bloco tem altura
-        # fixa e uma linha intermitente estragaria a reescrita.
+        # Só existe com o debug ligado; aparece sempre (mesmo sem nada a
+        # relatar) porque o bloco tem altura fixa.
         if self.misses_line:
 
             linhas.append(
@@ -266,9 +191,8 @@ class StatusPanel:
                 else "Sem deteccao: —"
             )
 
-        # Trava o tamanho: se um dia alguém acrescentar uma
-        # linha sem mexer na conta, o painel comeria a linha de
-        # cima em vez de falhar visivelmente.
+        # Trava o tamanho: uma linha nova sem ajustar a conta comeria a
+        # linha de cima em vez de falhar visivelmente.
         assert len(linhas) == self.linhas, (
             len(linhas),
             self.linhas,
@@ -283,17 +207,8 @@ class StatusPanel:
             for linha in linhas
         ]
 
-    # -----------------------------------------------------
-    # DESENHO
-    # -----------------------------------------------------
-
     def update(self, resumo, extra=None, misses=None, force=False):
-        """
-        Redesenha se já passou o intervalo.
-
-        `resumo` é o dict de StateMachine.summary().
-        `misses` é o texto de Detector.miss_report().
-        """
+        """Redesenha se já passou o intervalo. `resumo` é StateMachine.summary(), `misses` é Detector.miss_report()."""
 
         agora = time.monotonic()
 
@@ -306,9 +221,7 @@ class StatusPanel:
 
         if not self.ansi:
 
-            # Sem ANSI, imprime UMA vez e para. Melhor um bloco
-            # no começo do arquivo que o mesmo bloco repetido
-            # mil vezes.
+            # Sem ANSI, imprime UMA vez e para, em vez do bloco repetido mil vezes.
             if not self.desenhado:
 
                 self.stream.write("\n".join(linhas) + "\n")
@@ -327,8 +240,7 @@ class StatusPanel:
 
         for linha in linhas:
 
-            # \033[2K limpa a linha inteira: sem isso, um texto
-            # curto deixa o rabo do texto anterior na tela.
+            # \033[2K limpa a linha inteira, senão o rabo do texto anterior fica na tela.
             saida.append(f"\r\033[2K{linha}\n")
 
         self.stream.write("".join(saida))
@@ -336,13 +248,8 @@ class StatusPanel:
 
         self.desenhado = True
 
-    # -----------------------------------------------------
-
     def close(self):
-        """
-        Deixa o cursor abaixo do bloco, para o que vier depois
-        (log de encerramento, traceback) não escrever em cima.
-        """
+        """Deixa o cursor abaixo do bloco, para log de encerramento/traceback não escrever em cima."""
 
         if self.desenhado and self.ansi:
 

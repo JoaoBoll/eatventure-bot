@@ -1,11 +1,4 @@
-"""
-Visualizador do stream cru, sem detecção.
-
-    python src/test_main.py
-
-Serve para conferir se a captura está de pé antes de
-culpar o detector.
-"""
+"""Visualizador do stream cru, sem detecção (python src/test_main.py) — para conferir a captura antes de culpar o detector."""
 
 import argparse
 import sys
@@ -42,8 +35,7 @@ def main(argv=None):
 
     args = parser.parse_args(argv)
 
-    # Mesma escolha do main.py: sem o -s, com dois devices na
-    # lista o adb recusa toda chamada.
+    # Mesma escolha do main.py: sem o -s, com dois devices o adb recusa toda chamada.
     capture = ScreenCapture(
         devices.resolver(args.device or DEVICE_SERIAL)
     )
@@ -64,8 +56,6 @@ def main(argv=None):
 
         while True:
 
-            # get_frame agora devolve (frame, versao, timestamp)
-            # e espera por frame novo em vez de girar em vazio.
             frame, version, _ = capture.get_frame(
                 since_version=last_version,
                 timeout=1.0,

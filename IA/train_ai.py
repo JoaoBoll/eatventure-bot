@@ -8,62 +8,16 @@ Treino do modelo de visão, a partir de dataset/samples.jsonl.
     python IA/train_ai.py --test-ratio 0.3      # teste com 30% aleatório
     python IA/train_ai.py --limit 5000          # ensaio rápido
 
-==============================================================
-POR QUE A FIDELIDADE ESTAVA ABAIXO DE 30%
-==============================================================
+`--kind category` (padrão) treina recorte-de-caixa -> categoria: o alvo
+mediano (95x94 px) desaparece se a tela inteira for reduzida a 32x32, então
+o que funciona é recortar o objeto antes. A ação final vem da tabela de
+prioridade de core/state_machine.py, não do modelo. `--kind action` (tela
+inteira -> ação) fica só para comparação, não alcança o teto de acurácia.
 
-Não era falta de dado: são 29.297 amostras e 65.730 caixas.
-Eram três coisas, medidas no dataset:
-
-1. O ALVO DESAPARECIA.
-   A versão anterior reduzia o frame inteiro de 1080x2400 para
-   32x32. O alvo mediano tem 95x94 px, então virava 2.8 x 1.3
-   px. Não existe classificador que resolva isso.
-
-   Aumentar a resolução da tela não resolve: mesmo a 256x256 o
-   alvo teria 22 x 10 px. O que resolve é recortar o OBJETO e
-   usar 32x32 NELE.
-
-2. O SPLIT ERA INVÁLIDO.
-   56% das amostras têm `phash` repetido — o bot age ~1x/s numa
-   tela quase estática. Com `train_test_split` aleatório, o
-   mesmo quadro caía em treino e teste, e a acurácia deixava de
-   significar qualquer coisa.
-
-3. NÃO HAVIA REFERÊNCIA.
-   "30%" sozinho não informa. As referências deste dataset:
-
-       chutar a classe majoritária ....... 16.7%
-       só olhar o estado da máquina ...... 46.2%
-       estado + categorias na tela ....... 96.0%   <- teto
-
-   O modelo anterior estava ABAIXO de olhar só o estado, ou
-   seja, atrás de uma regra de uma linha. Sem imprimir essas
-   linhas, ninguém percebe.
-
-==============================================================
-A ARQUITETURA QUE ESTE ARQUIVO TREINA
-==============================================================
-
-O teto de 96% para "estado + categorias" é a chave: se saber o
-que está na tela resolve 96% da escolha da ação, então o que
-precisa ser APRENDIDO é detectar categoria — e a ação sai da
-tabela de prioridade que já existe em core/state_machine.py e
-já é testada.
-
-    --kind category   (padrão, recomendado)
-        recorte de caixa -> categoria
-        65.730 exemplos, objeto preenchendo o quadro
-        substitui os 184 templates recortados à mão, e
-        generaliza para prato que nunca foi visto
-
-    --kind action     (comparação)
-        tela inteira -> ação
-        mantido para medir a diferença, não para usar
-
-Este arquivo NÃO tem testes: eles ficam em tests/test_ia.py.
-E NÃO instala dependência sozinho — instalar pacote como efeito
-colateral de treinar é surpresa ruim.
+O split de teste é aleatório por índice, não por sessão/tempo — 56% das
+amostras têm `phash` repetido (bot roda ~1x/s em tela quase estática), então
+comparar com os baselines de `state_baseline`/`ceiling_state_categories` é
+o que garante que a acurácia significa algo.
 """
 
 import argparse
@@ -82,61 +36,33 @@ for candidato in (str(ROOT), str(ROOT / "src"), str(ROOT / "IA")):
 DEFAULT_DATASET = ROOT / "dataset"
 DEFAULT_MODEL = ROOT / "IA" / "model.joblib"
 
-# Categorias que a máquina de estados precisa para SAIR de um
-# estado. Hoje são as duas regras de RENOVATE_RULES
-# (core/state_machine.py): sem `renovate` ou `fly` o bot fica
-# preso na tela de reforma.
-#
-# Elas entram aqui, e não numa lista genérica de "classes
-# raras", porque o custo de perdê-las não é acurácia: é o bot
-# travar. `fly` tem POUCAS caixas e a maior forma do dataset
-# (414x141 contra 95x94 da mediana), então é a primeira a sumir
-# num --limit, num --outcome apertado ou num split de sessão
-# infeliz — e nada nos números avisa.
+# renovate/fly: sem elas o bot fica preso na tela de reforma (RENOVATE_RULES
+# em core/state_machine.py). `fly` tem poucas caixas e a maior forma do
+# dataset (414x141 vs 95x94 da mediana), então some fácil num --limit ou
+# --outcome apertado sem que a acurácia agregada avise.
 CATEGORIAS_CRITICAS = ("renovate", "fly")
 
 
-# =========================================================
-# DEPENDÊNCIAS
-# =========================================================
-
 def check_dependencies():
-    """
-    Confere e ORIENTA. Não instala.
-
-    A versão anterior rodava `pip install` de dentro do treino.
-    Instalar pacote como efeito colateral é surpresa ruim: muda
-    o ambiente de quem só queria treinar, e num venv errado
-    quebra outra coisa.
-    """
-
     faltando = []
-
     for modulo, pacote in (
         ("cv2", "opencv-python"),
         ("numpy", "numpy"),
         ("sklearn", "scikit-learn"),
         ("joblib", "joblib"),
     ):
-
         try:
             __import__(modulo)
-
         except ImportError:
             faltando.append(pacote)
 
     if faltando:
-
         raise SystemExit(
             "Faltam dependências de treino.\n\n"
             f"  {sys.executable} -m pip install "
             f"{' '.join(faltando)}\n"
         )
 
-
-# =========================================================
-# PROGRESSO
-# =========================================================
 
 def progress(feito, total, fase):
 
@@ -162,25 +88,13 @@ def progress(feito, total, fase):
         sys.stdout.flush()
 
 
-# =========================================================
-# MONTAGEM DAS FEATURES
-# =========================================================
-
 def build_category_dataset(registros, negativos_por_frame, seed=42):
-    """
-    Um exemplo por CAIXA, mais negativos sorteados.
-
-    Devolve (X, y, info).
-    """
-
     import cv2
     import numpy as np
-
     from dataset_io import box_labels, sample_negative_boxes
     from features import FEATURE_SIZE, box_features
 
-    # Tamanhos reais observados, para os negativos não serem
-    # distinguíveis só pela dimensão.
+    # tamanhos reais, para negativos não serem distinguíveis do alvo por dimensão
     tamanhos = [
         (c["width"], c["height"])
         for r in registros
@@ -190,54 +104,31 @@ def build_category_dataset(registros, negativos_por_frame, seed=42):
 
     linhas = []
     rotulos = []
-
     ilegiveis = 0
     vazios = 0
-
     total = len(registros)
 
     for indice, registro in enumerate(registros, start=1):
-
         imagem = cv2.imread(str(registro["_path"]))
-
         if imagem is None:
-
             ilegiveis += 1
-
             progress(indice, total, "lendo imagens")
-
             continue
 
         for caixa, categoria, _agiu in box_labels(registro):
-
             vetor = box_features(imagem, caixa)
-
             if vetor is None:
-
                 vazios += 1
-
                 continue
-
             linhas.append(vetor)
             rotulos.append(categoria)
 
         if negativos_por_frame > 0:
-
-            for caixa in sample_negative_boxes(
-                registro,
-                negativos_por_frame,
-                tamanhos,
-                seed=seed + indice,
-            ):
-
+            for caixa in sample_negative_boxes(registro, negativos_por_frame, tamanhos, seed=seed + indice):
                 vetor = box_features(imagem, caixa)
-
                 if vetor is None:
-
                     vazios += 1
-
                     continue
-
                 linhas.append(vetor)
                 rotulos.append("background")
 
@@ -245,58 +136,35 @@ def build_category_dataset(registros, negativos_por_frame, seed=42):
             progress(indice, total, "lendo imagens")
 
     if not linhas:
-
         raise SystemExit(
-            "Nenhum recorte válido foi extraído. As imagens "
-            "existem mas estão ilegíveis, ou as caixas do "
-            "índice têm largura/altura zero."
+            "Nenhum recorte válido. Imagens ilegíveis ou caixas com dimensão zero."
         )
 
     X = np.asarray(linhas, dtype=np.float32)
-
     assert X.shape[1] == FEATURE_SIZE, (X.shape[1], FEATURE_SIZE)
 
-    return X, np.asarray(rotulos), {
-        "ilegiveis": ilegiveis,
-        "recortes_vazios": vazios,
-    }
+    return X, np.asarray(rotulos), {"ilegiveis": ilegiveis, "recortes_vazios": vazios}
 
 
 def build_action_dataset(registros):
-    """
-    Um exemplo por FRAME, tela inteira -> ação.
-
-    Existe para comparação. O alvo continua com poucos pixels
-    aqui — é o ponto do diagnóstico, não uma alternativa.
-    """
-
+    # comparação: tela inteira -> ação (não recomendado, alvo fica pequeno demais)
     import cv2
     import numpy as np
-
     from dataset_io import action_label
     from features import SCREEN_FEATURE_SIZE, screen_features
 
     linhas = []
     rotulos = []
-
     ilegiveis = 0
-
     total = len(registros)
 
     for indice, registro in enumerate(registros, start=1):
-
         imagem = cv2.imread(str(registro["_path"]))
-
         if imagem is None:
-
             ilegiveis += 1
-
         else:
-
             vetor = screen_features(imagem)
-
             if vetor is not None:
-
                 linhas.append(vetor)
                 rotulos.append(action_label(registro))
 
@@ -307,45 +175,24 @@ def build_action_dataset(registros):
         raise SystemExit("Nenhuma imagem legível.")
 
     X = np.asarray(linhas, dtype=np.float32)
-
     assert X.shape[1] == SCREEN_FEATURE_SIZE
-
     return X, np.asarray(rotulos), {"ilegiveis": ilegiveis}
 
 
-# =========================================================
-# CLASSIFICADOR
-# =========================================================
-
 def build_classifier(trees, seed, jobs):
-
     from sklearn.ensemble import RandomForestClassifier
-
+    # balanced_subsample: classes raras não são ignoradas
+    # min_samples_leaf=2: evita overfitting em ruído JPG
     return RandomForestClassifier(
         n_estimators=trees,
         random_state=seed,
         n_jobs=jobs,
-
-        # Sem isto as classes raras somem: `plane` tem 52
-        # caixas contra 17.642 de `food`. Um modelo que ignora
-        # `plane` acerta 99.9% e é inútil justamente onde
-        # importa.
         class_weight="balanced_subsample",
-
-        # Folha com 1 amostra decora ruído de compressão JPG.
         min_samples_leaf=2,
     )
 
 
-# =========================================================
-# RELATÓRIO
-# =========================================================
-
 def report(clf, X_teste, y_teste, y_treino, referencias, kind="category"):
-    """
-    Imprime o que permite julgar o modelo, não só um número.
-    """
-
     from sklearn.metrics import (
         accuracy_score,
         classification_report,
@@ -361,7 +208,6 @@ def report(clf, X_teste, y_teste, y_treino, referencias, kind="category"):
 
     base, classe_base = majority_baseline(list(y_teste))
 
-    # Distribuição: treino vs teste
     treino_dist = Counter(str(v) for v in y_treino)
     teste_dist = Counter(str(v) for v in y_teste)
 
@@ -380,11 +226,8 @@ def report(clf, X_teste, y_teste, y_treino, referencias, kind="category"):
     print()
 
     if acuracia <= base:
-
-        print("  !! O modelo NÃO bate o chute na classe "
-              "majoritária.")
-        print("     Não é ajuste fino: a formulação ou as "
-              "features estão erradas.")
+        print("  !! Modelo não bate o chute na classe majoritária.")
+        print("     Formulação ou features erradas.")
         print()
 
     print("-" * 62)
@@ -392,17 +235,8 @@ def report(clf, X_teste, y_teste, y_treino, referencias, kind="category"):
     print("-" * 62)
     print()
 
-    print(
-        classification_report(
-            y_teste,
-            previsto,
-            zero_division=0,
-            digits=3,
-        )
-    )
+    print(classification_report(y_teste, previsto, zero_division=0, digits=3))
 
-    # A média macro é o número que expõe classe rara ignorada:
-    # a acurácia crua fica alta mesmo errando tudo em `plane`.
     print("-" * 62)
     print("  CONFUSÃO (linha = verdade, coluna = previsto)")
     print("-" * 62)
@@ -429,9 +263,7 @@ def report(clf, X_teste, y_teste, y_treino, referencias, kind="category"):
 
     print()
 
-    # Onde o modelo mais erra, em pares. É o que diz se o
-    # problema é uma confusão específica (dá para resolver) ou
-    # ruído geral (não dá).
+    # pares de erro: diz se é confusão específica (resolvível) ou ruído geral
     erros = Counter()
 
     for verdade, palpite in zip(y_teste, previsto):
@@ -439,8 +271,7 @@ def report(clf, X_teste, y_teste, y_treino, referencias, kind="category"):
         if verdade != palpite:
             erros[(str(verdade), str(palpite))] += 1
 
-    # Só faz sentido no modelo de categoria: em --kind action os
-    # rótulos são ações ("renovate_click"), não categorias.
+    # só faz sentido em category: em action os rótulos já são ações
     if kind == "category":
         _report_criticas(y_teste, y_treino, previsto)
 
@@ -457,17 +288,12 @@ def report(clf, X_teste, y_teste, y_treino, referencias, kind="category"):
 
         print()
 
-    # Detectar divergência entre treino e teste
     _check_distribution_divergence(treino_dist, teste_dist)
 
     return acuracia
 
 
 def _check_distribution_divergence(treino_dist, teste_dist):
-    """
-    Avisa se a distribuição de classes diverge muito entre treino e teste.
-    """
-
     print("-" * 62)
     print("  VERIFICAÇÃO: DISTRIBUIÇÃO TREINO vs TESTE")
     print("-" * 62)
@@ -510,14 +336,8 @@ def _check_distribution_divergence(treino_dist, teste_dist):
 
 
 def _report_criticas(y_teste, y_treino, previsto):
-    """
-    As críticas, sempre e nominalmente.
-
-    No classification_report elas passam batido no meio de 17
-    linhas, e no agregado um recall de 0% em `fly` custa ~0.1%
-    de acurácia — invisível no número, fatal no bot.
-    """
-
+    # recall 0% em `fly` custa ~0.1% de acurácia agregada — invisível no
+    # número, fatal no bot; por isso reportado nominalmente aqui
     print("-" * 62)
     print("  CATEGORIAS QUE FECHAM RENOVATE")
     print("-" * 62)
@@ -555,10 +375,6 @@ def _report_criticas(y_teste, y_treino, previsto):
 
     print()
 
-
-# =========================================================
-# TREINO
-# =========================================================
 
 def train(args):
 
@@ -611,10 +427,6 @@ def train(args):
             "Rode o bot mais tempo com DATASET_SAVE ligado."
         )
 
-    # -----------------------------------------------------
-    # Referências, antes de treinar
-    # -----------------------------------------------------
-
     referencias = {
         "só o estado da máquina": state_baseline(registros),
         "estado + categorias (teto)":
@@ -626,10 +438,6 @@ def train(args):
 
     for nome, valor in referencias.items():
         print(f"  {nome:<30} {valor:7.2%}")
-
-    # -----------------------------------------------------
-    # Split: treino 100%, teste X% aleatório
-    # -----------------------------------------------------
 
     random.seed(args.seed)
 
@@ -660,10 +468,6 @@ def train(args):
         raise SystemExit(
             "Conjunto de teste vazio."
         )
-
-    # -----------------------------------------------------
-    # Features
-    # -----------------------------------------------------
 
     inicio = time.monotonic()
 
@@ -709,7 +513,6 @@ def train(args):
         f"({time.monotonic() - inicio:.0f}s)"
     )
 
-    # Avisar se negativos forem desligados ou muito poucos
     if args.kind == "category":
         background_count = sum(1 for y in y_treino if str(y) == "background")
         total_treino = len(y_treino)
@@ -752,7 +555,6 @@ def train(args):
             "teste — o modelo não pode acertar essas"
         )
 
-    # Avisar se categorias críticas têm poucos exemplos
     print()
     print("verificação de categorias críticas:")
 
@@ -766,10 +568,6 @@ def train(args):
             print(f"  ⚠ {categoria:<14} {qtd:5d} ({pct:5.2f}%)  <- coleta recomendada")
         else:
             print(f"  ✓ {categoria:<14} {qtd:5d} ({pct:5.2f}%)")
-
-    # -----------------------------------------------------
-    # Treino
-    # -----------------------------------------------------
 
     print()
     print(f"treinando ({args.trees} árvores)...")
@@ -785,10 +583,6 @@ def train(args):
     acuracia = report(
         clf, X_teste, y_teste, y_treino, referencias, args.kind
     )
-
-    # -----------------------------------------------------
-    # Gravação
-    # -----------------------------------------------------
 
     import joblib
 
@@ -806,9 +600,8 @@ def train(args):
 
     joblib.dump(clf, destino)
 
-    # O metadado registra COMO as features foram feitas. Sem
-    # isso, mudar PATCH_SIZE e usar um modelo antigo dá entrada
-    # com tamanho diferente — e o bot_ai confere isto no load.
+    # registra como as features foram geradas: bot_ai confere isso no load
+    # para não usar um modelo antigo com PATCH_SIZE diferente
     meta = {
         "kind": args.kind,
         "labels": [str(c) for c in clf.classes_],
@@ -852,17 +645,12 @@ def train(args):
 
         return 0
 
-    # Recomendações para a próxima coleta
     _recommendations(acuracia, referencias, contagem, background_pct)
 
     return 0
 
 
 def _recommendations(acuracia, referencias, contagem, background_pct):
-    """
-    Dicas para melhorar a próxima coleta/treino.
-    """
-
     print("=" * 62)
     print("  RECOMENDAÇÕES PARA A PRÓXIMA COLETA")
     print("=" * 62)
@@ -878,7 +666,6 @@ def _recommendations(acuracia, referencias, contagem, background_pct):
         print()
         print("  Prioridades:")
 
-        # Categorias raras
         total = sum(contagem.values())
         raras = [
             (c, q, q/total*100)
@@ -902,10 +689,6 @@ def _recommendations(acuracia, referencias, contagem, background_pct):
     print()
 
 
-# =========================================================
-# CLI
-# =========================================================
-
 def parse_args(argv=None):
 
     parser = argparse.ArgumentParser(
@@ -920,12 +703,7 @@ def parse_args(argv=None):
         "--kind",
         choices=("category", "action"),
         default="category",
-        help=(
-            "category (padrão): recorte de caixa -> categoria, "
-            "e a ação sai da tabela de prioridade que já existe. "
-            "action: tela inteira -> ação, mantido só para "
-            "comparação."
-        ),
+        help="category: recorte -> categoria | action: tela -> ação (comparação)",
     )
 
     parser.add_argument(
@@ -944,11 +722,7 @@ def parse_args(argv=None):
         "--test-ratio",
         type=float,
         default=0.2,
-        help=(
-            "fração do dataset para teste (padrão: 0.2 = 20%). "
-            "O treino sempre usa 100% dos dados, incluindo "
-            "sucessos, falhas e erros."
-        ),
+        help="fração do dataset para teste (padrão: 0.2)",
     )
 
     parser.add_argument(
@@ -956,23 +730,14 @@ def parse_args(argv=None):
         nargs="*",
         default=None,
         metavar="RESULTADO",
-        help=(
-            "só amostras com esses resultados: changed, "
-            "unchanged, unknown, negative. Treinar em "
-            "'changed negative' deixa de fora as ações do "
-            "professor que não funcionaram."
-        ),
+        help="filtrar amostras: changed, unchanged, unknown, negative",
     )
 
     parser.add_argument(
         "--negatives",
         type=int,
         default=2,
-        help=(
-            "recortes de fundo sorteados por frame, no modo "
-            "category (padrão: 2). Sem eles todo pedaço de "
-            "cenário viraria detecção. 0 desliga."
-        ),
+        help="recortes de fundo por frame (padrão: 2)",
     )
 
     parser.add_argument(

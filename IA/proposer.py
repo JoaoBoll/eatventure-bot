@@ -1,33 +1,4 @@
-"""
-Proposta de regiões candidatas.
-
-O classificador de recorte diz O QUE é uma região, mas não onde
-procurar. Este módulo dá os candidatos.
-
-EXPERIMENTAL. É a única parte deste conjunto que não foi medida
-contra o dataset — as outras saíram de números do samples.jsonl.
-Confira com:
-
-    python IA/bot_ai.py --source proposer --debug-proposals
-
---------------------------------------------------------------
-Por que dá para propor por cor
---------------------------------------------------------------
-
-Os elementos clicáveis do jogo são blocos de cor saturada sobre
-cenário dessaturado: botão azul, badge vermelho, painel branco.
-Saturação alta + contorno pega esses blocos por alguns
-milissegundos, contra a varredura completa que o template
-matching faz.
-
-Os limites de tamanho vêm do dataset (65.730 caixas):
-
-    menor caixa observada ..... 32 x  32   (up_upgrade)
-    maior caixa observada .... 414 x 141   (fly)
-
-Nada fora dessa faixa pode ser alvo, então é descartado antes
-de custar uma classificação.
-"""
+"""Proposer: candidates por saturação + contorno (experimental, validar com --debug-proposals)."""
 
 import cv2
 import numpy as np

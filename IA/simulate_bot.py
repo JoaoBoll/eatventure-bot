@@ -60,9 +60,7 @@ def progress(feito, total, fase):
 
 
 def simulate_bot(args):
-    """
-    Roda o bot em cada imagem do dataset, sem executar ações.
-    """
+    """Roda o bot em cada imagem do dataset, sem executar ações."""
 
     import cv2
     import joblib
@@ -93,10 +91,8 @@ def simulate_bot(args):
         registros = registros[:args.limit]
         print(f"limite .......... {len(registros)} amostras")
 
-    # Carregar modelo
     clf = joblib.load(modelo_path)
 
-    # Simulação
     resultados = {
         "total": 0,
         "corretos": 0,
@@ -153,7 +149,6 @@ def simulate_bot(args):
         if indice % 25 == 0 or indice == total:
             progress(indice, total, "simulando")
 
-    # Limitar divergências se houver muitas
     if len(resultados["divergencias"]) > 100:
         resultados["divergencias"] = resultados["divergencias"][:100]
         resultados["divergencias_truncadas"] = True
@@ -188,24 +183,12 @@ def _detect_frame(imagem, registro, clf):
 
 
 def _simulate_action(estado, detections, registro):
-    """
-    Simula: dado este estado e estas detecções, qual ação o bot faria?
-
-    Isso é uma aproximação. O real seria rodar a StateMachine,
-    mas podemos deduzir pela frequência e confiança das detecções.
-    """
-
-    # Agregar detecções por categoria
+    # aproximação: ação = categoria mais detectada (não roda StateMachine)
     por_categoria = {}
-
     for det in detections:
         cat = det["categoria"]
-
         if cat not in por_categoria:
-            por_categoria[cat] = {
-                "count": 0,
-                "confianca_media": 0,
-            }
+            por_categoria[cat] = {"count": 0, "confianca_media": 0}
 
         stats = por_categoria[cat]
         stats["count"] += 1
@@ -217,16 +200,12 @@ def _simulate_action(estado, detections, registro):
     if not por_categoria:
         return "noop"
 
-    # A categoria mais detectada com mais confiança
     melhor = max(
         por_categoria.items(),
         key=lambda x: x[1]["count"] * x[1]["confianca_media"]
     )
-
     categoria_melhor, stats_melhor = melhor
 
-    # Mapear categoria para ação
-    # (isto é uma simulação; o real usaria a tabela de ações da StateMachine)
     acao_map = {
         "food": "food_click",
         "button": "button_click",
@@ -237,8 +216,6 @@ def _simulate_action(estado, detections, registro):
     }
 
     acao_predita = acao_map.get(categoria_melhor, f"{categoria_melhor}_click")
-
-    # Se confiança muito baixa, não fazer nada
     if stats_melhor["confianca_media"] < 0.5:
         acao_predita = "noop"
 
@@ -246,10 +223,6 @@ def _simulate_action(estado, detections, registro):
 
 
 def report_simulation(resultados, args):
-    """
-    Exibe relatório da simulação.
-    """
-
     total = resultados["total"]
     corretos = resultados["corretos"]
     divergencias = len(resultados["divergencias"])
@@ -266,7 +239,6 @@ def report_simulation(resultados, args):
     print(f"  Divergências ............... {divergencias:7d}")
     print()
 
-    # Por estado
     print("-" * 62)
     print("  POR ESTADO")
     print("-" * 62)
@@ -283,24 +255,18 @@ def report_simulation(resultados, args):
         )
 
     print()
-
-    # Ações mais preditas vs esperadas
     print("-" * 62)
     print("  AÇÕES: ESPERADAS vs PREDITAS")
     print("-" * 62)
     print()
 
     todas_acoes = set(resultados["acoes_esperadas"].keys()) | set(resultados["acoes_preditas"].keys())
-
     for acao in sorted(todas_acoes):
         esp = resultados["acoes_esperadas"].get(acao, 0)
         pred = resultados["acoes_preditas"].get(acao, 0)
-
         print(f"  {acao:<20} esperada {esp:6d} | predita {pred:6d}")
 
     print()
-
-    # Maiores divergências
     if resultados["divergencias"]:
 
         print("-" * 62)
@@ -308,7 +274,6 @@ def report_simulation(resultados, args):
         print("-" * 62)
         print()
 
-        # Agregar: qual estado + ação esperada gera erros?
         confusoes = Counter()
 
         for div in resultados["divergencias"]:
@@ -322,23 +287,18 @@ def report_simulation(resultados, args):
             )
 
         print()
-        print("  Exemplos de divergência:")
-
+        print("  Exemplos:")
         for div in resultados["divergencias"][:5]:
             print(
                 f"    {div['estado']:<12} esperava {div['esperada']:<16} "
-                f"fez {div['predita']:<16} "
-                f"({div['deteccoes']} detecções)"
+                f"fez {div['predita']:<16} ({div['deteccoes']} dets)"
             )
 
-        print()
-
-    # Transições mais frequentes
+    print()
     print("-" * 62)
     print("  TRANSIÇÕES MAIS FREQUENTES")
     print("-" * 62)
     print()
-
     for transicao, quantas in resultados["estado_transicoes"].most_common(15):
         print(f"  {transicao:<30} {quantas:6d}x")
 
@@ -346,15 +306,11 @@ def report_simulation(resultados, args):
 
 
 def save_simulation(resultados, output_path):
-    """
-    Salva relatório em JSON.
-    """
-
     dados = {
         "total": resultados["total"],
         "corretos": resultados["corretos"],
         "taxa_acerto": (resultados["corretos"] / resultados["total"]) if resultados["total"] > 0 else 0,
-        "divergencias": resultados["divergencias"][:50],  # Limitar
+        "divergencias": resultados["divergencias"][:50],
         "por_estado": {
             k: {
                 "total": v["total"],
@@ -377,41 +333,15 @@ def save_simulation(resultados, output_path):
 
 
 def parse_args(argv=None):
-
     parser = argparse.ArgumentParser(
-        description="Simula o bot em dados coletados (sem executar ações).",
+        description="Simula bot em dados coletados (sem executar ações).",
     )
 
-    parser.add_argument(
-        "--dataset-root",
-        default=str(DEFAULT_DATASET),
-        help="pasta do dataset",
-    )
-
-    parser.add_argument(
-        "--model",
-        default=str(DEFAULT_MODEL),
-        help="caminho do modelo treinado (model.joblib)",
-    )
-
-    parser.add_argument(
-        "--output",
-        default=str(DEFAULT_OUTPUT),
-        help="arquivo JSON com relatório",
-    )
-
-    parser.add_argument(
-        "--limit",
-        type=int,
-        default=None,
-        help="simula só as N primeiras amostras",
-    )
-
-    parser.add_argument(
-        "--show-mismatches",
-        action="store_true",
-        help="mostra só os casos onde diverge",
-    )
+    parser.add_argument("--dataset-root", default=str(DEFAULT_DATASET), help="pasta do dataset")
+    parser.add_argument("--model", default=str(DEFAULT_MODEL), help="modelo treinado")
+    parser.add_argument("--output", default=str(DEFAULT_OUTPUT), help="saída JSON")
+    parser.add_argument("--limit", type=int, default=None, help="N primeiras amostras")
+    parser.add_argument("--show-mismatches", action="store_true", help="só divergências")
 
     return parser.parse_args(argv)
 

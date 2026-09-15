@@ -1,29 +1,12 @@
 """
-Compacta a numeração dos templates: item_001..item_NNN, sem
-lacunas.
+Compacta a numeração dos templates: item_001..item_NNN, sem lacunas
+(lacuna deixa o "próximo número" ambíguo). Por padrão só mostra, pois
+renomear é irreversível; processa em ordem crescente para nunca
+sobrescrever, e pula com aviso se o destino já existir.
 
     python tools/renumerar.py              # mostra o que mudaria
     python tools/renumerar.py --aplicar    # renomeia
     python tools/renumerar.py --aplicar --categoria food
-
-Por padrão só MOSTRA, porque renomear arquivo é irreversível.
-
-O template_selector chama isto sozinho antes de salvar, então o
-template novo sempre entra no último número da sequência.
-
-Apagar um template no meio deixa lacuna (item_005 faltando entre
-004 e 006), e daí o "próximo número" fica ambíguo. Compactar
-resolve na origem.
-
-Segurança:
-
-  - processa em ordem CRESCENTE, então o destino de cada
-    arquivo já está livre: alvo <= origem, e quem ainda não foi
-    processado tem número maior que a origem
-  - nunca sobrescreve: se o destino existir, pula e avisa
-  - a numeração não aparece em nenhuma parte do runtime além do
-    log, e o golden da regressão não guarda o nome do arquivo,
-    então renomear não invalida a linha de base
 """
 
 import argparse
@@ -36,10 +19,7 @@ TEMPLATES_DIR = ROOT / "src" / "vision" / "templates"
 
 
 def numerados(category_dir):
-    """
-    [(numero, caminho)] dos item_NNN.png, em ordem crescente.
-    Arquivos com nome fora do padrão são ignorados.
-    """
+    """[(numero, caminho)] dos item_NNN.png, em ordem crescente."""
 
     encontrados = []
 
@@ -57,10 +37,7 @@ def numerados(category_dir):
 
 
 def planejar(category_dir):
-    """
-    Devolve [(origem, destino)] para deixar a sequência
-    contígua. Lista vazia = já está compacta.
-    """
+    """[(origem, destino)] para deixar a sequência contígua; vazio = já compacta."""
 
     mudancas = []
 
@@ -80,10 +57,7 @@ def planejar(category_dir):
 
 
 def renumerar(category_dir, aplicar=False, log=print):
-    """
-    Compacta a categoria. Devolve as mudanças realizadas (ou
-    planejadas, quando aplicar=False).
-    """
+    """Compacta a categoria; devolve as mudanças realizadas (ou planejadas, se aplicar=False)."""
 
     mudancas = planejar(category_dir)
 
@@ -111,17 +85,10 @@ def renumerar(category_dir, aplicar=False, log=print):
 
 
 def proximo_numero(category_dir):
-    """
-    Número do próximo template, assumindo a sequência já
-    compacta: len + 1.
-    """
+    """Número do próximo template, assumindo a sequência já compacta: len + 1."""
 
     return len(numerados(category_dir)) + 1
 
-
-# =========================================================
-# Main
-# =========================================================
 
 def main():
 

@@ -1,11 +1,6 @@
 """
-Testes da escolha de device.
-
-    python tests/test_devices.py
-
-Nada aqui fala com adb: as fichas dos devices são injetadas.
-O que está sob teste é a DECISÃO — qual serial sai — porque é
-ela que, errada, faz o bot pilotar o aparelho errado.
+Testes da escolha de device. As fichas são injetadas, nada fala com adb:
+o que está sob teste é a DECISÃO de qual serial sai.
 """
 
 import sys
@@ -31,11 +26,7 @@ FICHAS_DOIS = [
 
 
 def _responde(*respostas):
-    """
-    Simula o usuário digitando. Estoura se for perguntado mais
-    vezes que o previsto — laço infinito num prompt é pior que
-    um teste vermelho.
-    """
+    """Estoura se perguntado mais vezes que o previsto — laço infinito é pior que teste vermelho."""
 
     fila = list(respostas)
 
@@ -49,20 +40,13 @@ def _responde(*respostas):
     return perguntar
 
 
-# =========================================================
-# CAMINHOS SEM PERGUNTA
-# =========================================================
-
 def test_um_device_nao_pergunta():
 
     assert devices.escolher([USB], perguntar=_responde()) == USB
 
 
 def test_serial_fixado_ganha_da_pergunta():
-    """
-    --device / DEVICE_SERIAL existem justamente para não ver a
-    pergunta toda execução.
-    """
+    """--device / DEVICE_SERIAL existem para não ver a pergunta toda execução."""
 
     escolhido = devices.escolher(
         DOIS,
@@ -82,8 +66,7 @@ def test_serial_fixado_inexistente_e_erro_claro():
 
     except RuntimeError as erro:
 
-        # O erro precisa mostrar o que EXISTE, senão o usuário
-        # fica adivinhando o serial certo.
+        # O erro precisa mostrar o que EXISTE, senão o usuário adivinha o serial.
         assert USB in str(erro), str(erro)
         assert WIFI in str(erro), str(erro)
 
@@ -108,11 +91,7 @@ def test_nenhum_device():
 
 
 def test_sem_terminal_nao_trava():
-    """
-    Sem como perguntar (pipe, cron, IDE sem console), travar num
-    input invisível é pior que um erro. A mensagem tem de dizer
-    como resolver.
-    """
+    """Sem como perguntar (pipe, cron, IDE), travar num input invisível é pior que erro."""
 
     try:
 
@@ -130,10 +109,6 @@ def test_sem_terminal_nao_trava():
 
     raise AssertionError("deveria ter levantado")
 
-
-# =========================================================
-# A PERGUNTA
-# =========================================================
 
 def test_escolhe_pelo_numero():
 
@@ -160,9 +135,7 @@ def test_enter_aceita_a_sugestao():
 
 
 def test_aceita_serial_digitado():
-    """
-    Colar o serial é natural depois de ler a lista.
-    """
+    """Colar o serial é natural depois de ler a lista."""
 
     escolhido = devices.escolher(
         DOIS,
@@ -174,10 +147,7 @@ def test_aceita_serial_digitado():
 
 
 def test_resposta_invalida_pergunta_de_novo():
-    """
-    O que NÃO pode acontecer: resposta fora da faixa cair em
-    algum device por acidente.
-    """
+    """Resposta fora da faixa não pode cair em algum device por acidente."""
 
     escolhido = devices.escolher(
         DOIS,
@@ -215,15 +185,8 @@ def test_pergunta_mostra_os_seriais():
     assert "USB" in texto, texto
 
 
-# =========================================================
-# SUGESTÃO E ROTULAGEM
-# =========================================================
-
 def test_sugere_usb_sobre_wifi():
-    """
-    USB por cima de wifi de propósito: a conexão wifi do adb cai
-    sozinha e derruba a captura no meio da sessão.
-    """
+    """USB por cima de wifi de propósito: a conexão wifi do adb cai sozinha."""
 
     # USB em segundo lugar na lista.
     fichas = [
@@ -247,10 +210,7 @@ def test_sugere_o_primeiro_quando_todos_wifi():
 
 
 def test_marca_o_mesmo_aparelho():
-    """
-    Duas entradas com o MESMO ro.serialno são o mesmo celular.
-    Sem essa marca, a lista parece dois aparelhos diferentes.
-    """
+    """Duas entradas com o MESMO ro.serialno são o mesmo celular."""
 
     linhas = devices.rotular(FICHAS_DOIS)
 
@@ -271,10 +231,7 @@ def test_nao_marca_aparelhos_diferentes():
 
 
 def test_rotula_sem_getprop():
-    """
-    getprop pode falhar (device lento, sem permissão). A lista
-    ainda tem de sair, com o serial, que é o que importa.
-    """
+    """getprop pode falhar (device lento, sem permissão); a lista ainda tem de sair."""
 
     fichas = [
         (USB, None, False, None),
@@ -292,9 +249,6 @@ def test_rotula_sem_getprop():
 
 
 def test_escolha_funciona_sem_getprop():
-    """
-    getprop falhando não pode impedir a escolha.
-    """
 
     fichas = [
         (USB, None, False, None),
@@ -310,31 +264,13 @@ def test_escolha_funciona_sem_getprop():
     assert escolhido == USB, escolhido
 
 
-# =========================================================
-# O SERIAL CHEGA NA CAPTURA
-# =========================================================
-
-# ---------------------------------------------------------
-# O BINÁRIO DO ADB NÃO É PARTE DO CONTRATO
-# ---------------------------------------------------------
-#
-# O que estes testes verificam é o "-s <serial>": sem ele, com
-# o mesmo celular listado por USB e por wifi, o adb recusa TODA
-# chamada com "more than one device".
-#
-# QUAL adb é usado é outra decisão, e ela mudou: o config passou
-# a resolver o caminho completo (PATH do sistema, ou o adb que
-# vem em tools/scrcpy). Comparar com o literal "adb" fazia estes
-# testes falharem por causa de um caminho como
-# "tools/scrcpy/adb.EXE" — que é o caminho CERTO, e nada tem a
-# ver com o serial.
-
+# Estes testes verificam o "-s <serial>", não o binário do adb: o config
+# resolve o caminho completo (PATH ou tools/scrcpy), então comparar com
+# o literal "adb" falharia por causa de um caminho como
+# "tools/scrcpy/adb.EXE" — que é o caminho CERTO.
 
 def _sem_o_binario(comando):
-    """
-    Confere que o comando começa por algum adb e devolve o
-    resto — que é onde mora o que está sendo testado.
-    """
+    """Confere que o comando começa por algum adb e devolve o resto, que é o testado."""
 
     assert comando, comando
 
@@ -344,10 +280,7 @@ def _sem_o_binario(comando):
 
 
 def test_captura_usa_o_serial():
-    """
-    O ponto do bug: sem -s, com dois devices na lista o adb
-    recusa TODA chamada com "more than one device".
-    """
+    """Sem -s, com dois devices na lista, o adb recusa TODA chamada."""
 
     from capture.screen import ScreenCapture
 
@@ -359,10 +292,7 @@ def test_captura_usa_o_serial():
 
 
 def test_captura_sem_serial_continua_valendo():
-    """
-    Um device só: o -s é dispensável, e o construtor antigo
-    (sem argumento) tem de continuar funcionando.
-    """
+    """Um device só: o -s é dispensável, e o construtor sem argumento continua funcionando."""
 
     from capture.screen import ScreenCapture
 
@@ -381,10 +311,7 @@ def test_toques_usam_o_serial():
 
 
 def test_screenshot_usa_o_serial():
-    """
-    O screencap do template_selector tem o MESMO problema: sem
-    -s, "more than one device" e nenhum template novo sai.
-    """
+    """O screencap do template_selector tem o MESMO problema: sem -s, nenhum template novo sai."""
 
     sys.path.insert(0, str(ROOT / "tests"))
 
@@ -417,10 +344,7 @@ def test_screenshot_sem_serial_continua_valendo():
 
 
 def test_selector_repassa_o_serial():
-    """
-    O caminho inteiro: o serial escolhido tem de atravessar o
-    TemplateSelector até o screencap.
-    """
+    """O serial escolhido tem de atravessar o TemplateSelector até o screencap."""
 
     sys.path.insert(0, str(ROOT / "tests"))
     sys.path.insert(0, str(ROOT / "tools"))
@@ -433,10 +357,6 @@ def test_selector_repassa_o_serial():
 
     assert _sem_o_binario(comando)[:2] == ["-s", USB], comando
 
-
-# =========================================================
-# RUNNER
-# =========================================================
 
 def main():
 

@@ -1,12 +1,7 @@
 """
-Testes do tempo corrido entre reformas.
-
-    python tests/test_ciclo.py
-
-O que está em jogo: este é o único número do HUD que mede
-PROGRESSO. Contar ciclo que não aconteceu, ou deixar de contar
-um que aconteceu, faz o painel mentir justamente sobre a coisa
-que ele existe para mostrar.
+Testes do tempo corrido entre reformas: o único número do HUD que mede
+PROGRESSO. Contar ciclo errado faz o painel mentir sobre a coisa que
+ele existe para mostrar.
 """
 
 import sys
@@ -24,15 +19,8 @@ from core.metrics import formata_duracao         # noqa: E402
 log.setup("ERROR")
 
 
-# =========================================================
-# DUBLÊS
-# =========================================================
-
 class AcoesFalsas:
-    """
-    Registra o que foi pedido. `livre` desliga o aceite, para
-    imitar worker ocupado.
-    """
+    """`livre` desliga o aceite, para imitar worker ocupado."""
 
     def __init__(self):
 
@@ -79,36 +67,24 @@ def maquina():
     # Sem cooldown os testes não precisam dormir.
     machine.action_cooldown = 0.0
 
-    # Nem esperar frame novo. Aqui o assunto é a CONTAGEM de
-    # ciclos; a guarda de "só age sobre frame que mostre o
-    # efeito da ação" tem testes próprios em
-    # tests/test_state_machine.py. Mantê-la ligada aqui só
-    # obrigaria cada teste a dormir ACTION_SETTLE por ação.
+    # A guarda de "só age sobre frame que mostre o efeito da ação" tem
+    # testes próprios em test_state_machine.py; aqui o assunto é a
+    # CONTAGEM de ciclos.
     machine.action_settle = 0.0
 
     return machine, acoes
 
 
 def agir(machine, categoria):
-    """
-    Um passo com essa detecção na tela, voltando a NORMAL.
-    """
+    """Um passo com essa detecção na tela, voltando a NORMAL."""
 
     machine.state = sm.NORMAL
 
     machine.update([deteccao(categoria)], 0.0)
 
 
-# =========================================================
-# CONTAGEM
-# =========================================================
-
 def test_comeca_em_zero_contando_do_start():
-    """
-    Antes do primeiro build não há ciclo anterior, mas o tempo
-    corrido já vale: "8 minutos e ainda não passou de
-    restaurante" é informação.
-    """
+    """Sem ciclo anterior o tempo corrido já vale: "8 min e não passou de restaurante" é informação."""
 
     machine, _ = maquina()
 
@@ -129,7 +105,7 @@ def test_build_fecha_ciclo():
 
     assert quantos == 1, quantos
 
-    # O ciclo anterior agora existe, e o corrido reiniciou.
+    # O ciclo anterior existe, e o corrido reiniciou.
     assert ultimo is not None
     assert corrido < 0.5, corrido
 
@@ -137,9 +113,7 @@ def test_build_fecha_ciclo():
 
 
 def test_plane_tambem_fecha_ciclo():
-    """
-    São as duas portas para RENOVATE: qualquer uma conta.
-    """
+    """São as duas portas para RENOVATE: qualquer uma conta."""
 
     machine, _ = maquina()
 
@@ -159,9 +133,6 @@ def test_conta_acumulado():
 
 
 def test_ultimo_ciclo_mede_o_intervalo():
-    """
-    O número que dá referência ao HUD.
-    """
 
     machine, _ = maquina()
 
@@ -177,10 +148,7 @@ def test_ultimo_ciclo_mede_o_intervalo():
 
 
 def test_upgrade_nao_fecha_ciclo():
-    """
-    O contador é de REFORMA, não de ação. Clicar em upgrade a
-    tarde inteira não é progresso de restaurante.
-    """
+    """O contador é de REFORMA, não de ação: clicar em upgrade não é progresso."""
 
     machine, _ = maquina()
 
@@ -191,11 +159,7 @@ def test_upgrade_nao_fecha_ciclo():
 
 
 def test_acao_barrada_por_cooldown_nao_conta():
-    """
-    O ponto sutil: `_apply_rules` acha o build, mas o cooldown
-    barra. Nenhum toque saiu, então nenhum ciclo fechou —
-    senão o contador subiria a cada frame.
-    """
+    """`_apply_rules` acha o build, mas o cooldown barra: nenhum toque, nenhum ciclo."""
 
     machine, acoes = maquina()
 
@@ -213,10 +177,7 @@ def test_acao_barrada_por_cooldown_nao_conta():
 
 
 def test_worker_ocupado_nao_conta():
-    """
-    Mesmo caso pelo outro caminho: a ação foi tentada e o
-    ActionManager recusou.
-    """
+    """Mesmo caso pelo outro caminho: a ação foi tentada e o ActionManager recusou."""
 
     machine, acoes = maquina()
 
@@ -248,10 +209,6 @@ def test_corrido_cresce_com_o_tempo():
     assert segundo > primeiro, (primeiro, segundo)
 
 
-# =========================================================
-# FORMATAÇÃO
-# =========================================================
-
 def test_formata_duracao():
 
     casos = [
@@ -275,23 +232,12 @@ def test_formata_duracao():
 
 
 def test_formata_duracao_nao_estoura_com_negativo():
-    """
-    Relógio monotônico não anda para trás, mas um None ou um
-    negativo vindo de cálculo errado não pode virar exceção
-    dentro do desenho do HUD.
-    """
+    """Um None ou negativo vindo de cálculo errado não pode virar exceção no desenho do HUD."""
 
     assert formata_duracao(-5) == "0s"
 
 
-# =========================================================
-# HUD
-# =========================================================
-
 def test_hud_desenha_o_ciclo():
-    """
-    Fim a fim no desenho: o texto tem de sair no frame.
-    """
 
     import numpy as np
     from vision.detector import Detector
@@ -314,9 +260,9 @@ def test_hud_desenha_o_ciclo():
 
 def test_hud_marca_travado():
     """
-    Vermelho quando o corrido passa de CYCLE_STALL_FACTOR vezes
-    o ciclo anterior. E NUNCA vermelho sem ciclo anterior —
-    sem referência, "demorado" não quer dizer nada.
+    Vermelho quando o corrido passa de CYCLE_STALL_FACTOR vezes o ciclo
+    anterior. NUNCA vermelho sem ciclo anterior — sem referência,
+    "demorado" não quer dizer nada.
     """
 
     import numpy as np
@@ -362,10 +308,6 @@ def test_hud_marca_travado():
 
     assert sem_referencia["bad"] == 0, sem_referencia
 
-
-# =========================================================
-# RUNNER
-# =========================================================
 
 def main():
 

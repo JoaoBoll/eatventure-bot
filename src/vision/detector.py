@@ -1,44 +1,4 @@
-"""
-Detector por template matching.
-
-Mudanças em relação à versão anterior:
-
-1. BUSCA EM DOIS ESTÁGIOS
-   Antes: 43 templates x matchTemplate em 1080x2400 = 1.7s
-   por passada (medido), ou seja 0.6 FPS — enquanto o loop
-   supunha 20 análises/segundo.
-
-   Agora: busca numa cópia reduzida do frame e reconfirma
-   cada candidato em resolução cheia. A confiança final
-   continua sendo a de resolução cheia, então os thresholds
-   já ajustados continuam valendo.
-
-2. MÚLTIPLAS DETECÇÕES POR TEMPLATE
-   Antes minMaxLoc devolvia só o melhor ponto: era
-   impossível ver duas comidas na mesma tela. Agora usa
-   todos os máximos locais + supressão de sobreposição.
-
-3. ROI POR CATEGORIA
-   Procurar o "X" de fechar no meio do cenário só gera
-   custo e falso positivo.
-
-4. FILTRO POR CATEGORIA
-   A StateMachine só precisa de 2 categorias quando está
-   dentro da tela de upgrade, não de 43.
-
-5. MÉTRICA DE COR CORRIGIDA
-   A antiga fazia média do absdiff em HSV. Dois erros:
-   o matiz é circular (vermelho oscila entre 179 e 0 e era
-   lido como diferença máxima), e a média deixava o brilho
-   dominar — justamente o canal que a animação mexe.
-
-6. MÁSCARA
-   Se o PNG do template tiver alpha, os pixels
-   transparentes são ignorados na comparação. Nenhum
-   template usa isso hoje; é o caminho para os ícones
-   redondos, cujo recorte retangular inclui cenário
-   que muda.
-"""
+"""Detector por template matching: 2-stage search, ROI/category filters, NMS."""
 
 from pathlib import Path
 
@@ -83,13 +43,10 @@ from core.config import (
 logger = log.get("detector")
 
 
-# Caminho relativo ao ARQUIVO, não ao diretório de trabalho.
-# Antes era Path("src/vision/templates"), então o projeto só
-# rodava a partir da raiz do repositório.
+# Relativo ao arquivo, não ao cwd — não depende de rodar da raiz do repo.
 TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 
-# Abaixo deste tamanho o estágio grosso não compensa e a
-# redução destrói o template.
+# Abaixo deste tamanho a redução destrói o template.
 MIN_COARSE_SIDE = 12
 
 
@@ -128,36 +85,12 @@ class Detector:
 
         self.templates = []
 
-        # Índice por categoria: com o filtro de estado ligado
-        # a passada olha 2 categorias, não 43. Antes o loop
-        # percorria os 106 templates para descartar 100.
+        # Índice por categoria: com filtro de estado a passada olha 2 categorias, não 43.
         self.by_category = {}
 
-        # -------------------------------------------------
-        # TEMPLATES NA ESCALA DO FRAME
-        # -------------------------------------------------
-        #
-        # Os templates foram recortados em REFERENCE_WIDTH x
-        # REFERENCE_HEIGHT. Quando o frame do device vem em
-        # outra resolução, alguém tem de mudar de tamanho — e
-        # a escolha importa.
-        #
-        # Antes o VisionWorker fazia letterbox do FRAME para o
-        # espaço de referência: 7.8 MB de canvas por passada,
-        # mais um resize do frame inteiro, mais a inversão das
-        # coordenadas depois. E o letterbox de uma tela deitada
-        # dentro de um canvas em pé encolhia a imagem a ~0.45,
-        # o que sozinho derrubava a confiança abaixo de
-        # qualquer threshold — o bot não detectava nada.
-        #
-        # Agora reescalamos os TEMPLATES, uma vez por resolução
-        # de frame, e a busca acontece no frame nativo. Sai o
-        # resize por passada, sai a conversão de coordenada (a
-        # detecção já nasce no espaço do frame real, que é onde
-        # o clique precisa dela) e o frame conserva o detalhe.
-        #
-        # No caso comum (frame já na referência) nada disso
-        # roda: a lista original é usada como está.
+        # Templates são reescalados para o frame (1x por resolução), não o
+        # inverso: evita letterbox do frame inteiro e conversão de coordenada
+        # por passada. No caso comum (frame já na referência) nada disso roda.
         self._scaled_cache = {}
 
         # ROI em pixels por (categoria, largura, altura).
@@ -166,50 +99,24 @@ class Detector:
         # Templates olhados na última passada.
         self.last_searched = 0
 
-        # -------------------------------------------------
-        # DIAGNÓSTICO DE QUASE-ACERTO
-        # -------------------------------------------------
-        #
-        # Nada disto roda com DETECTOR_DEBUG_MISSES
-        # desligado, que é o padrão: o custo é uma
-        # comparação de bool por match.
-        #
-        # Para que serve: sem ele, "não detectou" e
-        # "detectou e o threshold cortou" têm o mesmo
-        # sintoma — bot parado — e pedem correções OPOSTAS.
-        # Uma quer template novo, a outra quer baixar o
-        # número.
+        # Só populado com DETECTOR_DEBUG_MISSES ligado (custo: 1 bool por
+        # match). Distingue "não detectou" de "detectou e o threshold
+        # cortou" — correções opostas com o mesmo sintoma (bot parado).
         self._best = {}
         self._best_color = {}
 
         self._debug_category = None
         self._debug_at = 0.0
 
-        # O relatório em texto, para o painel de status:
-        # com o painel ligado o console fica em WARNING e o
-        # log INFO não aparece.
+        # Relatório em texto para o painel: com o painel ligado o console
+        # fica em WARNING e o log INFO não aparece.
         self._miss_text = ""
         self._miss_at = 0.0
 
         self.load_templates()
 
-    # --------------------------------------------------
-    # Templates
-    # --------------------------------------------------
-
     def _coarse_scale_for(self, smallest_side):
-        """
-        Escala do estágio grosso para UM template.
-
-        A menor escala em que o template ainda tem
-        MIN_COARSE_SIDE de lado — abaixo disso o estágio grosso
-        é abandonado e a busca cai em resolução cheia, que custa
-        uma ordem de grandeza mais.
-
-        Arredonda PARA CIMA na grade: escala maior é sempre a
-        opção segura, e a grade limita quantos tamanhos
-        distintos de frame reduzido precisam existir.
-        """
+        """Menor escala com MIN_COARSE_SIDE de lado; arredonda para cima na grade (opção mais segura)."""
 
         if smallest_side <= 0:
             return self.coarse_scale
@@ -221,10 +128,7 @@ class Detector:
             * COARSE_SCALE_STEP
         )
 
-        # O arredondamento de float deixa 0.15000000000000002,
-        # e aí duas escalas iguais viram chaves diferentes no
-        # cache de frames reduzidos — um resize a mais por
-        # passada, de graça.
+        # round() evita 0.15000000000000002 virar chave duplicada no cache de escalas.
         return round(
             min(
                 self.coarse_scale,
@@ -287,10 +191,7 @@ class Detector:
             },
         )
 
-        # Sem template não existe detecção, e o sintoma é o
-        # mesmo de detector quebrado: bot parado, HUD vazio.
-        # Melhor uma linha de ERRO no start do que procurar
-        # isso depois.
+        # Sem template não há detecção — mesmo sintoma de detector quebrado (bot parado).
         if not self.templates:
 
             logger.error(
@@ -315,10 +216,6 @@ class Detector:
             )
 
             return None
-
-        # -------------------------------------------------
-        # ALPHA -> MÁSCARA
-        # -------------------------------------------------
 
         mask = None
 
@@ -348,30 +245,13 @@ class Detector:
             mask,
         )
 
-    # --------------------------------------------------
-    # Construção / reescala
-    # --------------------------------------------------
-
     def _build_template(self, category, name, image, mask):
-        """
-        Deriva de UMA imagem BGR (+ máscara opcional) tudo o
-        que a busca consome: cinza, HSV, versão reduzida do
-        estágio grosso e a máscara nas duas escalas.
-
-        Separado do carregamento de propósito: é o mesmo
-        caminho para o PNG do disco e para a versão reescalada
-        na resolução do frame, então as duas não podem
-        divergir.
-        """
+        """Separado do carregamento: mesmo caminho para o PNG original e para a versão reescalada, para as duas não divergirem."""
 
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
-        # HSV do template, UMA vez.
-        #
-        # Antes _color_similarity convertia o template a cada
-        # candidato: com MAX_MATCHES_PER_TEMPLATE em 12 e 106
-        # templates, isso é até 1272 conversões por passada de
-        # uma imagem que nunca muda.
+        # HSV calculado uma vez aqui — não a cada candidato em
+        # _color_similarity (imagem nunca muda).
         template_hsv = cv2.cvtColor(
             image,
             cv2.COLOR_BGR2HSV,
@@ -379,13 +259,7 @@ class Detector:
 
         height, width = gray.shape[:2]
 
-        # -------------------------------------------------
-        # VERSÃO REDUZIDA (estágio grosso)
-        # -------------------------------------------------
-
-        # Escala PRÓPRIA deste template, derivada do tamanho
-        # dele. Antes era a global, travada pelo menor template
-        # de todos.
+        # Escala própria deste template (não a global, travada pelo menor de todos).
         scale = self._coarse_scale_for(min(height, width))
 
         coarse_gray = None
@@ -438,15 +312,7 @@ class Detector:
 
     @staticmethod
     def _reference_size(frame_width, frame_height):
-        """
-        A referência NA ORIENTAÇÃO do frame.
-
-        Este jogo roda deitado, então o frame chega 2400x1080
-        enquanto a referência está escrita 1080x2400. Sem a
-        troca, qualquer razão sai absurda (0.45) e nenhum
-        template passa do threshold — o sintoma de "não detecta
-        nada".
-        """
+        """Referência na orientação do frame: o jogo roda deitado (2400x1080) mas a referência está escrita 1080x2400 — sem a troca a razão sai absurda e nada detecta."""
 
         ref_width = REFERENCE_WIDTH
         ref_height = REFERENCE_HEIGHT
@@ -460,18 +326,7 @@ class Detector:
 
     @classmethod
     def _frame_scale(cls, frame_width, frame_height):
-        """
-        Quanto o template precisa mudar de tamanho para valer
-        neste frame.
-
-        O critério vem de TEMPLATE_SCALE_BASIS, porque não
-        existe um que sirva sempre: o que muda entre aparelhos
-        não é só resolução, é PROPORÇÃO. Escalar pelo menor dos
-        dois fatores (o antigo "min") só está certo quando a
-        proporção é a mesma da referência — num 1080x1920 contra
-        1080x2400 ele encolhia tudo 20% com a largura idêntica,
-        e aí não detectava nada.
-        """
+        """Fator de escala do template para este frame, via TEMPLATE_SCALE_BASIS — não existe critério universal porque o que varia entre aparelhos é proporção, não só resolução."""
 
         if not REFERENCE_WIDTH or not REFERENCE_HEIGHT:
             return 1.0
@@ -521,13 +376,7 @@ class Detector:
 
     @classmethod
     def _is_reference(cls, frame_width, frame_height):
-        """
-        O frame está exatamente na resolução de referência (em
-        qualquer das duas orientações)?
-
-        É o caso em que não há nada a reescalar e nem escala
-        extra a procurar — custo zero.
-        """
+        """Frame já na resolução de referência (em qualquer orientação) — caso de custo zero, nada a reescalar."""
 
         return (frame_width, frame_height) in (
             (REFERENCE_WIDTH, REFERENCE_HEIGHT),
@@ -535,15 +384,10 @@ class Detector:
         )
 
     def _rescale_template(self, template, scale):
-        """
-        O mesmo template na escala do frame, ou None se
-        encolher tanto que não sobra imagem.
-        """
+        """Mesmo template na escala do frame, ou None se encolher demais."""
 
-        # Escala 1.0: devolve o original. Passar pelo resize
-        # daria a MESMA dimensão de volta, gastando tempo e
-        # perdendo nitidez em cima de uma imagem que já estava
-        # certa.
+        # Escala 1.0: devolve o original — resize daria a mesma dimensão
+        # de volta, perdendo nitidez à toa.
         if abs(scale - 1.0) <= 0.005:
             return template
 
@@ -583,12 +427,7 @@ class Detector:
         )
 
     def _templates_for(self, frame_width, frame_height):
-        """
-        Os templates deste frame, indexados por categoria.
-
-        Cacheado por resolução: o resize acontece uma vez por
-        tamanho de frame visto, não uma vez por passada.
-        """
+        """Templates deste frame por categoria, cacheados por resolução (resize 1x por tamanho de frame visto, não por passada)."""
 
         # Já na referência: nada a reescalar, e nenhuma escala
         # extra a procurar. É o caminho de custo zero.
@@ -604,20 +443,9 @@ class Detector:
 
         base = self._frame_scale(frame_width, frame_height)
 
-        # =================================================
-        # VÁRIAS ESCALAS, NÃO UMA APOSTA
-        # =================================================
-        #
-        # Nenhuma regra acerta todo aparelho: densidade de tela,
-        # barra de status e a escolha de layout do jogo mudam o
-        # tamanho do ícone alguns por cento — e template
-        # matching não tolera isso (8% de erro de escala já
-        # derruba a confiança abaixo de 0.95).
-        #
-        # Então o template entra em vários tamanhos e o melhor
-        # ganha: a supressão por sobreposição colapsa os acertos
-        # repetidos das escalas vizinhas, e a ordenação por
-        # confiança escolhe. Não é preciso adivinhar a escala.
+        # Várias escalas, não uma aposta: 8% de erro de escala já derruba a
+        # confiança abaixo de 0.95, então o template entra em vários tamanhos
+        # e a supressão por sobreposição + ordenação por confiança escolhe o melhor.
         escalas = sorted(
             {
                 round(base * passo, 4)
@@ -663,10 +491,6 @@ class Detector:
 
         return cacheados
 
-    # --------------------------------------------------
-    # Similaridade de cor
-    # --------------------------------------------------
-
     def _color_similarity(
         self,
         frame,
@@ -674,16 +498,7 @@ class Detector:
         x,
         y,
     ):
-        """
-        Compara cor em HSV levando em conta que:
-
-        - o matiz é CIRCULAR, então a distância entre 179
-          e 0 é 1, não 179;
-        - o matiz de um pixel dessaturado é ruído, então
-          ele pesa proporcionalmente à saturação;
-        - o brilho (V) muda com animação e iluminação,
-          então pesa pouco.
-        """
+        """Compara em HSV: matiz é circular (distância 179<->0 é 1), pesado por saturação (dessaturado = matiz é ruído); brilho pesa pouco (varia com animação/iluminação)."""
 
         template_height = template["height"]
         template_width = template["width"]
@@ -705,14 +520,7 @@ class Detector:
 
         template_hsv = template["hsv"]
 
-        # -------------------------------------------------
-        # MATIZ (circular)
-        # -------------------------------------------------
-        #
-        # OpenCV usa H em 0..179, então a volta completa
-        # é 180 e a distância máxima real é 90.
-        #
-
+        # OpenCV usa H em 0..179 — volta completa é 180, distância máxima real é 90.
         hue_difference = np.abs(
             roi_hsv[:, :, 0] - template_hsv[:, :, 0]
         )
@@ -724,10 +532,6 @@ class Detector:
 
         hue_difference = hue_difference / 90.0
 
-        # -------------------------------------------------
-        # SATURAÇÃO E BRILHO
-        # -------------------------------------------------
-
         saturation_difference = np.abs(
             roi_hsv[:, :, 1] - template_hsv[:, :, 1]
         ) / 255.0
@@ -736,13 +540,7 @@ class Detector:
             roi_hsv[:, :, 2] - template_hsv[:, :, 2]
         ) / 255.0
 
-        # -------------------------------------------------
-        # PESO DO MATIZ POR SATURAÇÃO
-        # -------------------------------------------------
-        #
-        # Num pixel cinza o matiz não significa nada.
-        #
-
+        # Num pixel cinza o matiz não significa nada — por isso o peso por saturação.
         saturation_weight = np.minimum(
             roi_hsv[:, :, 1],
             template_hsv[:, :, 1],
@@ -753,10 +551,6 @@ class Detector:
             + 0.30 * saturation_difference
             + 0.10 * value_difference
         )
-
-        # -------------------------------------------------
-        # MÁSCARA
-        # -------------------------------------------------
 
         valid = template["mask_valid"]
 
@@ -775,20 +569,13 @@ class Detector:
 
         return max(0.0, 1.0 - mean_difference)
 
-    # --------------------------------------------------
-    # ROI
-    # --------------------------------------------------
-
     def _resolve_roi(
         self,
         category,
         frame_width,
         frame_height,
     ):
-        """
-        Converte a ROI fracionária da categoria em pixels.
-        Devolve (x1, y1, x2, y2) em resolução cheia.
-        """
+        """Converte a ROI fracionária da categoria em pixels: (x1, y1, x2, y2)."""
 
         chave = (category, frame_width, frame_height)
 
@@ -838,19 +625,8 @@ class Detector:
 
         return (x1, y1, x2, y2)
 
-    # --------------------------------------------------
-    # Detect
-    # --------------------------------------------------
-
     def detect(self, frame, categories=None):
-        """
-        Devolve as detecções aprovadas, ordenadas por
-        confiança (maior primeiro).
-
-        categories: se informado, só procura essas
-        categorias. É o que permite a StateMachine buscar
-        2 templates em vez de 43.
-        """
+        """Detecções aprovadas, ordenadas por confiança (maior primeiro). `categories` filtra a busca (permite a StateMachine procurar 2 templates em vez de 43)."""
 
         if frame is None:
             return []
@@ -880,12 +656,7 @@ class Detector:
 
         frame_height, frame_width = frame_gray.shape[:2]
 
-        # =================================================
-        # CÓPIA REDUZIDA (uma vez por frame)
-        # =================================================
-
-        # Cada template tem a escala dele, então pode haver mais
-        # de um frame reduzido. São construídos SOB DEMANDA: no
+        # Frames reduzidos sob demanda (cada template tem sua escala): no
         # estado UPGRADE, com 4 templates, sai 1 resize e não 7.
         coarse_frames = {}
 
@@ -906,37 +677,18 @@ class Detector:
 
             return coarse_frames[scale]
 
-        # Templates deste frame, por categoria (o índice
-        # original quando o frame já está na referência).
+        # Templates deste frame por categoria (índice original se já na referência).
         por_categoria = self._templates_for(
             frame_width,
             frame_height,
         )
 
-        # =================================================
-        # A ORDEM DAS CATEGORIAS É A PRIORIDADE
-        # =================================================
-        #
-        # `categories` chega na ORDEM DAS REGRAS do estado, e a
-        # StateMachine age na PRIMEIRA regra que casar. Então
-        # tudo que vem depois de um acerto é trabalho que nunca
-        # vira ação.
-        #
-        # Não é economia pequena: `food` são 124 dos 185
-        # templates e 174 dos 312 ms de uma passada — e é a
-        # ÚLTIMA prioridade em NORMAL. Medido nesta tela, um
-        # frame em que uma regra de cima casa cai de 264 ms
-        # para ~20 ms.
-        #
-        # A parada é por CATEGORIA, nunca dentro dela: duas
-        # comidas na mesma tela são duas detecções da mesma
-        # categoria, e cortar no primeiro template faria o bot
-        # ver uma só.
-        #
-        # Sem filtro (categories None) não há prioridade que
-        # respeitar e nada é interrompido: é o caminho do
-        # overlay de diagnóstico e do dataset, que querem a
-        # tela inteira.
+        # `categories` vem na ordem das regras do estado; a StateMachine age
+        # na primeira que casar, então parar aqui poupa trabalho que nunca
+        # viraria ação (medido: 264ms -> ~20ms quando uma regra de cima casa).
+        # Parada é por categoria, nunca dentro dela (evita perder detecções
+        # repetidas da mesma categoria). Sem filtro, nada é interrompido —
+        # caminho do overlay de diagnóstico e do dataset, que querem a tela inteira.
         if categories is not None:
 
             ordem = []
@@ -1009,10 +761,6 @@ class Detector:
 
                 for x, y, confidence in candidates:
 
-                    # =====================================
-                    # FILTRO DE COR
-                    # =====================================
-
                     color_similarity = self._color_similarity(
                         frame_color,
                         template,
@@ -1062,20 +810,12 @@ class Detector:
             if achou and parar_na_prioridade:
                 break
 
-        # =================================================
-        # SUPRESSÃO DE SOBREPOSIÇÃO
-        # =================================================
-        #
-        # Vários templates da mesma categoria acertam o
-        # mesmo ícone. Sem isto, uma comida vira 5 detecções.
-        #
-
+        # Vários templates da mesma categoria acertam o mesmo ícone — sem
+        # supressão, uma comida vira 5 detecções.
         if DETECTOR_DEBUG_MISSES:
 
-            # As categorias que a passada REALMENTE olhou: com
-            # a parada por prioridade, as de baixo podem nem
-            # ter sido procuradas, e listá-las como "não
-            # detectado" mandaria caçar template que está bom.
+            # Só as categorias que a passada realmente olhou — com parada por
+            # prioridade, listar as de baixo como "não detectado" seria falso.
             self._report_misses(set(procuradas), detections)
 
         detections = self._suppress(detections)
@@ -1090,10 +830,6 @@ class Detector:
 
         return detections
 
-    # --------------------------------------------------
-    # Busca em dois estágios
-    # --------------------------------------------------
-
     def _search(
         self,
         frame_gray,
@@ -1102,16 +838,11 @@ class Detector:
         min_threshold,
         roi,
     ):
-        """
-        Devolve [(x, y, confiança)] em resolução cheia.
-        """
+        """Devolve [(x, y, confiança)] em resolução cheia."""
 
         coarse_template = template["coarse_gray"]
 
-        # -------------------------------------------------
-        # Sem estágio grosso: busca direta
-        # -------------------------------------------------
-
+        # Sem estágio grosso: busca direta.
         if coarse_frame is None or coarse_template is None:
 
             return self._match(
@@ -1123,14 +854,8 @@ class Detector:
                 MAX_MATCHES_PER_TEMPLATE,
             )
 
-        # -------------------------------------------------
-        # ESTÁGIO 1 — grosso
-        # -------------------------------------------------
-        #
-        # Threshold mais permissivo: a redução degrada a
-        # confiança, e descartar aqui é irreversível.
-        #
-
+        # Estágio 1 (grosso): threshold mais permissivo — a redução degrada
+        # a confiança, e descartar aqui é irreversível.
         scale = template["coarse_scale"]
 
         coarse_roi = (
@@ -1158,15 +883,8 @@ class Detector:
         if not coarse_hits:
             return []
 
-        # -------------------------------------------------
-        # ESTÁGIO 2 — fino
-        # -------------------------------------------------
-        #
-        # Reconfirma cada candidato em resolução cheia,
-        # numa janelinha. A confiança devolvida é a de
-        # resolução cheia, comparável à da versão antiga.
-        #
-
+        # Estágio 2 (fino): reconfirma cada candidato em resolução cheia
+        # numa janela — a confiança devolvida já é comparável à versão sem estágios.
         results = []
 
         template_height = template["height"]
@@ -1218,11 +936,7 @@ class Detector:
         roi,
         max_matches,
     ):
-        """
-        matchTemplate dentro de uma região, devolvendo os
-        máximos locais acima do threshold em coordenada
-        absoluta da imagem.
-        """
+        """matchTemplate numa região; devolve os máximos locais acima do threshold em coordenada absoluta da imagem."""
 
         x1, y1, x2, y2 = roi
 
@@ -1238,10 +952,8 @@ class Detector:
 
         region = image[y1:y2, x1:x2]
 
-        # Máscara só é suportada em TM_CCORR_NORMED /
-        # TM_SQDIFF. Sem máscara mantemos TM_CCOEFF_NORMED
-        # para não mudar a escala das confianças já
-        # ajustadas nos thresholds.
+        # Máscara só é suportada em TM_CCORR_NORMED/TM_SQDIFF; sem máscara
+        # mantemos TM_CCOEFF_NORMED para não mudar a escala dos thresholds.
         if mask is not None:
 
             result = cv2.matchTemplate(
@@ -1266,9 +978,8 @@ class Detector:
             neginf=0.0,
         )
 
-        # O máximo BRUTO, antes de qualquer corte: é a
-        # única informação que o threshold esconde, e é
-        # exatamente a que o diagnóstico precisa.
+        # Máximo bruto antes do corte — é a informação que o threshold
+        # esconde e que o diagnóstico precisa.
         if DETECTOR_DEBUG_MISSES and result.size:
 
             if self._debug_category is not None:
@@ -1277,10 +988,6 @@ class Detector:
                     self._best.get(self._debug_category, 0.0),
                     float(result.max()),
                 )
-
-        # -------------------------------------------------
-        # Apenas o melhor ponto
-        # -------------------------------------------------
 
         if max_matches == 1:
 
@@ -1296,10 +1003,6 @@ class Detector:
                     confidence,
                 )
             ]
-
-        # -------------------------------------------------
-        # Todos os pontos acima do threshold
-        # -------------------------------------------------
 
         ys, xs = np.where(result >= min_threshold)
 
@@ -1335,22 +1038,8 @@ class Detector:
 
         return hits
 
-    # --------------------------------------------------
-    # Diagnóstico de quase-acerto
-    # --------------------------------------------------
-
     def _report_misses(self, wanted, detections):
-        """
-        Por categoria procurada e NÃO encontrada, de quanto
-        foi o melhor match.
-
-            upgrade F:0.931/0.98
-                o objeto está na tela e o threshold cortou.
-
-            upgrade F:0.412/0.98
-                o template não parece com o que está na
-                tela. Threshold nenhum resolve.
-        """
+        """Por categoria não encontrada, o melhor match visto: F:0.931/0.98 = threshold cortou (baixe o threshold); F:0.412/0.98 = template não parece com a tela (threshold não ajuda)."""
 
         agora = time.monotonic()
 
@@ -1414,11 +1103,7 @@ class Detector:
         )
 
     def miss_report(self):
-        """
-        O último relatório, ou "" quando não há — inclusive
-        quando envelheceu: um texto de minutos atrás
-        descreve outra tela e no painel pareceria atual.
-        """
+        """Último relatório, ou "" se ausente ou velho demais (texto de minutos atrás pareceria atual no painel)."""
 
         if not DETECTOR_DEBUG_MISSES or not self._miss_text:
             return ""
@@ -1431,15 +1116,8 @@ class Detector:
 
         return self._miss_text
 
-    # --------------------------------------------------
-    # Supressão de sobreposição
-    # --------------------------------------------------
-
     def _suppress(self, detections):
-        """
-        Mantém, por categoria, a melhor detecção de cada
-        grupo de caixas sobrepostas.
-        """
+        """Mantém, por categoria, a melhor detecção de cada grupo de caixas sobrepostas."""
 
         if len(detections) < 2:
             return detections
@@ -1505,12 +1183,7 @@ class Detector:
 
         return intersection / union
 
-    # --------------------------------------------------
-    # Draw
-    # --------------------------------------------------
-
-    # Cor por categoria: dá para ver o que é o que sem ler
-    # o texto. Antes tudo era preto.
+    # Cor por categoria: dá para ver o que é o que sem ler o texto.
     COLORS = {
         "food": (0, 220, 255),
         "upgrade": (0, 255, 0),
@@ -1536,10 +1209,7 @@ class Detector:
     HUD_NEUTRAL = (255, 255, 255)
 
     def _hud_text(self, output, text, y, color, scale=0.8):
-        """
-        Texto com contorno escuro, legível sobre qualquer
-        fundo do jogo.
-        """
+        """Texto com contorno escuro, legível sobre qualquer fundo do jogo."""
 
         for thickness, text_color in (
             (5, (0, 0, 0)),
@@ -1558,23 +1228,7 @@ class Detector:
             )
 
     def draw(self, frame, detections, stats=None, scale=1.0):
-        """
-        stats aceita: capture_fps, detect_fps, detect_ms, lag,
-        battery (nível, carregando, idade_da_leitura),
-        cycle (corrido, ultimo, quantos).
-        Chaves ausentes simplesmente não aparecem.
-
-        `scale` é o fator já aplicado ao frame que chega
-        aqui. As detecções vêm em coordenada de frame
-        CHEIO, então num frame reduzido elas precisam ser
-        convertidas — senão as caixas aparecem fora de
-        lugar e o overlay passa a mentir sobre onde o bot
-        está vendo as coisas.
-
-        Desenhar reduzido é o que barateia: retângulo e
-        putText (com contorno, duas passadas) custam por
-        pixel tocado.
-        """
+        """stats: capture_fps, detect_fps, detect_ms, lag, battery, cycle — chaves ausentes não aparecem. `scale` reconverte detecções (em coords de frame cheio) para o frame reduzido que chega aqui, senão as caixas aparecem fora de lugar."""
 
         output = frame
 
@@ -1629,24 +1283,14 @@ class Detector:
                     cv2.LINE_AA,
                 )
 
-        # -------------------------------------------------
-        # HUD
-        # -------------------------------------------------
-
         if not stats:
             return output
 
         y = 50
 
-        # -------------------------------------------------
-        # FPS
-        # -------------------------------------------------
-        #
-        # Dois números distintos de propósito: a captura pode
-        # ir a 60 enquanto o detector faz 3 passadas por
-        # segundo. Quem manda na reação do bot é o detector.
-        #
-
+        # Dois números distintos de propósito: a captura pode ir a 60 fps
+        # enquanto o detector faz 3 passadas por segundo — quem manda na
+        # reação do bot é o detector.
         if SHOW_FPS:
 
             capture_fps = stats.get("capture_fps")
@@ -1674,10 +1318,8 @@ class Detector:
 
                     label += f"  {detect_ms:.0f} ms"
 
-                # Abaixo de 1/MAX_DETECTION_AGE as detecções
-                # nascem velhas e a StateMachine para de
-                # clicar. Não é limite inventado: é o mesmo
-                # da checagem de idade.
+                # Abaixo de 1/MAX_DETECTION_AGE as detecções já nascem velhas
+                # e a StateMachine para de clicar — mesmo limite da checagem de idade.
                 floor = (
                     1.0 / MAX_DETECTION_AGE
                     if MAX_DETECTION_AGE
@@ -1695,13 +1337,7 @@ class Detector:
 
                 y += 40
 
-        # -------------------------------------------------
-        # ATRASO
-        # -------------------------------------------------
-        #
         # Sem isso, detecção atrasada parece detecção errada.
-        #
-
         lag = stats.get("lag")
 
         if SHOW_DETECTION_LAG and lag is not None:
@@ -1723,14 +1359,7 @@ class Detector:
 
             y += 40
 
-        # -------------------------------------------------
-        # BATERIA
-        # -------------------------------------------------
-        #
-        # Sessão que morre por bateria descarregada não deixa
-        # rastro no log — o bot só para de agir.
-        #
-
+        # Sessão que morre por bateria descarregada não deixa rastro no log — o bot só para de agir.
         battery = stats.get("battery")
 
         if SHOW_BATTERY and battery:
@@ -1744,10 +1373,8 @@ class Detector:
                 if charging:
                     label += "  carregando"
 
-                # Leitura velha é pior que leitura ausente: um
-                # número parado parece atual. O intervalo é
-                # conhecido, então passar do dobro dele é
-                # sinal de adb travado.
+                # Leitura velha é pior que ausente (parece atual); passar do
+                # dobro do intervalo é sinal de adb travado.
                 elif age > BATTERY_POLL_INTERVAL * 2:
                     label += f"  ({age:.0f}s atras)"
 
@@ -1762,26 +1389,12 @@ class Detector:
 
                 y += 40
 
-        # -------------------------------------------------
-        # TEMPO CORRIDO ENTRE REFORMAS
-        # -------------------------------------------------
-        #
-        # O único número do HUD que mede PROGRESSO. Os FPS
-        # dizem que a visão está saudável; este diz se o bot
-        # está andando. Ele pode estar a 30 fps clicando em
-        # nada há vinte minutos.
-        #
+        # Tempo corrido entre reformas é o único número do HUD que mede
+        # progresso (os FPS só dizem que a visão está saudável).
 
-        # -------------------------------------------------
-        # ESTADO E O QUE ESTÁ SENDO PROCURADO
-        # -------------------------------------------------
-        #
-        # Sem estas linhas, "não detectou" e "não procurou"
-        # ficam idênticos na tela. Com o filtro por estado
-        # ligado o detector olha só as categorias do estado
-        # atual, então saber QUAL estado e QUANTOS templates é
-        # o que explica um overlay vazio.
-
+        # Sem "estado", "não detectou" e "não procurou" ficam idênticos no
+        # overlay; com filtro por estado, saber qual estado e quantos
+        # templates explica um overlay vazio.
         estado = stats.get("state")
 
         if estado:
@@ -1802,13 +1415,8 @@ class Detector:
 
             y += 40
 
-        # Quantas detecções o frame analisado produziu. Zero em
-        # vermelho: é a informação que faltava.
-        #
-        # Menos enquanto a tela estabiliza: ali o worker está
-        # PULANDO frames de propósito (mostram a tela de antes
-        # do efeito da ação), e pintar isso de vermelho acusaria
-        # de defeito o que é o comportamento certo.
+        # Zero detecções em vermelho — exceto durante settle, onde o worker
+        # pula frames de propósito e isso não é um defeito.
         quantas = stats.get("detections")
 
         aguardando = stats.get("waiting_settle")
@@ -1833,13 +1441,8 @@ class Detector:
 
             y += 40
 
-        # -------------------------------------------------
-        # VISÃO CAÍDA
-        # -------------------------------------------------
-        #
-        # A thread do detector morrer tem o mesmo sintoma de
-        # tudo o mais: bot parado. Aqui ela fala.
-
+        # Thread do detector morrer tem o mesmo sintoma de tudo o mais (bot
+        # parado) — aqui ela fala.
         erro = stats.get("vision_error")
 
         if erro:

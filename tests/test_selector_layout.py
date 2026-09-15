@@ -1,12 +1,8 @@
 """
-Testes da escala e das coordenadas do seletor de templates.
-
-    python tests/test_selector_layout.py
-
-O que está em jogo: um erro de mapeamento aqui não dá erro
-nenhum — ele salva o recorte ERRADO em silêncio, e o template
-ruim só aparece semanas depois como "o bot clica no lugar
-errado". Por isso a matemática é testada separada da GUI.
+Testes da escala e das coordenadas do seletor de templates. Um erro de
+mapeamento aqui não dá erro nenhum — salva o recorte ERRADO em silêncio,
+e só aparece semanas depois como "o bot clica no lugar errado". Por isso
+a matemática é testada separada da GUI.
 """
 
 import sys
@@ -31,16 +27,10 @@ LARGURA = 1080
 ALTURA = 2400
 
 
-# =========================================================
-# ESCALA
-# =========================================================
-
 def test_a_altura_e_quem_manda():
     """
-    O pedido: a janela acompanha a ALTURA da tela.
-
-    Numa tela alta e estreita a largura tem folga de sobra, e
-    dobrar o teto de largura não pode mudar nada.
+    A janela acompanha a ALTURA da tela. Numa tela alta e estreita a
+    largura tem folga de sobra, e dobrar o teto de largura não muda nada.
     """
 
     valor = escala(LARGURA, ALTURA, 3268, 1152)
@@ -53,9 +43,7 @@ def test_a_altura_e_quem_manda():
 
 
 def test_fracao_de_80_por_cento_de_1440():
-    """
-    O caso real: monitor 3440x1440, fração 0.80.
-    """
+    """Caso real: monitor 3440x1440, fração 0.80."""
 
     valor = escala(
         LARGURA,
@@ -70,11 +58,7 @@ def test_fracao_de_80_por_cento_de_1440():
 
 
 def test_largura_ainda_protege():
-    """
-    A largura não deve limitar numa tela alta e estreita, mas
-    tem de continuar limitando quando for de fato o gargalo —
-    senão a janela sai da tela num monitor deitado e estreito.
-    """
+    """A largura tem de continuar limitando quando for de fato o gargalo."""
 
     valor = escala(LARGURA, ALTURA, 300, 5000)
 
@@ -82,9 +66,7 @@ def test_largura_ainda_protege():
 
 
 def test_nao_amplia_por_padrao():
-    """
-    Ampliar não cria detalhe: só deixa o recorte borrado.
-    """
+    """Ampliar não cria detalhe: só deixa o recorte borrado."""
 
     assert escala(100, 100, 2000, 2000) == 1.0
 
@@ -98,10 +80,7 @@ def test_nao_amplia_por_padrao():
 
 
 def test_mantem_a_proporcao():
-    """
-    "manter a dimensão": a proporção da janela tem de ser a
-    mesma da imagem.
-    """
+    """A proporção da janela tem de ser a mesma da imagem."""
 
     valor = escala(LARGURA, ALTURA, 3268, 1152)
 
@@ -143,17 +122,11 @@ def test_janela_cabe_no_limite():
         )
 
 
-# =========================================================
-# COORDENADAS
-# =========================================================
-
 def test_ida_e_volta_em_toda_a_area():
     """
-    janela -> imagem -> janela tem de voltar ao mesmo pixel,
-    dentro do erro de arredondamento da escala.
-
-    Testado em TODA a área, não só nos cantos: um erro de sinal
-    no meio da imagem passaria por um teste de canto.
+    janela -> imagem -> janela tem de voltar ao mesmo pixel, dentro do
+    erro de arredondamento. Testado em TODA a área, não só nos cantos:
+    um erro de sinal no meio da imagem passaria por um teste de canto.
     """
 
     for max_altura in (900, 1152, 1296):
@@ -205,11 +178,7 @@ def test_ida_e_volta_em_toda_a_area():
 
 
 def test_coordenada_presa_na_imagem():
-    """
-    Arrastar para fora da janela não pode gerar índice
-    inválido: numpy aceita índice negativo em silêncio e
-    recorta do outro lado da imagem.
-    """
+    """Numpy aceita índice negativo em silêncio e recorta do outro lado da imagem."""
 
     valor = escala(LARGURA, ALTURA, 3268, 1152)
 
@@ -252,16 +221,13 @@ def test_origem_e_fim_batem():
         valor,
     )
 
-    # Tolerância de 1 px: a largura da janela é arredondada,
-    # então o último pixel dela pode cair em LARGURA - 1.
+    # Tolerância de 1 px: a largura da janela é arredondada.
     assert LARGURA - x_imagem <= 1, x_imagem
     assert ALTURA - y_imagem <= 1, y_imagem
 
 
 def test_meio_da_janela_e_o_meio_da_imagem():
-    """
-    O teste que pega inversão de eixo ou offset esquecido.
-    """
+    """Pega inversão de eixo ou offset esquecido."""
 
     valor = escala(LARGURA, ALTURA, 3268, 1152)
 
@@ -283,15 +249,8 @@ def test_meio_da_janela_e_o_meio_da_imagem():
     assert abs(y_imagem - ALTURA // 2) <= 3, y_imagem
 
 
-# =========================================================
-# INTEGRAÇÃO: o recorte sai do lugar certo?
-# =========================================================
-
 def _arrasta(imagem, valor, canto_a, canto_b):
-    """
-    Simula o arrasto do mouse do jeito que o
-    template_selector faz, e devolve o recorte.
-    """
+    """Simula o arrasto do mouse do jeito que o template_selector faz."""
 
     altura, largura = imagem.shape[:2]
 
@@ -319,18 +278,15 @@ def _arrasta(imagem, valor, canto_a, canto_b):
 
 def test_arrasto_recorta_a_regiao_certa():
     """
-    A prova de fim a fim, sem GUI: um marcador branco em
-    posição conhecida, e o arrasto por cima dele na janela
-    reduzida tem de sair branco.
-
-    Se o mapeamento tivesse um offset, o recorte sairia preto —
-    e no uso real seria um template do pedaço errado da tela.
+    Prova fim a fim, sem GUI: marcador branco em posição conhecida, e o
+    arrasto por cima dele na janela reduzida tem de sair branco. Se o
+    mapeamento tivesse offset, o recorte sairia preto — template do
+    pedaço errado da tela.
     """
 
     imagem = np.zeros((ALTURA, LARGURA, 3), np.uint8)
 
-    # Marcador em posição sem simetria, para um eixo trocado
-    # não passar por acidente.
+    # Posição sem simetria, para um eixo trocado não passar por acidente.
     alvo = (300, 1700, 460, 1820)   # x1, y1, x2, y2
 
     imagem[alvo[1]:alvo[3], alvo[0]:alvo[2]] = 255
@@ -339,8 +295,7 @@ def test_arrasto_recorta_a_regiao_certa():
 
         valor = escala(LARGURA, ALTURA, 3268, max_altura)
 
-        # Arrasta bem por dentro do marcador, para o
-        # arredondamento não encostar na borda.
+        # Bem por dentro do marcador, para o arredondamento não encostar na borda.
         canto_a = para_canvas(alvo[0] + 12, alvo[1] + 12, valor)
         canto_b = para_canvas(alvo[2] - 12, alvo[3] - 12, valor)
 
@@ -365,10 +320,6 @@ def test_arrasto_para_fora_nao_estoura():
 
     assert crop.shape[:2] == (ALTURA, LARGURA), crop.shape
 
-
-# =========================================================
-# RUNNER
-# =========================================================
 
 def main():
 

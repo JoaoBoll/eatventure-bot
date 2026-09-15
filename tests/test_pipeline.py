@@ -1,16 +1,8 @@
 """
-Integração: frame -> detector -> worker -> state machine -> toque.
-
-    python tests/test_pipeline.py
-
-Usa o VisionWorker, o Detector, a StateMachine e o
-ActionManager DE VERDADE, com as threads de verdade. Só o
-adb é falso, então nada é enviado a nenhum device.
-
-Pega o tipo de erro que teste de unidade não pega: handoff
-de frame entre threads, cálculo da idade da detecção, o
-gate de "ação em andamento", e a conversão de coordenada
-de frame para coordenada de toque.
+Integração: frame -> detector -> worker -> state machine -> toque. Usa as
+threads DE VERDADE (só o adb é falso). Pega o que teste de unidade não
+pega: handoff de frame entre threads, idade da detecção, gate de "ação em
+andamento" e conversão de coordenada de frame para toque.
 """
 
 import sys
@@ -34,27 +26,16 @@ from vision.worker import VisionWorker          # noqa: E402
 
 IMAGE = ROOT / "tests" / "images" / "eatventure.png"
 
-# Mais ou menos onde o botão de upgrade está nessa tela.
-#
-# POSIÇÃO APROXIMADA, e nada de TAMANHO, de propósito: o tamanho
-# da caixa é o tamanho do PNG do template, e recortar o template
-# de novo muda esse número. Já mudou uma vez (136x134 -> 103x72)
-# e o que quebrou foi este teste, que não é sobre o template — é
-# sobre converter coordenada de frame em coordenada de toque.
-#
-# Serve só de âncora: garante que o detector achou o botão no
-# canto de baixo da tela, e não lixo em outro lugar. O ponto
-# esperado do toque sai da DETECÇÃO, não daqui.
+# Âncora aproximada do botão de upgrade nessa tela — POSIÇÃO, nunca TAMANHO:
+# o tamanho vem do PNG do template e recortá-lo de novo já mudou esse número
+# uma vez (136x134 -> 103x72), quebrando este teste sem ele ser sobre o
+# template. Serve só para garantir que o detector achou o botão no canto de
+# baixo, não lixo em outro lugar; o ponto do toque sai da DETECÇÃO.
 UPGRADE_NEAR = (914, 2194)
 
-# Folga da âncora. Generosa: template recortado com alguns
-# pixels de sobra desloca o canto da caixa.
+# Folga generosa: template recortado com pixels de sobra desloca o canto.
 UPGRADE_TOLERANCE = 40
 
-
-# =========================================================
-# ADB FALSO
-# =========================================================
 
 class FakeAndroid(AndroidActions):
 
@@ -83,17 +64,10 @@ class FakeAndroid(AndroidActions):
     @staticmethod
     def _expande(args):
         """
-        Um comando adb pode carregar VÁRIOS `input`.
-
-        tap_many e swipe_many mandam os N toques num único
-        `adb shell "input tap ...; input tap ..."`, para não
-        pagar N vezes o spawn do adb e a JVM do device. Aqui
-        isso é desmontado de volta na forma palavra-por-palavra,
-        que é o que as propriedades abaixo leem.
-
-        Sem esta expansão o dublê registrava a rolagem em lote
-        como um comando opaco, e `scrolls` via zero swipes num
-        caminho que no device manda seis.
+        tap_many/swipe_many mandam N toques num único `adb shell "input tap
+        ...; input tap ..."` para não pagar N vezes o spawn do adb. Desmonta
+        de volta palavra-por-palavra, que é o que as propriedades abaixo
+        leem — sem isto `scrolls` via zero swipes onde o device manda seis.
         """
 
         if len(args) != 2 or args[0] != "shell":
@@ -119,9 +93,7 @@ class FakeAndroid(AndroidActions):
 
     @property
     def backs(self):
-        """
-        BACK nunca deveria aparecer: neste jogo ele sai do jogo.
-        """
+        """BACK nunca deveria aparecer: neste jogo ele sai do jogo."""
 
         return [
             command
@@ -132,10 +104,7 @@ class FakeAndroid(AndroidActions):
 
     @property
     def scrolls(self):
-        """
-        Swipes de rolagem: 'input swipe' com origem != destino.
-        Devolve (y_inicial, y_final).
-        """
+        """Swipes de rolagem: 'input swipe' com origem != destino. Devolve (y_inicial, y_final)."""
 
         resultado = []
 
@@ -157,10 +126,7 @@ class FakeAndroid(AndroidActions):
 
     @property
     def holds(self):
-        """
-        Toques mantidos: 'input swipe' com origem == destino.
-        Devolve (x, y, duração em segundos).
-        """
+        """Toques mantidos: 'input swipe' com origem == destino. Devolve (x, y, duração em s)."""
 
         resultado = []
 
@@ -181,15 +147,8 @@ class FakeAndroid(AndroidActions):
         return resultado
 
 
-# =========================================================
-# CAPTURA FALSA
-# =========================================================
-
 class FakeCapture:
-    """
-    Serve o mesmo frame algumas vezes e depois encerra,
-    imitando o fim do stream.
-    """
+    """Serve o mesmo frame algumas vezes e depois encerra, imitando o fim do stream."""
 
     def __init__(self, frame, frames=5):
 
@@ -217,10 +176,6 @@ class FakeCapture:
 
         return self.running
 
-
-# =========================================================
-# HELPERS
-# =========================================================
 
 def build(device_size=(1080, 2400)):
 
@@ -254,14 +209,8 @@ def wait_for_detections(vision, timeout=10.0):
     return [], 0.0
 
 
-# =========================================================
-# TESTES
-# =========================================================
-
 def test_frame_vira_toque_no_lugar_certo():
-    """
-    O caminho completo, com as threads reais.
-    """
+    """O caminho completo, com as threads reais."""
 
     frame = cv2.imread(str(IMAGE))
 
@@ -315,11 +264,10 @@ def test_frame_vira_toque_no_lugar_certo():
         ):
             time.sleep(0.02)
 
-        # A detecção que MOTIVOU a ação — é o centro dela que o
-        # dedo tem de acertar. Derivado, não fixado: fixar o
-        # tamanho da caixa aqui é duplicar o tamanho do PNG do
-        # template, e o teste passa a quebrar quando alguém
-        # recorta o template de novo (foi o que aconteceu).
+        # A detecção que MOTIVOU a ação — o centro dela é o alvo do dedo.
+        # Derivado, não fixado: fixar o tamanho aqui duplicaria o PNG do
+        # template e quebraria quando alguém o recortasse de novo (já
+        # aconteceu).
         alvo = next(
             d
             for d in detections
@@ -352,11 +300,7 @@ def test_frame_vira_toque_no_lugar_certo():
 
 
 def test_frame_reduzido_converte_coordenada():
-    """
-    Se o stream vier em resolução diferente do device, o
-    toque tem que ser convertido. Antes não havia conversão
-    nenhuma: o clique caía no lugar errado.
-    """
+    """Stream em resolução diferente do device: sem conversão, o clique caía no lugar errado."""
 
     _, vision, actions, machine = build(
         device_size=(1080, 2400)
@@ -402,10 +346,7 @@ def test_frame_reduzido_converte_coordenada():
 
 
 def test_acao_longa_nao_bloqueia_o_loop():
-    """
-    O long press de comida dura 4 s. Antes ele congelava o
-    loop principal inteiro; agora roda em paralelo.
-    """
+    """O long press de comida dura 4 s; antes congelava o loop principal inteiro."""
 
     _, _, actions, _ = build()
 
@@ -464,12 +405,7 @@ def test_categoria_desconhecida_nao_derruba():
 
 
 def test_loop_roda_sem_janela():
-    """
-    Com DISPLAY_MODE = "scrcpy" ou "none" não existe janela
-    do OpenCV. O loop tem que rodar e encerrar limpo mesmo
-    assim — e é justamente o caminho em que ninguém chama
-    cv2.waitKey.
-    """
+    """DISPLAY_MODE "scrcpy"/"none": sem janela OpenCV, é o caminho em que ninguém chama cv2.waitKey."""
 
     import main
 
@@ -547,10 +483,7 @@ def test_medidores_reportam_taxa():
 
 
 def test_gray_coin_toca_no_ponto_proprio():
-    """
-    `gray_coin` dispensa igual ao `gray_max`: ponto FIXO,
-    ignorando onde a detecção apareceu. O que difere é o ponto.
-    """
+    """`gray_coin` dispensa igual ao `gray_max`, ponto FIXO — só o ponto difere."""
 
     from actions.manager import ACTION_TABLE, DISMISS
     from core.config import DISMISS_POINT, GRAY_COIN_POINT
@@ -633,17 +566,11 @@ def test_gray_coin_toca_no_ponto_proprio():
 
 def test_proporcao_diferente_nao_encolhe_o_template():
     """
-    O bug de "não detecta em outro aparelho".
-
-    Num 1080x1920 contra uma referência 1080x2400, a LARGURA é
-    idêntica e o ícone na tela tem exatamente o mesmo tamanho em
-    pixels. Escalar pelo menor dos dois fatores encolhia todo
-    template 20%:
-
-        min(1080/1080, 1920/2400) = 0.80
-
-    e nada passava do threshold. É proporção diferente, não
-    resolução diferente.
+    O bug de "não detecta em outro aparelho": num 1080x1920 contra
+    referência 1080x2400, a LARGURA é idêntica, mas escalar pelo menor
+    dos dois fatores (min(1080/1080, 1920/2400) = 0.80) encolhia todo
+    template 20% e nada passava do threshold. É proporção diferente,
+    não resolução diferente.
     """
 
     from core.config import REFERENCE_HEIGHT, REFERENCE_WIDTH
@@ -703,10 +630,7 @@ def test_proporcao_diferente_nao_encolhe_o_template():
 
 
 def test_resolucao_proporcional_continua_valendo():
-    """
-    Mudar de resolução MANTENDO a proporção é o caso fácil, e
-    tem de continuar funcionando: os templates acompanham.
-    """
+    """Mudar de resolução MANTENDO a proporção é o caso fácil: os templates acompanham."""
 
     base = cv2.imread(str(IMAGE))
 
@@ -745,11 +669,7 @@ def test_resolucao_proporcional_continua_valendo():
 
 
 def test_referencia_nao_paga_pelas_escalas_extra():
-    """
-    As escalas extra existem para aparelho fora da referência.
-    No aparelho da referência elas seriam custo puro — o triplo
-    de templates por passada sem nada em troca.
-    """
+    """No aparelho de referência as escalas extra seriam custo puro: triplo de templates sem troca."""
 
     from core.config import REFERENCE_HEIGHT, REFERENCE_WIDTH
 
@@ -786,11 +706,7 @@ def test_referencia_nao_paga_pelas_escalas_extra():
 
 
 def test_teto_de_fps_corta_antes_de_converter():
-    """
-    O device manda 60 e o bot não usa 60. O corte tem de
-    acontecer ANTES da conversão de cor, que é o trabalho caro
-    (7.8 MB por frame), senão não economiza nada.
-    """
+    """O corte tem de acontecer ANTES da conversão de cor (7.8 MB/frame), senão não economiza nada."""
 
     import numpy as np
 
@@ -808,10 +724,7 @@ def test_teto_de_fps_corta_antes_de_converter():
     convertidos = []
 
     class FrameFalso:
-        """
-        Acusa a conversão: se `to_ndarray` foi chamado, o frame
-        pagou o caminho caro.
-        """
+        """Acusa a conversão: se `to_ndarray` foi chamado, o frame pagou o caminho caro."""
 
         def to_ndarray(self):
 
@@ -854,14 +767,11 @@ def test_teto_de_fps_corta_antes_de_converter():
 
 def test_piso_descarta_frame_velho_sem_perder_o_anterior():
     """
-    Depois de uma ação, o frame que o worker tem na mão mostra a
-    tela de ANTES do efeito dela: o _can_act descartaria o
-    resultado de qualquer forma, então gastar uma passada nele é
-    perda dupla — a passada em si, e o atraso até a primeira
-    passada ÚTIL, que só começa depois dela.
-
-    O que NÃO pode acontecer é o piso apagar a última leitura
-    boa: o overlay ficaria vazio e pareceria detector travado.
+    O frame que o worker tem na mão logo após uma ação mostra a tela de
+    ANTES do efeito dela — _can_act descartaria de qualquer jeito, então
+    gastar uma passada nele é perda dupla. O piso não pode apagar a
+    última leitura boa: o overlay ficaria vazio, parecendo detector
+    travado.
     """
 
     frame = cv2.imread(str(IMAGE))
@@ -892,10 +802,7 @@ def test_piso_descarta_frame_velho_sem_perder_o_anterior():
 
         antes = vision.detections_time
 
-        # -------------------------------------------------
         # Piso no futuro: TODO frame de agora é velho.
-        # -------------------------------------------------
-
         vision.set_frame_floor(time.monotonic() + 30.0)
 
         pulados = vision.skipped_stale
@@ -924,10 +831,7 @@ def test_piso_descarta_frame_velho_sem_perder_o_anterior():
         # E a thread não morreu pulando.
         assert vision.is_alive()
 
-        # -------------------------------------------------
         # Piso liberado: volta a analisar.
-        # -------------------------------------------------
-
         vision.set_frame_floor(0.0)
 
         deadline = time.monotonic() + 5.0
@@ -953,10 +857,7 @@ def test_piso_descarta_frame_velho_sem_perder_o_anterior():
 
 
 def test_worker_reporta_fps_e_custo():
-    """
-    Os dois números do HUD vêm daqui, e são diferentes do
-    FPS da captura.
-    """
+    """Os dois números do HUD vêm daqui, e são diferentes do FPS da captura."""
 
     frame = cv2.imread(str(IMAGE))
 
@@ -1045,14 +946,10 @@ def test_hud_desenha_e_desliga():
 
 def test_dismiss_toca_no_ponto_neutro():
     """
-    A ação "dismiss" tem que virar toque MANTIDO no
-    DISMISS_POINT, ignorando a detecção que a disparou.
-
-    Ela não está em nenhuma regra hoje: NORMAL_RULES usa
-    "upgrade_food" para up_food, por escolha do dono. Este
-    teste chama o ActionManager direto de propósito — a ação
-    continua disponível para voltar às regras, e código que
-    ninguém exercita apodrece sem ninguém notar.
+    "dismiss" tem de virar toque MANTIDO no DISMISS_POINT, ignorando a
+    detecção que a disparou. Não está em nenhuma regra hoje (NORMAL_RULES
+    usa "upgrade_food" para up_food) — testado direto para o código não
+    apodrecer sem ninguém notar.
     """
 
     from core.config import (
@@ -1115,10 +1012,7 @@ def test_dismiss_toca_no_ponto_neutro():
 
 
 def test_dismiss_converte_para_device_menor():
-    """
-    O ponto de dispensa é anotado na resolução de referência,
-    então em outro device ele tem que escalar.
-    """
+    """O ponto de dispensa é anotado na resolução de referência: em outro device tem de escalar."""
 
     _, _, actions, _ = build(device_size=(540, 1200))
 
@@ -1162,11 +1056,7 @@ def test_dismiss_converte_para_device_menor():
 
 
 def test_hold_do_dismiss_e_curto():
-    """
-    Dispensar painel usa toque mantido CURTO. Se usasse a
-    duração do upgrade de comida (4 s), o bot congelaria por
-    4 s a cada painel aberto sem querer.
-    """
+    """Se usasse a duração do upgrade de comida (4s), o bot congelaria a cada painel aberto sem querer."""
 
     from core.config import (
         DISMISS_HOLD_DURATION,
@@ -1187,10 +1077,9 @@ def test_hold_do_dismiss_e_curto():
 
 def test_escape_rola_a_tela_para_baixo():
     """
-    A sequência de escape tem que rolar a VISTA para baixo, o
-    que no ActionManager é o swipe "up" (dedo para cima). Se a
-    direção estiver invertida, o bot sobe a tela e o canto de
-    baixo continua na barra de botões.
+    A sequência de escape tem de rolar a VISTA para baixo (swipe "up",
+    dedo para cima). Direção invertida deixaria o canto de baixo na
+    barra de botões.
     """
 
     from core.config import (
@@ -1240,10 +1129,7 @@ def test_escape_rola_a_tela_para_baixo():
 
 
 def test_escape_nao_bloqueia_o_loop():
-    """
-    A sequência são 6 swipes com pausa: ~1.5 s. Roda na thread
-    de ação, então execute() tem que voltar na hora.
-    """
+    """São 6 swipes com pausa (~1.5s) na thread de ação: execute() tem de voltar na hora."""
 
     _, _, actions, _ = build()
 
@@ -1269,10 +1155,7 @@ def test_escape_nao_bloqueia_o_loop():
 
 
 def test_back_nao_esta_disponivel():
-    """
-    Neste jogo o BACK sai do jogo. Não pode ser acionável por
-    nome de ação.
-    """
+    """Neste jogo o BACK sai do jogo: não pode ser acionável por nome de ação."""
 
     _, _, actions, _ = build()
 
@@ -1293,13 +1176,9 @@ def test_back_nao_esta_disponivel():
 
 def test_porta_nao_colide_com_o_scrcpy():
     """
-    O espelho do scrcpy usa 27183-27199 por padrão. Se a nossa
-    captura voltar para essa faixa, o bot passa a falhar de
-    forma INTERMITENTE — quem perde a corrida pela porta conecta
-    no túnel errado e o stream morre na hora.
-
-    O sintoma no log é:
-      WARN: Could not listen on port 27183, retrying on 27184
+    O espelho do scrcpy usa 27183-27199 por padrão. Se a captura voltar
+    para essa faixa, o bot falha de forma INTERMITENTE: quem perde a
+    corrida pela porta conecta no túnel errado e o stream morre.
     """
 
     from core.config import SCRCPY_DEVICE_JAR, SCRCPY_PORT
@@ -1318,10 +1197,9 @@ def test_porta_nao_colide_com_o_scrcpy():
 
 def test_socket_do_servidor_tem_scid():
     """
-    No scrcpy 4.1 o socket abstrato é SEMPRE "scrcpy_<scid>".
-    Encaminhar para "scrcpy" puro faz o adb aceitar a conexão
-    TCP e devolver 0 bytes na hora — falha silenciosa que
-    parecia "porta ocupada".
+    No scrcpy 4.1 o socket abstrato é SEMPRE "scrcpy_<scid>". Encaminhar
+    para "scrcpy" puro faz o adb devolver 0 bytes na hora — falha
+    silenciosa que parecia "porta ocupada".
     """
 
     from capture.screen import ScreenCapture
@@ -1349,11 +1227,7 @@ def test_socket_do_servidor_tem_scid():
 
 
 def test_timeout_de_conexao_maior_que_o_arranque():
-    """
-    Medido: o servidor leva ~1.4 s para servir o primeiro byte,
-    e passa disso com o espelho do scrcpy rodando junto. Um
-    timeout curto aqui reintroduz a falha intermitente.
-    """
+    """Medido: o servidor leva ~1.4s (mais com o espelho scrcpy junto); timeout curto reintroduz a falha."""
 
     from core.config import (
         CAPTURE_CONNECT_TIMEOUT,
@@ -1368,10 +1242,6 @@ def test_timeout_de_conexao_maior_que_o_arranque():
         CAPTURE_START_TIMEOUT
     )
 
-
-# =========================================================
-# RUNNER
-# =========================================================
 
 def main():
 

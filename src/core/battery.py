@@ -1,14 +1,4 @@
-"""
-Leitura da bateria do device, fora do caminho crítico.
-
-`dumpsys battery` custa ~56 ms — mais de 3x uma passada inteira
-do detector no estado UPGRADE. Chamar isso no loop de render
-derrubaria o FPS da janela para pagar por um número que muda de
-1% a cada vários minutos.
-
-Então roda numa thread própria, num intervalo folgado, e o loop
-só lê o último valor em memória.
-"""
+"""Leitura da bateria fora do caminho crítico: `dumpsys battery` custa ~56ms (>3x uma passada do detector), então roda em thread própria e o loop só lê o último valor em memória."""
 
 import threading
 import time
@@ -29,24 +19,17 @@ class BatteryMonitor:
         self.running = False
         self.thread = None
 
-        # Última leitura. None = ainda não leu, ou o adb falhou
-        # e nunca deu certo.
+        # None = ainda não leu, ou o adb nunca deu certo.
         self.level = None
         self.charging = False
 
-        # Quando a leitura foi feita. Serve para o HUD poder
-        # dizer "velha" em vez de mentir um número parado.
+        # Timestamp da leitura, para o HUD marcar valor velho.
         self.updated = 0.0
 
         self.lock = threading.Lock()
 
-        # Acorda a thread na hora de parar, em vez de esperar o
-        # intervalo inteiro terminar.
+        # Acorda a thread ao parar, sem esperar o intervalo inteiro.
         self.wake = threading.Event()
-
-    # -----------------------------------------------------
-    # Ciclo de vida
-    # -----------------------------------------------------
 
     def start(self):
 
@@ -69,8 +52,7 @@ class BatteryMonitor:
 
         self.running = False
 
-        # Sem isto, encerrar o bot esperaria até
-        # BATTERY_POLL_INTERVAL segundos.
+        # Sem isto, encerrar o bot esperaria até BATTERY_POLL_INTERVAL.
         self.wake.set()
 
         if self.thread:
@@ -79,16 +61,8 @@ class BatteryMonitor:
 
             self.thread = None
 
-    # -----------------------------------------------------
-    # Leitura
-    # -----------------------------------------------------
-
     def get(self):
-        """
-        (porcentagem, carregando, idade_em_segundos)
-
-        porcentagem é None enquanto não houver leitura.
-        """
+        """(porcentagem, carregando, idade_em_segundos); porcentagem é None sem leitura ainda."""
 
         with self.lock:
 
@@ -100,10 +74,6 @@ class BatteryMonitor:
                 self.charging,
                 time.monotonic() - self.updated,
             )
-
-    # -----------------------------------------------------
-    # Thread
-    # -----------------------------------------------------
 
     def _run(self):
 

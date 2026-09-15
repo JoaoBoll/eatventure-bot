@@ -1,18 +1,11 @@
 ﻿"""
-Importa um samples.jsonl para o PostgreSQL.
+Importa um samples.jsonl para o PostgreSQL. Reimportar é seguro:
+chave primária + ON CONFLICT DO NOTHING. Rode antes o DDL de
+docs/dataset.md.
 
     python tools/dataset_import.py
     python tools/dataset_import.py --dsn postgresql://...
     python tools/dataset_import.py --jsonl outro/samples.jsonl
-
-Este é o caminho normal de uso: o bot grava arquivos, e o banco
-entra DEPOIS — inclusive para sessões gravadas antes de existir
-banco. Rodar o bot com o banco ligado é só conveniência.
-
-Reimportar é seguro: as amostras têm chave primária e o INSERT
-usa ON CONFLICT DO NOTHING.
-
-Rode antes o DDL de docs/dataset.md.
 """
 
 import argparse

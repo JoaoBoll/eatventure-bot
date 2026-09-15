@@ -1,93 +1,5 @@
 #!/usr/bin/env python3
-"""
-Bot com visão por modelo treinado.
-
-    # ver o que o modelo enxerga, sem tocar no jogo
-    python IA/bot_ai.py
-
-    # comparar modelo x template matching, quadro a quadro
-    python IA/bot_ai.py --source templates --compare
-
-    # deixar agir
-    python IA/bot_ai.py --auto --min-confidence 0.80
-
-    # revisar imagens gravadas, sem device
-    python IA/bot_ai.py --demo --demo-limit 20
-
-==============================================================
-O QUE ESTAVA ERRADO NA VERSÃO ANTERIOR
-==============================================================
-
-1. CLICAVA SEMPRE NO MEIO DA TELA.
-
-       center = (frame.shape[1] // 2, frame.shape[0] // 2)
-       detection = {"x": center[0] - 50, ...}
-
-   O modelo previa QUAL ação, nunca ONDE. Então o toque ia para
-   o centro do frame com uma caixa falsa de 100x100 em volta.
-   Mesmo com um classificador perfeito, o clique cairia no lugar
-   errado — e não havia como isso funcionar por acaso.
-
-2. IGNORAVA A MÁQUINA DE ESTADOS.
-
-   A ação certa depende do estado: `up_food` em FOOD evolui a
-   comida, em NEW_POINT libera o ponto. Medido no dataset, só
-   conhecer o estado já explica 46.2% da ação, e estado +
-   categorias explica 96%. O bot decidia sem nenhum dos dois.
-
-3. NÃO TINHA COOLDOWN NEM ESPERA DE EFEITO.
-
-   Agia a cada quadro, sobre telas de antes da própria ação —
-   o mesmo duplo toque que o bot de regras já teve e resolveu.
-
-4. `set_frame_size(REFERENCE_WIDTH, REFERENCE_HEIGHT)` fixo.
-
-   Se o stream vier em outra resolução, todo toque sai
-   convertido errado.
-
-5. LAG MENTIDO (`maquina.update(deteccoes, 0.0)`).
-
-   Não ter worker assíncrono não faz o frame ser novo: entre a
-   captura e a decisão passam o detector e a floresta. Com
-   lag=0 a StateMachine acha que a tela em mão já mostra o
-   efeito da última ação e age de novo sobre a tela de antes —
-   duplo toque, painel que reabre, bot batendo no mesmo botão.
-
-6. METADADO ANTIGO LIDO ERRADO.
-
-   O metadado gravado pela versão anterior usa
-   `label_mode`, não `kind`. Lendo só `kind`, um modelo de
-   AÇÃO caía no default "category" e rodava como se
-   localizasse objetos: as previsões saíam "open_box",
-   "swipe_up"..., nenhuma casava com as regras da
-   StateMachine, nenhuma ação era escolhida. O bot ficava
-   PARADO, sem uma linha de erro. Agora isso é barrado no
-   load, por metadado E pelas classes.
-
-==============================================================
-COMO FUNCIONA AGORA
-==============================================================
-
-    frame -> caixas candidatas -> modelo diz a categoria
-          -> StateMachine escolhe a ação e o alvo
-          -> ActionManager toca
-
-O modelo faz só a parte que é aprendizado: reconhecer. A
-escolha da ação, a prioridade, as coordenadas, o cooldown, a
-espera de efeito e a escada de fechamento vêm de
-core/state_machine.py, que já existe e já é testado. É de lá que
-sai o clique no lugar certo.
-
-`--source templates` (padrão) pega as caixas do detector atual e
-usa o modelo para classificar cada uma. Serve para MEDIR o
-modelo em tela real, com `--compare`, antes de confiar nele.
-
-`--source proposer` troca o detector por proposta de região por
-cor — o caminho para largar os 184 templates. É experimental.
-
-Este arquivo não executa nada sozinho e não tem testes: eles
-estão em tests/test_ia.py.
-"""
+"""Bot com visão por modelo treinado."""
 
 import argparse
 import json
@@ -137,25 +49,12 @@ CORES = {
 
 COR_PADRAO = (200, 200, 200)
 
-# Categorias que só existem em RENOVATE e que, se perdidas,
-# TRAVAM o bot: sem `renovate` ou `fly` a máquina de estados
-# nunca volta para NORMAL (ver RENOVATE_RULES em
-# core/state_machine.py).
-#
-# `fly` é o caso extremo: aparece pouquíssimo no dataset e a
-# caixa é muito larga (414x141, contra 95x94 da mediana), então
-# o modelo sai dela com confiança baixa. Com um único
-# --min-confidence global, `fly` é descartada exatamente no
-# frame em que ela é a ÚNICA saída do estado.
+# sem `renovate` ou `fly` a StateMachine nunca sai de RENOVATE (ver
+# RENOVATE_RULES); `fly` é rara e larga (414x141 vs 95x94 mediano), então sai
+# do modelo com confiança baixa e um --min-confidence global a descartaria
 CATEGORIAS_CRITICAS = ("renovate", "fly")
 
-# Piso por categoria, aplicado em vez do --min-confidence
-# global. Só ABAIXA: nunca deixa uma categoria passar com menos
-# do que o piso daqui, nem exige mais do que o global.
-#
-# Perder um `fly` custa um ciclo inteiro de reforma; um `fly`
-# falso custa um toque no lugar de um botão que a StateMachine
-# ia procurar de qualquer forma.
+# piso por categoria: só ABAIXA o --min-confidence global, nunca exige mais
 CONFIANCA_MINIMA_POR_CATEGORIA = {
     "fly": 0.30,
     "renovate": 0.35,
@@ -164,14 +63,7 @@ CONFIANCA_MINIMA_POR_CATEGORIA = {
 
 
 def min_confidence_for(categoria, global_min):
-    """
-    Piso de confiança desta categoria.
-
-    Se a categoria tem piso próprio, usa o MENOR dos dois — o
-    piso específico existe para não perder classe rara, então
-    subir o global não deve voltar a perdê-la.
-    """
-
+    # usa o menor dos dois pisos: o específico existe para não perder classe rara
     especifico = CONFIANCA_MINIMA_POR_CATEGORIA.get(categoria)
 
     if especifico is None:
@@ -181,21 +73,13 @@ def min_confidence_for(categoria, global_min):
 
 
 def known_categories():
-    """
-    Categorias que a StateMachine sabe usar.
-
-    Tiradas das próprias tabelas de regras, não de uma lista
-    copiada aqui: uma categoria nova em core/state_machine.py
-    passa a valer sozinha.
-    """
-
+    # tiradas das tabelas de regras, não de lista copiada: categoria nova
+    # em core/state_machine.py passa a valer sozinha
     try:
         from core.state_machine import STATE_RULES
 
     except Exception:
-
-        # Sem o core importável (nem device, nem config), sobra
-        # a lista do overlay — pior, mas não impede a checagem.
+        # core não importável (nem device, nem config): sobra a lista do overlay
         return set(CORES)
 
     return {
@@ -205,15 +89,8 @@ def known_categories():
     }
 
 
-# =========================================================
-# MODELO
-# =========================================================
-
 class Model:
-    """
-    Modelo treinado, com o metadado que diz COMO ele espera a
-    entrada.
-    """
+    """Modelo treinado, com o metadado que diz como ele espera a entrada."""
 
     def __init__(self, clf, meta, path):
 
@@ -221,15 +98,9 @@ class Model:
         self.meta = meta
         self.path = path
 
-        # `kind` é o nome atual; `label_mode` é o do metadado
-        # antigo. Sem ler os dois, um modelo gravado pela versão
-        # anterior (label_mode="action") cai no default
-        # "category" e o bot roda um classificador de AÇÕES como
-        # se fosse de categorias: as previsões viram "open_box",
-        # "swipe_up"... nenhuma casa com as regras da
-        # StateMachine, nenhuma ação é escolhida, e o bot fica
-        # parado olhando a tela. É essa a "travada" sem erro
-        # nenhum no log.
+        # `label_mode` é nome antigo de `kind`: sem ler os dois, um modelo
+        # de ação gravado pela versão anterior cai no default "category" e
+        # o bot trava sem erro nenhum no log
         self.kind = (
             meta.get("kind")
             or meta.get("label_mode")
@@ -249,8 +120,6 @@ class Model:
                 f"Modelo sem classes: {path}\n"
                 "Treine de novo com IA/train_ai.py."
             )
-
-    # -----------------------------------------------------
 
     @classmethod
     def load(cls, path):
@@ -294,15 +163,8 @@ class Model:
         return modelo
 
     def _check_features(self):
-        """
-        Confere que o modelo espera o mesmo número de features
-        que o IA/features.py produz hoje.
-
-        Sem isto, mudar PATCH_SIZE e rodar um modelo antigo dá
-        erro obscuro de shape no meio do loop — ou, pior, passa
-        e prevê lixo.
-        """
-
+        # sem isto, PATCH_SIZE mudar e rodar um modelo antigo dá erro obscuro
+        # de shape no loop — ou, pior, passa e prevê lixo
         esperado = getattr(self.clf, "n_features_in_", None)
 
         if esperado is None:
@@ -326,16 +188,8 @@ class Model:
             )
 
     def _check_labels(self):
-        """
-        Confere que as classes do modelo são CATEGORIAS de
-        visão, não ações.
-
-        O metadado pode estar ausente ou desatualizado; as
-        classes, não. Se nenhuma delas é categoria conhecida, o
-        modelo não tem como guiar a StateMachine — e o sintoma
-        é o bot parado, sem exceção nenhuma.
-        """
-
+        # metadado pode estar ausente/desatualizado; as classes, não — se
+        # nenhuma é categoria conhecida o bot fica parado, sem exceção
         if self.kind != "category":
             return
 
@@ -362,17 +216,9 @@ class Model:
             "  python IA/train_ai.py --kind category\n"
         )
 
-    # -----------------------------------------------------
-
     def classify_batch(self, vetores):
-        """
-        Classifica vários recortes de uma vez.
-
-        Em lote de propósito: uma chamada por recorte custaria
-        overhead de sklearn por candidato, e são dezenas por
-        quadro.
-        """
-
+        # em lote de propósito: uma chamada por recorte pagaria overhead de
+        # sklearn por candidato, e são dezenas por quadro
         if not vetores:
             return []
 
@@ -397,20 +243,9 @@ class Model:
         return [(str(p), 1.0) for p in previsto]
 
 
-# =========================================================
-# DETECÇÃO
-# =========================================================
-
 def detect_with_model(model, frame, caixas, min_confidence):
-    """
-    Classifica cada caixa candidata e devolve detecções no
-    formato que a StateMachine consome.
-
-    O formato tem de ser o MESMO do vision/detector.py, senão a
-    máquina de estados não sabe ler: category, name, confidence,
-    color_similarity, x, y, width, height.
-    """
-
+    # formato tem de ser o mesmo de vision/detector.py (category, name,
+    # confidence, color_similarity, x, y, width, height) para a StateMachine ler
     if not caixas:
         return []
 
@@ -433,9 +268,7 @@ def detect_with_model(model, frame, caixas, min_confidence):
 
     for caixa, (categoria, confianca) in zip(validas, resultados):
 
-        # "background" é a classe de recorte sem objeto, criada
-        # no treino justamente para o modelo poder dizer "aqui
-        # não tem nada".
+        # classe de recorte sem objeto, criada no treino
         if categoria == "background":
             continue
 
@@ -450,8 +283,7 @@ def detect_with_model(model, frame, caixas, min_confidence):
                 "name": f"modelo:{categoria}",
                 "confidence": confianca,
 
-                # A StateMachine não usa, mas o overlay e os
-                # testes do detector esperam a chave.
+                # StateMachine não usa, mas overlay e testes do detector esperam a chave
                 "color_similarity": confianca,
 
                 "x": x,
@@ -461,9 +293,7 @@ def detect_with_model(model, frame, caixas, min_confidence):
             }
         )
 
-    # Maior confiança primeiro: a StateMachine pega a PRIMEIRA
-    # detecção de cada categoria, então a ordem decide qual
-    # alvo é usado.
+    # maior confiança primeiro: StateMachine pega a primeira detecção de cada categoria
     deteccoes.sort(key=lambda d: -d["confidence"])
 
     return deteccoes
@@ -482,19 +312,9 @@ def _box_tuple(caixa):
     return tuple(int(v) for v in caixa)
 
 
-# =========================================================
-# FONTES DE CANDIDATOS
-# =========================================================
-
 class TemplateSource:
-    """
-    Caixas vindas do detector de template atual.
-
-    Não é circular: o detector diz ONDE olhar, e o modelo diz O
-    QUE é. Serve para medir o modelo contra o professor em tela
-    real (`--compare`) antes de confiar nele — e é o caminho que
-    funciona hoje, sem depender do proponente experimental.
-    """
+    """Caixas do detector de template: ele diz onde olhar, o modelo diz o quê.
+    Serve para medir o modelo contra o professor (`--compare`) sem depender do proposer."""
 
     nome = "templates"
 
@@ -520,12 +340,8 @@ class TemplateSource:
 
 
 class ProposerSource:
-    """
-    Caixas por proposta de região (cor + contorno).
-
-    É o caminho para largar os 184 templates. EXPERIMENTAL:
-    confira com --debug-proposals antes de ligar --auto.
-    """
+    """Caixas por proposta de região (cor + contorno), para largar os
+    templates. EXPERIMENTAL: confira com --debug-proposals antes de ligar --auto."""
 
     nome = "proposer"
 
@@ -538,12 +354,7 @@ class ProposerSource:
         self.deteccoes = []
 
     def boxes(self, frame, categorias=None):
-        """
-        `categorias` é ignorado: a proposta por cor não sabe
-        filtrar por categoria antes de classificar. O filtro por
-        estado só faz sentido na fonte de templates.
-        """
-
+        # categorias ignorado: proposta por cor não filtra por categoria antes de classificar
         self.deteccoes = []
 
         return [
@@ -551,10 +362,6 @@ class ProposerSource:
             for x, y, w, h in self.proposer.propose(frame)
         ]
 
-
-# =========================================================
-# OVERLAY
-# =========================================================
 
 def draw(frame, deteccoes, estado, stats, candidatos=None):
 
@@ -640,18 +447,9 @@ def show(saida):
     return cv2.waitKey(1) & 0xFF
 
 
-# =========================================================
-# MODO DEMO
-# =========================================================
-
 def demo(model, args):
-    """
-    Roda sobre imagens já gravadas e COMPARA com os rótulos do
-    dataset. Sem device, sem tocar em nada.
-
-    É a forma barata de saber se o modelo presta antes de
-    apontá-lo para o jogo.
-    """
+    """Roda sobre imagens do dataset e compara com os rótulos, sem device — forma
+    barata de saber se o modelo presta antes de apontá-lo para o jogo."""
 
     from dataset_io import read_index
 
@@ -689,9 +487,7 @@ def demo(model, args):
             args.min_confidence,
         )
 
-        # Compara categoria prevista com a do índice, caixa a
-        # caixa. É a métrica que importa: se a categoria estiver
-        # certa, a ação sai certa da tabela de prioridade.
+        # se a categoria está certa, a ação sai certa da tabela de prioridade
         previstas = {
             (d["x"], d["y"]): d["category"] for d in deteccoes
         }
@@ -756,10 +552,6 @@ def demo(model, args):
     return 0
 
 
-# =========================================================
-# MODO AO VIVO
-# =========================================================
-
 def live(model, args):
 
     from actions.manager import ActionManager
@@ -785,12 +577,10 @@ def live(model, args):
 
     acoes = ActionManager(serial)
 
-    # A StateMachine é quem escolhe a ação, o alvo e o momento.
-    # O modelo entra só como fonte de detecção.
+    # StateMachine escolhe ação/alvo/momento; o modelo só entra como detecção
     maquina = StateMachine(acoes)
 
-    # Importado UMA vez, fora do loop: `import` por quadro paga
-    # lookup em sys.modules ~30x/s sem motivo.
+    # importado uma vez, fora do loop: import por quadro paga lookup ~30x/s sem motivo
     modulo_proposer = None
 
     if args.source == "proposer":
@@ -799,9 +589,7 @@ def live(model, args):
 
     if not args.auto:
 
-        # Sem --auto nada é tocado. O jeito de garantir isso é
-        # substituir a execução, não confiar num if espalhado
-        # pelo loop.
+        # garante --auto substituindo a execução, não confiando num if espalhado pelo loop
         acoes.execute = lambda action, detection=None: True
         acoes.swipe = lambda direction: True
 
@@ -840,9 +628,7 @@ def live(model, args):
 
             altura, largura = frame.shape[:2]
 
-            # A resolução REAL do frame, não a de referência: o
-            # stream pode vir reduzido, e aí o toque precisa da
-            # conversão certa.
+            # resolução real do frame, não a de referência: stream pode vir reduzido
             acoes.set_frame_size(largura, altura)
 
             categorias = (
@@ -868,10 +654,6 @@ def live(model, args):
 
             custo = (time.monotonic() - inicio) * 1000
 
-            # -------------------------------------------
-            # Comparação com o professor
-            # -------------------------------------------
-
             if args.compare and getattr(fonte, "deteccoes", None):
 
                 verdade = {
@@ -893,38 +675,11 @@ def live(model, args):
                     if esperado == deteccao["category"]:
                         concordancia[0] += 1
 
-            # -------------------------------------------
-            # Decisão
-            # -------------------------------------------
-
             antes = maquina.state
 
-            # =========================================
-            # LAG REAL, NÃO ZERO
-            # =========================================
-            #
-            # A versão anterior passava lag=0.0 "porque não há
-            # worker assíncrono". Não ter worker não faz o
-            # frame ser novo: entre a captura e esta linha
-            # passaram o detector (~300 ms com 43 templates) e
-            # a floresta sobre dezenas de recortes.
-            #
-            # Mentir o lag desliga as DUAS proteções da
-            # StateMachine de uma vez:
-            #
-            #   _can_act  -> acha que a tela em mão já mostra o
-            #                efeito da última ação, e age de
-            #                novo sobre a tela de ANTES. É o
-            #                duplo toque: fecha o painel e
-            #                toca no mesmo ponto, que o reabre.
-            #                O bot fica batendo no mesmo botão
-            #                e não sai do lugar.
-            #
-            #   MAX_DETECTION_AGE -> nunca dispara, então um
-            #                detector lento nunca é denunciado.
-            #
-            # Com lag verdadeiro (~0.5 s) nada disso quebra:
-            # MAX_DETECTION_AGE é 2.0 s.
+            # lag real, não 0.0: sem ele, _can_act acha que a tela em mão já
+            # reflete a última ação (duplo toque) e MAX_DETECTION_AGE nunca
+            # dispara para denunciar um detector lento
             lag = (
                 max(0.0, time.monotonic() - capturado_em)
                 if capturado_em
@@ -949,9 +704,7 @@ def live(model, args):
                 "det": len(deteccoes),
                 "ms": f"{custo:.0f}",
 
-                # Lag e tempo no estado: é o par que diz se
-                # "travou" é detector lento ou estado sem
-                # saída.
+                # lag + tempo no estado: diz se "travou" é detector lento ou estado sem saída
                 "lag": f"{lag * 1000:.0f}",
                 "no est": f"{time.monotonic() - maquina.state_entered:.0f}s",
                 "auto": "SIM" if args.auto else "nao",
@@ -1004,9 +757,7 @@ def live(model, args):
         for chave, quantas in contagem.most_common(15):
             print(f"  {chave:<24} {quantas}")
 
-    # Fora do most_common de propósito: `fly` é raro e cairia do
-    # corte de 15 justamente quando o que interessa saber é se
-    # ele apareceu ALGUMA vez.
+    # fora do most_common de propósito: `fly` é raro e cairia do corte de 15
     print()
     print("categorias que fecham RENOVATE:")
 
@@ -1016,10 +767,6 @@ def live(model, args):
 
     return 0
 
-
-# =========================================================
-# CLI
-# =========================================================
 
 def parse_args(argv=None):
 
@@ -1155,11 +902,8 @@ def main(argv=None):
 
         return 1
 
-    # Um modelo sem `fly`/`renovate` nas classes NUNCA sai do
-    # estado RENOVATE: são as duas únicas regras de
-    # RENOVATE_RULES. Isso não dá erro nenhum em execução — o
-    # bot só fica parado na tela de reforma — então tem de ser
-    # dito aqui, no load.
+    # sem `fly`/`renovate` nas classes o bot nunca sai de RENOVATE (as duas
+    # únicas regras de RENOVATE_RULES) sem dar erro nenhum — só fica parado
     ausentes = [
         c for c in CATEGORIAS_CRITICAS if c not in model.labels
     ]

@@ -1,24 +1,7 @@
-"""
-Índice do dataset no PostgreSQL.
+"""Índice do dataset no PostgreSQL: só metadado, as imagens ficam em arquivo.
 
-O que vai para o banco: METADADO. As imagens ficam em arquivo.
-
-Guardar pixels como BLOB parece organizado e é ruim na prática:
-o treino leria gigabytes por época através do driver, e o dataset
-deixaria de ser copiável com um `rsync`. O banco ganha o lugar
-dele como ÍNDICE consultável:
-
-    -- todo open_box que funcionou, com boa confiança
-    SELECT image FROM dataset_sample
-     WHERE action = 'open_box'
-       AND outcome = 'changed'
-       AND target_confidence > 0.9;
-
-O treino funciona SEM banco: o samples.jsonl é a fonte de
-verdade. O banco é conveniência de consulta, e por isso nenhuma
-falha dele derruba a gravação.
-
-O DDL está em docs/dataset.md.
+O samples.jsonl é a fonte de verdade; o banco é conveniência de consulta
+(DDL em docs/dataset.md), por isso nenhuma falha dele derruba a gravação.
 """
 
 import json
@@ -29,13 +12,7 @@ logger = log.get("dataset.db")
 
 
 class PostgresStore:
-    """
-    Inserção em lote, com reconexão.
-
-    O lote existe porque uma ida ao banco por amostra colocaria
-    latência de rede na thread de gravação — e ela também
-    codifica PNG.
-    """
+    """Inserção em lote: uma ida ao banco por amostra somaria latência à thread que também codifica PNG."""
 
     def __init__(self, dsn, batch_size=20, schema="public"):
 
@@ -50,18 +27,10 @@ class PostgresStore:
         # Sessão registrada só uma vez, na primeira amostra.
         self.session_registered = set()
 
-    # =====================================================
-    # CONEXÃO
-    # =====================================================
-
     def connect(self):
-        """
-        Abre a conexão. Erro aqui é do chamador — é o momento
-        de descobrir DSN errado, não no meio da sessão.
-        """
+        """Erro de DSN aparece aqui, no chamador, não no meio da sessão."""
 
-        # Import tardio: quem não usa banco não precisa do
-        # psycopg instalado.
+        # Import tardio: quem não usa banco não precisa do psycopg instalado.
         try:
 
             import psycopg
@@ -104,10 +73,6 @@ class PostgresStore:
 
             self.connection = None
 
-    # =====================================================
-    # INSERÇÃO
-    # =====================================================
-
     def insert(self, registro):
 
         self.buffer.append(registro)
@@ -137,10 +102,6 @@ class PostgresStore:
 
             with self.connection.cursor() as cursor:
 
-                # -----------------------------------------
-                # SESSÃO
-                # -----------------------------------------
-
                 for sessao in {r["session"] for r in lote}:
 
                     if sessao in self.session_registered:
@@ -154,10 +115,6 @@ class PostgresStore:
                     )
 
                     self.session_registered.add(sessao)
-
-                # -----------------------------------------
-                # AMOSTRAS
-                # -----------------------------------------
 
                 cursor.executemany(
                     f"""
@@ -214,10 +171,6 @@ class PostgresStore:
                     ],
                 )
 
-                # -----------------------------------------
-                # CAIXAS
-                # -----------------------------------------
-
                 caixas = [
                     (
                         r["id"],
@@ -256,8 +209,7 @@ class PostgresStore:
 
         except Exception:
 
-            # Sem rollback a conexão fica inutilizável para
-            # todo lote seguinte.
+            # Sem rollback a conexão fica inutilizável para o próximo lote.
             try:
                 self.connection.rollback()
 
@@ -267,18 +219,8 @@ class PostgresStore:
             raise
 
 
-# =========================================================
-# IMPORTAÇÃO DE UM JSONL EXISTENTE
-# =========================================================
-
 def importar_jsonl(caminho, dsn, batch_size=200, schema="public"):
-    """
-    Carrega no banco um samples.jsonl já gravado.
-
-    É o caminho normal de uso: o bot grava arquivos, e o banco
-    entra depois — inclusive para sessões antigas, gravadas
-    antes de existir banco.
-    """
+    """Carrega no banco um samples.jsonl já gravado (inclusive de sessões antigas, sem banco na hora)."""
 
     store = PostgresStore(
         dsn,

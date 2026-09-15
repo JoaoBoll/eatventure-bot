@@ -1,15 +1,7 @@
 """
-Testes da compactação de numeração dos templates.
-
-    python tests/test_renumerar.py
-
-Roda em pastas temporárias — nunca toca em
-src/vision/templates.
-
-Renomear arquivo é irreversível, então a ordem das operações
-importa: se o destino de um arquivo for o nome de outro que
-ainda não foi processado, um sobrescreve o outro e o template
-some.
+Testes da compactação de numeração dos templates. Roda em pastas temporárias.
+Renomear é irreversível: se o destino de um arquivo for o nome de outro ainda
+não processado, um sobrescreve o outro e o template some.
 """
 
 import sys
@@ -28,16 +20,8 @@ from renumerar import (                          # noqa: E402
 )
 
 
-# =========================================================
-# HELPERS
-# =========================================================
-
 def monta(numeros, extras=()):
-    """
-    Cria uma pasta temporária com item_NNN.png nos números
-    dados. O conteúdo é o próprio número, para dar de rastrear
-    quem virou quem.
-    """
+    """Conteúdo do arquivo = o próprio número, para rastrear quem virou quem."""
 
     pasta = Path(tempfile.mkdtemp())
 
@@ -60,9 +44,6 @@ def sequencia(pasta):
 
 
 def conteudos(pasta):
-    """
-    {numero_do_arquivo: conteudo_original}
-    """
 
     return {
         n: p.read_text(encoding="utf-8")
@@ -70,15 +51,8 @@ def conteudos(pasta):
     }
 
 
-# =========================================================
-# TESTES
-# =========================================================
-
 def test_fecha_lacuna_no_meio():
-    """
-    O caso pedido: falta o 3 entre 2 e 4, então 4 vira 3 e
-    5 vira 4.
-    """
+    """Falta o 3 entre 2 e 4: 4 vira 3 e 5 vira 4."""
 
     pasta = monta([1, 2, 4, 5])
 
@@ -86,7 +60,7 @@ def test_fecha_lacuna_no_meio():
 
     assert sequencia(pasta) == [1, 2, 3, 4], sequencia(pasta)
 
-    # E o conteúdo acompanhou: o que era 4 agora é 3.
+    # O conteúdo acompanha: o que era 4 agora é 3.
     assert conteudos(pasta) == {
         1: "1",
         2: "2",
@@ -108,11 +82,7 @@ def test_varias_lacunas():
 
 
 def test_nao_perde_arquivo():
-    """
-    A garantia que importa: a quantidade de arquivos não muda.
-    Se a ordem de renomeio estivesse errada, um sobrescreveria
-    o outro e o template desapareceria em silêncio.
-    """
+    """Se a ordem de renomeio estivesse errada, um sobrescreveria o outro."""
 
     pasta = monta([2, 5, 9, 12, 13, 20])
 
@@ -139,9 +109,6 @@ def test_ja_compacto_nao_mexe():
 
 
 def test_sem_aplicar_nao_renomeia():
-    """
-    O padrão do CLI é só mostrar.
-    """
 
     pasta = monta([1, 5, 9])
 
@@ -149,7 +116,7 @@ def test_sem_aplicar_nao_renomeia():
 
     assert len(mudancas) == 2, mudancas
 
-    # Nada mudou no disco.
+    # Nada mudou no disco: o padrão do CLI é só mostrar.
     assert sequencia(pasta) == [1, 5, 9], sequencia(pasta)
 
 
@@ -171,13 +138,9 @@ def test_ignora_nome_fora_do_padrao():
 
 def test_ordem_crescente_nunca_gera_colisao():
     """
-    A ordem crescente torna colisão impossível: o alvo de cada
-    arquivo é <= o número dele, e quem ainda não foi processado
-    tem número MAIOR que a origem. Então o alvo está sempre
-    livre.
-
-    Aqui isso é verificado por força bruta, em vez de por
-    argumento.
+    A ordem crescente torna colisão impossível: o alvo de cada arquivo é
+    <= seu número, e quem ainda não foi processado tem número MAIOR que a
+    origem. Verificado por força bruta, em vez de por argumento.
     """
 
     import itertools
@@ -207,12 +170,10 @@ def test_ordem_crescente_nunca_gera_colisao():
 
 def test_guarda_de_sobrescrita(monkeypatch=None):
     """
-    O guarda defensivo: se um plano chegasse com destino
-    ocupado, pula e avisa em vez de destruir o arquivo.
-
-    Colisão não acontece pelo caminho normal (ver teste acima),
-    então o plano é injetado à mão — um ramo defensivo que nunca
-    roda pode estar quebrado sem ninguém saber.
+    Guarda defensiva: destino ocupado pula e avisa em vez de destruir o
+    arquivo. Colisão não acontece pelo caminho normal, então o plano é
+    injetado à mão — ramo defensivo que nunca roda pode estar quebrado
+    sem ninguém saber.
     """
 
     import renumerar as mod
@@ -244,7 +205,7 @@ def test_guarda_de_sobrescrita(monkeypatch=None):
 
     assert avisos, "deveria ter avisado"
 
-    # Os dois arquivos sobreviveram, com o conteúdo original.
+    # Os dois arquivos sobrevivem, com o conteúdo original.
     assert conteudos(pasta) == {1: "1", 2: "2"}, conteudos(pasta)
 
 
@@ -266,10 +227,6 @@ def test_pasta_vazia():
 
     assert proximo_numero(pasta) == 1
 
-
-# =========================================================
-# RUNNER
-# =========================================================
 
 def main():
 

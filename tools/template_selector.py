@@ -30,43 +30,21 @@ from core.config import (                         # noqa: E402
 
 
 WINDOW_NAME = "Template Selector"
-
-# Relativo ao ARQUIVO: antes só funcionava rodando a partir
-# da raiz do repositório.
 TEMPLATES_DIR = ROOT / "src" / "vision" / "templates"
 
 
 class TemplateSelector:
 
     def __init__(self, serial=None):
-
-        # O serial TEM de chegar no screencap: sem o -s, com
-        # dois devices na lista o adb recusa a captura.
         self.screenshot = AndroidScreenshot(serial=serial)
-
-        # Imagem ORIGINAL
-        self.image = None
-
-        # Imagem usada apenas para visualização
-        self.display = None
-
-        # Escala da visualização
+        self.image = None  # imagem original
+        self.display = None  # visualização reduzida
         self.scale = 1.0
-
-        # Coordenadas da IMAGEM ORIGINAL, não da janela: a
-        # janela é reduzida, e converter só na hora de salvar
-        # seria uma chance a mais de recortar do lugar errado.
-        self.start_x = None
+        self.start_x = None  # coordenadas da imagem original, não da janela
         self.start_y = None
-
         self.end_x = None
         self.end_y = None
-
         self.selecting = False
-
-    # -----------------------------------------------------
-    # Screenshot
-    # -----------------------------------------------------
 
     def capture_screen(self):
 
@@ -88,8 +66,6 @@ class TemplateSelector:
                 "o screenshot."
             )
 
-        # Sempre que uma nova imagem for capturada,
-        # apagamos qualquer seleção anterior.
         self._reset_selection()
 
         height, width = self.image.shape[:2]
@@ -104,14 +80,8 @@ class TemplateSelector:
             f"{self.scale:.3f}"
         )
 
-    # -----------------------------------------------------
-    # Display
-    # -----------------------------------------------------
-
     def _janela(self):
-        """
-        Tamanho máximo da janela, em pixels de tela.
-        """
+        """Tamanho máximo da janela, em pixels de tela."""
 
         largura = SELECTOR_MAX_WIDTH
         altura = SELECTOR_MAX_HEIGHT
@@ -137,9 +107,7 @@ class TemplateSelector:
         )
 
     def _prepare_display(self):
-        """
-        Calcula a escala. NÃO altera a imagem original.
-        """
+        """Calcula a escala; não altera a imagem original."""
 
         height, width = self.image.shape[:2]
 
@@ -164,9 +132,7 @@ class TemplateSelector:
         self._render()
 
     def _render(self):
-        """
-        Monta a visualização: a imagem inteira, reduzida.
-        """
+        """Monta a visualização: a imagem inteira, reduzida."""
 
         height, width = self.image.shape[:2]
 
@@ -182,10 +148,6 @@ class TemplateSelector:
             interpolation=cv2.INTER_AREA,
         )
 
-    # -----------------------------------------------------
-    # Mouse
-    # -----------------------------------------------------
-
     def mouse_callback(
         self,
         event,
@@ -194,9 +156,7 @@ class TemplateSelector:
         flags,
         param
     ):
-        """
-        Guarda coordenadas da IMAGEM ORIGINAL, não da janela.
-        """
+        """Guarda coordenadas da imagem original, não da janela."""
 
         if event == cv2.EVENT_LBUTTONDOWN:
 
@@ -237,10 +197,6 @@ class TemplateSelector:
             self.scale,
         )
 
-    # -----------------------------------------------------
-    # Desenho
-    # -----------------------------------------------------
-
     def _draw_selection(self):
 
         self._render()
@@ -273,8 +229,7 @@ class TemplateSelector:
             2
         )
 
-        # Tamanho real do recorte, em pixels do device: é o que
-        # importa para o template, não o tamanho na tela.
+        # tamanho real do recorte (pixels do device), não o tamanho na tela
         largura = abs(self.end_x - self.start_x)
         altura = abs(self.end_y - self.start_y)
 
@@ -306,10 +261,6 @@ class TemplateSelector:
             1,
             cv2.LINE_AA,
         )
-
-    # -----------------------------------------------------
-    # Seleção
-    # -----------------------------------------------------
 
     def select(self):
 
@@ -348,21 +299,10 @@ class TemplateSelector:
 
             key = cv2.waitKey(1) & 0xFF
 
-            # -------------------------------------------------
-            # ESC
-            # -------------------------------------------------
-
             if key == 27:
                 break
 
-            # -------------------------------------------------
-            # F5 / R → NOVA CAPTURA
-            # -------------------------------------------------
-            #
-            # F5 no Windows normalmente retorna 116.
-            # O 'r' também foi colocado como alternativa.
-            #
-
+            # F5 no Windows retorna 116; 'r' é alternativa
             if key == 116 or key == ord("r"):
 
                 print()
@@ -377,10 +317,6 @@ class TemplateSelector:
                 )
 
                 continue
-
-            # -------------------------------------------------
-            # ENTER → SALVAR
-            # -------------------------------------------------
 
             if key == 13:
 
@@ -399,10 +335,6 @@ class TemplateSelector:
         cv2.destroyWindow(
             WINDOW_NAME
         )
-
-    # -----------------------------------------------------
-    # Validação
-    # -----------------------------------------------------
 
     def _valid_selection(self):
 
@@ -431,20 +363,9 @@ class TemplateSelector:
             and height > 5
         )
 
-    # -----------------------------------------------------
-    # Salvar
-    # -----------------------------------------------------
-
     def save_selection(self):
 
-        # -------------------------------------------------
-        # Coordenadas da IMAGEM ORIGINAL
-        # -------------------------------------------------
-        #
-        # Já vêm convertidas do mouse_callback. Dividir pela
-        # escala aqui de novo recortaria do lugar errado.
-        #
-
+        # coordenadas já vêm convertidas do mouse_callback; dividir pela escala de novo recortaria errado
         x1 = min(self.start_x, self.end_x)
         x2 = max(self.start_x, self.end_x)
 
@@ -459,10 +380,6 @@ class TemplateSelector:
         y1 = max(0, min(y1, height))
         y2 = max(0, min(y2, height))
 
-        # -------------------------------------------------
-        # Recorta a imagem ORIGINAL
-        # -------------------------------------------------
-
         crop = self.image[
             y1:y2,
             x1:x2
@@ -476,22 +393,8 @@ class TemplateSelector:
 
             return
 
-        # -------------------------------------------------
-        # Normalização para a resolução de REFERÊNCIA
-        # -------------------------------------------------
-        #
-        # O detector assume que TODO template foi recortado na
-        # resolução de referência: em runtime ele reescala o
-        # template por frame/referência. Um recorte salvo cru
-        # num device de outra resolução já vem nos pixels DELE,
-        # e ainda assim leva esse fator aplicado por cima — o
-        # template sai com escala errada até no próprio
-        # aparelho onde foi recortado.
-        #
-        # Salvando sempre em escala de referência, o recorte
-        # vale em qualquer device.
-        #
-
+        # o detector reescala templates por frame/referência em runtime; salvar
+        # já normalizado para a resolução de referência evita escala errada
         crop = self._para_referencia(crop, width, height)
 
         if crop is None:
@@ -503,18 +406,10 @@ class TemplateSelector:
 
             return
 
-        # -------------------------------------------------
-        # Categoria
-        # -------------------------------------------------
-
         category = self._select_category()
 
         if category is None:
             return
-
-        # -------------------------------------------------
-        # Pasta
-        # -------------------------------------------------
 
         category_dir = (
             TEMPLATES_DIR
@@ -526,24 +421,8 @@ class TemplateSelector:
             exist_ok=True
         )
 
-        # -------------------------------------------------
-        # Número
-        # -------------------------------------------------
-        #
-        # Antes era len(existing) + 1, que SOBRESCREVE em
-        # silêncio quando há lacuna na sequência: food tinha
-        # 17 arquivos mas ia até item_020, então o próximo
-        # calculado era item_018 — que já existia.
-        #
-        # Agora a sequência é COMPACTADA antes de salvar
-        # (item_005 faltando entre 004 e 006 faz o 006 virar
-        # 005, o 007 virar 006, e assim por diante), e o novo
-        # template entra no último número.
-        #
-        # Assim "próximo número" volta a ser simplesmente
-        # len + 1, sem ambiguidade.
-        #
-
+        # compacta a sequência antes de salvar: len(existing)+1 sobrescreveria
+        # em silêncio se houvesse lacuna (ex.: food com 17 arquivos indo até item_020)
         renomeados = renumerar(
             category_dir,
             aplicar=True
@@ -578,10 +457,6 @@ class TemplateSelector:
                 category_dir
                 / f"item_{number:03d}.png"
             )
-
-        # -------------------------------------------------
-        # Salva
-        # -------------------------------------------------
 
         success = cv2.imwrite(
             str(output_path),
@@ -621,10 +496,6 @@ class TemplateSelector:
         print("===================================")
         print()
 
-    # -----------------------------------------------------
-    # Escala de referência
-    # -----------------------------------------------------
-
     def _para_referencia(self, crop, frame_width, frame_height):
 
         if Detector._is_reference(frame_width, frame_height):
@@ -662,10 +533,6 @@ class TemplateSelector:
             interpolation=interpolacao,
         )
 
-    # -----------------------------------------------------
-    # Reset
-    # -----------------------------------------------------
-
     def _reset_selection(self):
 
         self.start_x = None
@@ -676,14 +543,9 @@ class TemplateSelector:
 
         self.selecting = False
 
-        # Só prepara o display se já houver imagem.
         if self.image is not None:
 
             self._prepare_display()
-
-    # -----------------------------------------------------
-    # Categorias
-    # -----------------------------------------------------
 
     def _get_categories(self):
 
@@ -743,8 +605,6 @@ class TemplateSelector:
 
             choice = int(choice)
 
-            # Criar nova categoria
-
             if choice == 0:
 
                 while True:
@@ -778,8 +638,6 @@ class TemplateSelector:
 
                     return category
 
-            # Categoria existente
-
             if 1 <= choice <= len(categories):
 
                 return categories[
@@ -790,10 +648,6 @@ class TemplateSelector:
                 "Opção inválida."
             )
 
-
-# =========================================================
-# Main
-# =========================================================
 
 def main(argv=None):
 
@@ -827,10 +681,7 @@ def main(argv=None):
 
     selector = TemplateSelector(serial)
 
-    # Primeira captura
     selector.capture_screen()
-
-    # Abre o selector
     selector.select()
 
     return 0

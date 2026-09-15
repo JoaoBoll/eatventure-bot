@@ -1,27 +1,8 @@
 """
-Deleta imagens do dataset por session id.
+Deleta imagens do dataset por session id. Só apaga arquivos cujo
+caminho final esteja dentro do DATASET_DIR (evita apagar fora dele).
 
-Uso:
     python tools/delete_session_images.py --session <SESSION_ID> [--yes] [--prune-index]
-
-- Lê <DATASET_DIR>/samples.jsonl (padrão do projeto).
-- Para cada amostra cujo campo "session" bate com SESSION_ID,
-  resolve o caminho da imagem (campo "image") relativo a DATASET_DIR
-  e deleta o arquivo se existir.
-
-Opções:
-  --session   ID da sessão (obrigatório)
-  --jsonl     caminho para um samples.jsonl alternativo
-  --yes       confirma sem pedir prompt (padrão: pede confirmação)
-  --prune-index
-              se passado, reescreve o samples.jsonl removendo as
-              linhas cuja session == SESSION_ID (atenção: destrutivo)
-  --dry-run   não apaga nada, só mostra o que faria
-
-Segurança:
-- Só deleta arquivos cujo caminho final esteja dentro do DATASET_DIR
-  (evita apagar acidentalmente /etc/ ou outras pastas).
-
 """
 
 import argparse
@@ -84,7 +65,7 @@ def main(argv=None):
 
     session = args.session
 
-    to_delete = []  # list of Path
+    to_delete = []
     lines_to_keep = []
     lines_to_drop = []
 
@@ -97,7 +78,6 @@ def main(argv=None):
                 lines_to_drop.append(lineno)
                 continue
             image_path = (DATASET_DIR / image_rel).resolve()
-            # Segurança: só apagar se dentro de DATASET_DIR
             if not is_within_dir(image_path, DATASET_DIR):
                 logger.warning("Caminho %s fora de %s — não será apagado", image_path, DATASET_DIR)
                 lines_to_drop.append(lineno)
@@ -105,7 +85,6 @@ def main(argv=None):
             to_delete.append((lineno, image_path))
             lines_to_drop.append(lineno)
         else:
-            # keep this line
             lines_to_keep.append((lineno, sample))
 
     if not to_delete:
@@ -144,7 +123,6 @@ def main(argv=None):
     print(f"Deletados: {deleted}; faltantes: {missing}.")
 
     if args.prune_index:
-        # Reescrever o índice sem as linhas a remover. Simples e seguro: cria um temp e substitui.
         backup = jsonl_path.with_suffix(jsonl_path.suffix + ".bak")
         jsonl_path.rename(backup)
         try:
@@ -155,7 +133,6 @@ def main(argv=None):
                     wfh.write(line)
         except Exception as e:
             logger.exception("Erro reescrevendo índice: %s", e)
-            # Tentar restaurar backup
             if jsonl_path.exists():
                 jsonl_path.unlink()
             backup.rename(jsonl_path)

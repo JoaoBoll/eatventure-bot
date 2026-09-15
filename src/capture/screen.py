@@ -1,23 +1,4 @@
-"""
-Captura o vídeo do device pelo scrcpy-server.
-
-Mudanças em relação à versão anterior:
-
-1. FRAME VERSIONADO + espera com bloqueio.
-   O loop principal fazia `while True` sem pausa, girando a
-   100% de CPU e copiando ~7.8 MB por volta mesmo quando o
-   frame era o mesmo. Agora ele dorme até existir frame novo.
-
-2. UMA cópia em vez de três.
-   Eram: get_frame() copiava, set_frame() guardava a
-   referência, o worker copiava de novo. O decoder já cria
-   um array novo por frame e ninguém escreve nele, então
-   a referência pode ser compartilhada. Só o overlay
-   (que desenha em cima) copia.
-
-3. Timestamp por frame, para a StateMachine saber a idade
-   da detecção.
-"""
+"""ScreenCapture: stream H.264 do scrcpy-server, versioning, FPS cap."""
 
 import random
 import socket
@@ -57,27 +38,16 @@ class ScreenCapture:
 
     def __init__(self, serial=None):
 
-        # Device escolhido. None = deixa o adb decidir, o que
-        # só funciona com UM device conectado.
-        self.serial = serial
+        self.serial = serial  # Device; None = deixa adb decidir (requer 1 device)
 
         self.server_process = None
         self.socket = None
         self.codec = None
 
-        # Id da instância do servidor.
-        #
-        # No scrcpy 4.1 o socket abstrato é SEMPRE
-        # "scrcpy_<scid em 8 hex>" — não existe um "scrcpy"
-        # puro. Encaminhar para o nome sem scid faz o adb
-        # aceitar a conexão TCP e devolver EOF na hora, o que
-        # aparecia como "Stream fechou do outro lado (0 bytes)".
-        self.scid = 0
+        self.scid = 0  # Server instance ID (scrcpy_<id> em scrcpy 4.1+)
         self.socket_name = "scrcpy"
 
-        # Primeiro pedaço do stream, obtido durante a conexão.
-        # Não pode ser descartado: é H.264 de verdade.
-        self.first_chunk = None
+        self.first_chunk = None  # Primeiro pedaço do stream (H.264 real, não descartável)
 
         self.running = False
         self.capture_thread = None
@@ -85,36 +55,21 @@ class ScreenCapture:
         self.latest_frame = None
         self.latest_frame_time = 0.0
 
-        # Incrementa a cada frame decodificado. É o que
-        # permite ao consumidor saber se há coisa nova.
-        self.version = 0
+        self.version = 0  # Incrementa a cada frame (permite detectar novidade)
 
         # Frames por segundo que o device está entregando.
         self.rate = RateMeter()
 
-        # -------------------------------------------------
-        # TETO DE FPS
-        # -------------------------------------------------
-        #
-        # Intervalo mínimo entre frames PUBLICADOS. O device
-        # manda 60; o bot não usa 60.
+        # Intervalo mínimo entre frames publicados (capping FPS)
         self._min_interval = (
             1.0 / CAPTURE_MAX_FPS
             if CAPTURE_MAX_FPS
             else 0.0
         )
-
         self._published_at = 0.0
-
-        # Frames decodificados e descartados pelo teto. Serve
-        # para conferir que o teto está atuando (e quanto).
-        self.dropped = 0
+        self.dropped = 0  # Frames descartados pelo teto
 
         self.condition = threading.Condition()
-
-    # =====================================================
-    # START
-    # =====================================================
 
     def start(self):
 
@@ -125,24 +80,15 @@ class ScreenCapture:
         self.scid = random.randint(0, 0x7FFFFFFF)
         self.socket_name = f"scrcpy_{self.scid:08x}"
 
-        logger.info(
-            "Iniciando scrcpy-server (socket @%s)...",
-            self.socket_name,
-        )
+        logger.info("Iniciando scrcpy-server (socket @%s)...", self.socket_name)
 
         self._cleanup_forward()
-
         self._push_server()
-
         self._setup_forward()
-
         self._start_server()
 
         logger.info("Conectando ao stream H.264...")
-
-        self.socket, self.first_chunk = self._connect(
-            CAPTURE_CONNECT_TIMEOUT
-        )
+        self.socket, self.first_chunk = self._connect(CAPTURE_CONNECT_TIMEOUT)
 
         if self.socket is None:
 
@@ -170,40 +116,18 @@ class ScreenCapture:
                 )
             )
 
-        logger.info(
-            "Stream aberto (%d bytes iniciais).",
-            len(self.first_chunk),
-        )
-
-        # =================================================
-        # DECODER
-        # =================================================
+        logger.info("Stream aberto (%d bytes iniciais).", len(self.first_chunk))
 
         self.codec = av.CodecContext.create("h264", "r")
 
-        # =================================================
-        # THREAD DE CAPTURA
-        # =================================================
-
         self.running = True
-
         self.capture_thread = threading.Thread(
             target=self._capture_loop,
             name="capture",
             daemon=True,
         )
-
         self.capture_thread.start()
-
         logger.info("Thread de captura iniciada.")
-
-        # =================================================
-        # PRIMEIRO FRAME
-        # =================================================
-        #
-        # Sem esta checagem, túnel errado virava só
-        # "Stream encerrado" milissegundos depois, sem motivo.
-        #
 
         if not self._wait_first_frame(CAPTURE_START_TIMEOUT):
 
@@ -229,18 +153,7 @@ class ScreenCapture:
             )
 
     def _connect(self, timeout):
-        """
-        Conecta e só devolve o socket depois de receber o
-        primeiro pedaço de verdade.
-
-        O adb aceita a conexão TCP e SÓ DEPOIS tenta abrir o
-        socket abstrato no device. Se o servidor ainda não
-        criou o socket, o resultado é 0 bytes — "conectou" não
-        prova nada. Medido: o servidor leva ~1.4 s entre subir
-        e começar a servir.
-
-        Devolve (socket, primeiro_pedaco) ou (None, None).
-        """
+        """Conecta e aguarda primeiro pedaço válido (0 bytes = socket não existe ainda)."""
 
         deadline = time.monotonic() + timeout
 
@@ -258,34 +171,13 @@ class ScreenCapture:
             candidato.settimeout(1.0)
 
             try:
-
                 candidato.connect(("127.0.0.1", self.PORT))
-
             except OSError:
-
-                # Nem conectou: adb ainda não está pronto.
                 self._fecha(candidato)
-
                 time.sleep(0.15)
-
                 continue
 
-            # -------------------------------------------------
-            # Conectou. Agora INSISTE no mesmo socket.
-            # -------------------------------------------------
-            #
-            # Distinção que importa:
-            #
-            #   0 bytes  -> o socket abstrato não existe ainda;
-            #               fecha e tenta de novo
-            #   timeout  -> o servidor ACEITOU e só não mandou
-            #               nada ainda; fechar aqui joga fora
-            #               uma conexão boa e derruba o
-            #               servidor, que aceita um cliente só
-            #
-            # Com o espelho do scrcpy rodando o device fica
-            # ocupado e o primeiro frame passa de 1 s.
-            #
+            # Distinção: 0 bytes = socket não existe; timeout = aguardando dados válidos
 
             morto = False
 
@@ -355,14 +247,8 @@ class ScreenCapture:
                 timeout=timeout,
             ) and self.latest_frame is not None
 
-    # =====================================================
-    # CAPTURE LOOP
-    # =====================================================
-
     def _capture_loop(self):
-
-        # O pedaço obtido na conexão é H.264 de verdade: se
-        # fosse descartado, faltaria o início do stream.
+        # first_chunk é H.264 real, não descartável
         pendente = self.first_chunk
 
         self.first_chunk = None
@@ -419,9 +305,7 @@ class ScreenCapture:
             self.condition.notify_all()
 
     def _decode(self, data):
-        """
-        Devolve False quando o stream terminou de vez.
-        """
+        """Retorna False quando o stream terminou (EOF)."""
 
         try:
 
@@ -444,20 +328,7 @@ class ScreenCapture:
         return True
 
     def _publish(self, frame):
-
-        # =================================================
-        # TETO DE FPS
-        # =================================================
-        #
-        # ANTES da conversão, que é o trabalho caro: um
-        # YUV->BGR de 1080x2400 mexe 7.8 MB por frame. Cortar
-        # aqui é o que economiza de verdade — cortar depois só
-        # jogaria fora trabalho já feito.
-        #
-        # A DECODIFICAÇÃO não é pulada, e não pode ser: H.264 é
-        # inter-quadro, então um frame descartado ainda serve de
-        # referência para os próximos. O que se pula é converter,
-        # publicar e acordar o loop principal.
+        # Capping ANTES da conversão cara (YUV->BGR). Decodificação não é pulada (inter-frame)
         if self._min_interval:
 
             agora = time.monotonic()
@@ -478,11 +349,7 @@ class ScreenCapture:
         bgr = cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR_I420)
 
         with self.condition:
-
-            # Guarda SOMENTE o frame mais novo (na resolução nativa
-            # do device). A normalização para o espaço do detector
-            # é feita no VisionWorker para que o dataset continue
-            # recebendo a imagem original.
+            # Guarda só o frame mais novo (dataset recebe original, detector normaliza)
             self.latest_frame = bgr
             self.latest_frame_time = time.monotonic()
 
@@ -492,21 +359,8 @@ class ScreenCapture:
 
         self.rate.tick()
 
-    # =====================================================
-    # GET FRAME
-    # =====================================================
-
     def get_frame(self, since_version=None, timeout=1.0):
-        """
-        Devolve (frame, versão, timestamp).
-
-        Com since_version, BLOQUEIA até aparecer um frame
-        diferente desse (ou até o timeout). É o que substitui
-        o busy-wait do loop principal.
-
-        O array devolvido é compartilhado: quem for desenhar
-        em cima precisa copiar.
-        """
+        """Retorna (frame, versão, timestamp). Com since_version, bloqueia até frame novo. Array é compartilhado."""
 
         with self.condition:
 
@@ -531,30 +385,13 @@ class ScreenCapture:
             )
 
     def is_running(self):
-
         return self.running
 
     def get_fps(self):
-        """
-        Frames por segundo chegando do device.
-        """
-
         return self.rate.rate()
 
-    # =====================================================
-    # ADB
-    # =====================================================
-
     def _adb(self, *args):
-        """
-        Monta um comando adb já apontado para o device escolhido.
-
-        Sem o -s, com dois devices na lista (o mesmo celular por
-        USB e por wifi, por exemplo) o adb recusa TODA chamada
-        com "more than one device". O sintoma aparecia longe
-        daqui — o push falhava e o erro lido era "não conectou
-        no stream".
-        """
+        """Monta comando adb para device escolhido (sem -s, adb recusa com múltiplos devices)."""
 
         comando = [ADB_PATH]
 
@@ -563,10 +400,6 @@ class ScreenCapture:
             comando += ["-s", self.serial]
 
         return comando + list(args)
-
-    # =====================================================
-    # PUSH SERVER
-    # =====================================================
 
     def _push_server(self):
 
@@ -579,7 +412,7 @@ class ScreenCapture:
 
             if not os.path.exists(self.SERVER_PATH):
                 raise RuntimeError(
-                    f"scrcpy-server não encontrado em '{self.SERVER_PATH}'. Verifique SCRCPY_SERVER_PATH ou coloque o arquivo scrcpy-server*.jar em tools/scrcpy."
+                    f"scrcpy-server não encontrado em '{self.SERVER_PATH}'. Verifique SCRCPY_SERVER_PATH."
                 )
 
             result = subprocess.run(
@@ -599,10 +432,6 @@ class ScreenCapture:
                     + (result.stderr or "")
                 )
 
-    # =====================================================
-    # FORWARD
-    # =====================================================
-
     def _setup_forward(self):
 
         subprocess.run(
@@ -614,10 +443,6 @@ class ScreenCapture:
             check=True,
         )
 
-    # =====================================================
-    # SERVER
-    # =====================================================
-
     def _start_server(self):
 
         command = self._adb(
@@ -627,14 +452,9 @@ class ScreenCapture:
 
             "app_process",
             "/",
-
             "com.genymobile.scrcpy.Server",
-
             self.SERVER_VERSION,
-
-            # Obrigatório no scrcpy 4.1: define o nome do
-            # socket abstrato como "scrcpy_<scid>".
-            f"scid={self.scid:08x}",
+            f"scid={self.scid:08x}",  # Obrigatório: socket abstrato é scrcpy_<id>
 
             "tunnel_forward=true",
 
@@ -655,23 +475,12 @@ class ScreenCapture:
             stderr=subprocess.DEVNULL,
         )
 
-    # =====================================================
-    # STOP
-    # =====================================================
-
     def stop(self):
-
         logger.info("Encerrando captura...")
 
         with self.condition:
-
             self.running = False
-
             self.condition.notify_all()
-
-        # -------------------------------------------------
-        # Socket
-        # -------------------------------------------------
 
         if self.socket:
 
@@ -680,46 +489,21 @@ class ScreenCapture:
 
             except OSError:
                 pass
-
             self.socket = None
 
-        # -------------------------------------------------
-        # Thread
-        # -------------------------------------------------
-
         if self.capture_thread:
-
             self.capture_thread.join(timeout=2)
-
             self.capture_thread = None
-
-        # -------------------------------------------------
-        # Forward
-        # -------------------------------------------------
 
         self._cleanup_forward()
 
-        # -------------------------------------------------
-        # Server
-        # -------------------------------------------------
-
         if self.server_process:
-
             self.server_process.terminate()
-
             try:
-
                 self.server_process.wait(timeout=2)
-
             except subprocess.TimeoutExpired:
-
                 self.server_process.kill()
-
             self.server_process = None
-
-        # -------------------------------------------------
-        # Remove server
-        # -------------------------------------------------
 
         subprocess.run(
             self._adb(
@@ -732,10 +516,6 @@ class ScreenCapture:
         )
 
         logger.info("Captura encerrada.")
-
-    # =====================================================
-    # CLEANUP
-    # =====================================================
 
     def _cleanup_forward(self):
 

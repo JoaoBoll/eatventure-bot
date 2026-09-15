@@ -18,7 +18,9 @@
 - Não procure informações em todo o projeto quando a tarefa puder ser resolvida localmente.
 - Não procure ou use nenhuma imagem para nenhum fim, apenas use o path dela, mas sem processar nada referente a ela.
 - Não comente instruções a cada coisa que é criada, métodos/funções devem ser intuítivos (criarXcoisa, editarXcoisa, encontrarXcoisa)
+- Comentários e docstrings devem ser mínimos: só o "porquê" não-óbvio (bug evitado, trade-off, constraint externa). Sem narrativa histórica ("antes fazia X, agora faz Y"), sem headers decorativos de seção (`# ===`, `# ---`), sem restatar o que o código já deixa óbvio. Docstring de função: 1 linha; se não adiciona nada além do nome da função, remova.
 - Não teste nenhuma parte do sistema, isso será feito pelo desenvolvedor, apenas auxilie no desenvolvimento.
+- Foco em ler e editar código apenas. NÃO rode o projeto (servidor, scripts principais, bot) e NÃO execute comandos pesados (builds, treinos de IA, captura de tela, comandos adb/scrcpy) sem pedir autorização antes.
 
 ## Imagens e arquivos binários
 
@@ -111,12 +113,14 @@ Não execute comandos como:
 
 A menos que eu peça.
 
+NUNCA execute `git commit` ou `git push` sem eu pedir explicitamente antes, mesmo que a alteração pareça pronta.
+
+Ao commitar (só quando eu pedir), NUNCA se atrele como autor, co-autor ou contribuinte do projeto: não adicione linhas como `Co-Authored-By: Claude` ou similares na mensagem de commit, e não inclua atribuição a Claude/Anthropic em PRs.
+
 ## Testes
 
-Depois de alterar código:
-
-- Execute somente os testes relevantes.
-- Não execute a suíte inteira se não for necessário.
+- NÃO rode testes (nem um arquivo específico, nem a suíte) sem pedir autorização antes. Pergunte antes de executar.
+- Se eu autorizar, execute somente os testes relevantes à alteração, não a suíte inteira.
 - Se eu fornecer um comando específico de teste, prefira esse comando.
 - Não rode testes repetidamente sem motivo.
 

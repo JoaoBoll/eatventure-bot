@@ -1,26 +1,12 @@
 """
-Screenshot do device via adb.
+Screenshot do device via adb. tests/capture/ é descartável (fora do git);
+tests/images/ são fixtures versionados do teste de regressão. O
+template_selector grava só na primeira — antes gravava sempre em
+tests/images/screen.png, sobrescrevendo em silêncio o fixture de
+tests/test_detection.py.
 
-Duas pastas, de propósito:
-
-    tests/capture/   captura de trabalho, sobrescrita à
-                     vontade, fora do git
-    tests/images/    fixtures do teste de regressão,
-                     versionados
-
-O template_selector grava na PRIMEIRA. Ele antes gravava
-sempre em tests/images/screen.png — ou seja, cada template
-recortado sobrescrevia em silêncio o fixture em que o
-tests/test_detection.py se baseia, invalidando a linha de
-base sem ninguém notar.
-
-Uso:
-
-    python tests/android_screenshot.py
-        -> tests/capture/screen.png (descartável)
-
-    python tests/android_screenshot.py --fixture nome.png
-        -> tests/images/nome.png (entra na regressão)
+    python tests/android_screenshot.py                  -> tests/capture/screen.png
+    python tests/android_screenshot.py --fixture nome.png -> tests/images/nome.png
 """
 
 import argparse
@@ -35,10 +21,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from core import devices, log                     # noqa: E402
 from core.config import DEVICE_SERIAL, LOG_LEVEL  # noqa: E402
 
-# Fixtures do teste de regressão. Versionados.
 IMAGES_DIR = ROOT / "tests" / "images"
-
-# Capturas de trabalho. Descartáveis.
 CAPTURE_DIR = ROOT / "tests" / "capture"
 
 
@@ -46,11 +29,9 @@ class AndroidScreenshot:
 
     def __init__(self, output_dir=None, serial=None):
 
-        # Device escolhido. None = deixa o adb decidir, o que só
-        # funciona com UM device conectado.
+        # None = deixa o adb decidir, o que só funciona com UM device conectado.
         self.serial = serial
 
-        # Relativo ao arquivo, não ao diretório de trabalho.
         self.output_dir = (
             CAPTURE_DIR
             if output_dir is None
@@ -63,13 +44,7 @@ class AndroidScreenshot:
         )
 
     def _adb(self, *args):
-        """
-        Comando adb já apontado para o device escolhido.
-
-        Sem o -s, com dois devices na lista (o mesmo celular por
-        USB e por wifi, por exemplo) o adb recusa a captura com
-        "more than one device".
-        """
+        """Sem -s, com dois devices na lista, o adb recusa com "more than one device"."""
 
         comando = ["adb"]
 
@@ -111,10 +86,6 @@ class AndroidScreenshot:
 
         return output_path
 
-
-# =========================================================
-# Main
-# =========================================================
 
 def main():
 
