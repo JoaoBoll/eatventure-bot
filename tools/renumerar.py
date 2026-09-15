@@ -118,8 +118,14 @@ def main():
 
         return 1
 
+    # TEMPLATES_DIR/default/<categoria> e TEMPLATES_DIR/<resolucao>/<categoria> —
+    # duas camadas, não uma: o grupo (default ou resolução) não é categoria.
     pastas = sorted(
-        d for d in TEMPLATES_DIR.iterdir() if d.is_dir()
+        categoria
+        for grupo in TEMPLATES_DIR.iterdir()
+        if grupo.is_dir()
+        for categoria in grupo.iterdir()
+        if categoria.is_dir()
     )
 
     if args.categoria:

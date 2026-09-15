@@ -216,6 +216,11 @@ CATEGORY_THRESHOLDS = {
 
 CATEGORY_ROIS = {}
 
+# Ao detectar via template default (reescalado) num device fora da
+# referência, grava o recorte na resolução exata dele — as próximas
+# passadas usam esse override em vez de reescalar de novo.
+LEARN_RESOLUTION_TEMPLATES = True
+
 
 # ==== DETECTOR ====
 

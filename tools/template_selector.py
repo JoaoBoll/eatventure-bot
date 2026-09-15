@@ -31,6 +31,12 @@ from core.config import (                         # noqa: E402
 
 WINDOW_NAME = "Template Selector"
 TEMPLATES_DIR = ROOT / "src" / "vision" / "templates"
+DEFAULT_TEMPLATES_DIR = TEMPLATES_DIR / "default"
+
+# Captura fora da referência: fica aqui, crua, fora do runtime (o bot
+# aprende o override certo da resolução dele sozinho, jogando aqui um
+# recorte torto só pioraria o default para todo mundo).
+FALLBACK_TEMPLATES_DIR = TEMPLATES_DIR / "default_selector"
 
 
 class TemplateSelector:
@@ -393,18 +399,14 @@ class TemplateSelector:
 
             return
 
-        # o detector reescala templates por frame/referência em runtime; salvar
-        # já normalizado para a resolução de referência evita escala errada
-        crop = self._para_referencia(crop, width, height)
-
-        if crop is None:
-
-            print(
-                "Recorte pequeno demais para "
-                "normalizar."
-            )
-
-            return
+        # Fora da referência o recorte não é reescalado: o bot aprende o
+        # override certo daquela resolução em runtime, então um "default"
+        # torto só pioraria a detecção para todo mundo.
+        group_dir = (
+            DEFAULT_TEMPLATES_DIR
+            if Detector._is_reference(width, height)
+            else FALLBACK_TEMPLATES_DIR
+        )
 
         category = self._select_category()
 
@@ -412,7 +414,7 @@ class TemplateSelector:
             return
 
         category_dir = (
-            TEMPLATES_DIR
+            group_dir
             / category
         )
 
@@ -421,42 +423,50 @@ class TemplateSelector:
             exist_ok=True
         )
 
-        # compacta a sequência antes de salvar: len(existing)+1 sobrescreveria
-        # em silêncio se houvesse lacuna (ex.: food com 17 arquivos indo até item_020)
-        renomeados = renumerar(
-            category_dir,
-            aplicar=True
-        )
+        if category == "food":
 
-        if renomeados:
-
-            print()
-            print(
-                f"[NUMERAÇÃO] {len(renomeados)} arquivo(s) "
-                f"compactado(s) em {category}:"
+            output_path = self._food_output_path(
+                category_dir
             )
 
-            for origem, destino in renomeados:
+        else:
 
+            # compacta a sequência antes de salvar: len(existing)+1 sobrescreveria
+            # em silêncio se houvesse lacuna (ex.: food com 17 arquivos indo até item_020)
+            renomeados = renumerar(
+                category_dir,
+                aplicar=True
+            )
+
+            if renomeados:
+
+                print()
                 print(
-                    f"  {origem.name} -> {destino.name}"
+                    f"[NUMERAÇÃO] {len(renomeados)} arquivo(s) "
+                    f"compactado(s) em {category}:"
                 )
 
-        number = proximo_numero(category_dir)
+                for origem, destino in renomeados:
 
-        output_path = (
-            category_dir
-            / f"item_{number:03d}.png"
-        )
+                    print(
+                        f"  {origem.name} -> {destino.name}"
+                    )
 
-        while output_path.exists():
-
-            number += 1
+            number = proximo_numero(category_dir)
 
             output_path = (
                 category_dir
                 / f"item_{number:03d}.png"
             )
+
+            while output_path.exists():
+
+                number += 1
+
+                output_path = (
+                    category_dir
+                    / f"item_{number:03d}.png"
+                )
 
         success = cv2.imwrite(
             str(output_path),
@@ -475,6 +485,9 @@ class TemplateSelector:
         print("Template salvo!")
         print("===================================")
         print(
+            f"Pasta:     {group_dir.name}"
+        )
+        print(
             f"Categoria: {category}"
         )
         print(
@@ -488,50 +501,54 @@ class TemplateSelector:
             f"Recorte:   "
             f"{x2 - x1} x {y2 - y1} (device)"
         )
-        print(
-            f"Salvo:     "
-            f"{crop.shape[1]} x {crop.shape[0]} "
-            f"(referência)"
-        )
         print("===================================")
         print()
 
-    def _para_referencia(self, crop, frame_width, frame_height):
+    def _food_output_path(self, category_dir):
+        """Food é nomeado pelo item, não por número — vários bots/estágios usam o mesmo template e o nome no arquivo ajuda a identificar qual é qual."""
 
-        if Detector._is_reference(frame_width, frame_height):
-            return crop
+        invalid_chars = '<>:"/\\|?*'
 
-        base = Detector._frame_scale(frame_width, frame_height)
+        while True:
 
-        if not base or abs(base - 1.0) <= 0.005:
-            return crop
+            name = input(
+                "Nome do food: "
+            ).strip()
 
-        altura, largura = crop.shape[:2]
+            if not name:
 
-        nova_largura = int(round(largura / base))
-        nova_altura = int(round(altura / base))
+                print(
+                    "Nome inválido."
+                )
 
-        if nova_largura < 4 or nova_altura < 4:
-            return None
+                continue
 
-        interpolacao = (
-            cv2.INTER_AREA
-            if base > 1.0
-            else cv2.INTER_LINEAR
-        )
+            if any(
+                char in name
+                for char in invalid_chars
+            ):
 
-        print(
-            f"[ESCALA] Device {frame_width}x{frame_height} "
-            f"(fator {base:.3f}) -> template normalizado de "
-            f"{largura}x{altura} para "
-            f"{nova_largura}x{nova_altura}"
-        )
+                print(
+                    "Nome contém caracteres inválidos."
+                )
 
-        return cv2.resize(
-            crop,
-            (nova_largura, nova_altura),
-            interpolation=interpolacao,
-        )
+                continue
+
+            break
+
+        name = name.replace(" ", "_")
+
+        output_path = category_dir / f"{name}.png"
+
+        numero = 2
+
+        while output_path.exists():
+
+            output_path = category_dir / f"{name}_{numero}.png"
+
+            numero += 1
+
+        return output_path
 
     def _reset_selection(self):
 
@@ -548,13 +565,14 @@ class TemplateSelector:
             self._prepare_display()
 
     def _get_categories(self):
+        """Categorias do default: toda pasta de resolução nasce com este mesmo conjunto como padrão."""
 
-        if not TEMPLATES_DIR.exists():
+        if not DEFAULT_TEMPLATES_DIR.exists():
             return []
 
         categories = [
             path.name
-            for path in TEMPLATES_DIR.iterdir()
+            for path in DEFAULT_TEMPLATES_DIR.iterdir()
             if path.is_dir()
         ]
 

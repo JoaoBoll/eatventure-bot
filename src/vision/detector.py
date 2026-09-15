@@ -18,6 +18,7 @@ from core.config import (
     COLOR_THRESHOLD,
     DETECTOR_DEBUG_INTERVAL,
     DETECTOR_DEBUG_MISSES,
+    LEARN_RESOLUTION_TEMPLATES,
     MAX_DETECTION_AGE,
     MAX_MATCHES_PER_TEMPLATE,
     NMS_IOU,
@@ -45,6 +46,16 @@ logger = log.get("detector")
 
 # Relativo ao arquivo, não ao cwd — não depende de rodar da raiz do repo.
 TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
+
+# Templates comuns a todo device. Pastas irmãs desta, nomeadas "LARGURAxALTURA"
+# (na resolução real do frame, sem normalizar orientação), guardam extras/
+# overrides só daquele device — mescladas com estas em runtime.
+DEFAULT_TEMPLATES_DIR = TEMPLATES_DIR / "default"
+
+# Capturas manuais fora da resolução de referência (tools/template_selector.py):
+# ficam aqui, cruas, sem entrar no default nem em nenhuma resolução — não são
+# carregadas em runtime.
+FALLBACK_SELECTOR_DIR = TEMPLATES_DIR / "default_selector"
 
 # Abaixo deste tamanho a redução destrói o template.
 MIN_COARSE_SIDE = 12
@@ -96,10 +107,14 @@ class Detector:
         # ROI em pixels por (categoria, largura, altura).
         self._roi_cache = {}
 
-        # Cache de escalas bem-sucedidas: (frame_width, frame_height, template_name) -> escala.
-        # Quando um template é encontrado numa escala, memoriza — próxima busca testa
-        # aquela escala primeiro, evitando reescalagens desnecessárias.
-        self._successful_scales = {}
+        # Templates extras/override por device: (frame_width, frame_height) ->
+        # {categoria: [template]}. Carregados 1x do disco, sem reescala (já
+        # nasceram na resolução do device).
+        self._resolution_templates = {}
+
+        # (largura, altura, categoria, nome) já aprendidos ou já existentes
+        # em disco nesta resolução — evita checar o disco a cada frame.
+        self._learned = set()
 
         # Templates olhados na última passada.
         self.last_searched = 0
@@ -147,7 +162,8 @@ class Detector:
         self.templates.clear()
         self.by_category.clear()
         self._scaled_cache.clear()
-        self._successful_scales.clear()
+        self._resolution_templates.clear()
+        self._learned.clear()
 
         if not TEMPLATES_DIR.exists():
 
@@ -158,7 +174,97 @@ class Detector:
 
             return
 
-        for category_dir in sorted(TEMPLATES_DIR.iterdir()):
+        self.templates = self._load_category_dirs(
+            DEFAULT_TEMPLATES_DIR,
+            origin="default",
+        )
+
+        for template in self.templates:
+
+            self.by_category.setdefault(
+                template["category"],
+                [],
+            ).append(template)
+
+        for resolution_dir in sorted(TEMPLATES_DIR.iterdir()):
+
+            if (
+                not resolution_dir.is_dir()
+                or resolution_dir in (
+                    DEFAULT_TEMPLATES_DIR,
+                    FALLBACK_SELECTOR_DIR,
+                )
+            ):
+                continue
+
+            resolucao = self._parse_resolution_dir_name(
+                resolution_dir.name
+            )
+
+            if resolucao is None:
+
+                logger.warning(
+                    "Pasta de templates ignorada (nome não é "
+                    "'LARGURAxALTURA'): %s",
+                    resolution_dir.name,
+                )
+
+                continue
+
+            extras = self._load_category_dirs(
+                resolution_dir,
+                origin="override",
+            )
+
+            por_categoria = {}
+
+            for template in extras:
+
+                por_categoria.setdefault(
+                    template["category"],
+                    [],
+                ).append(template)
+
+            if por_categoria:
+                self._resolution_templates[resolucao] = por_categoria
+
+        logger.info(
+            "Templates: %d default em %d categorias %s | "
+            "overrides para %d resolução(ões) %s",
+            len(self.templates),
+            len(self.by_category),
+            {
+                categoria: len(lista)
+                for categoria, lista in sorted(
+                    self.by_category.items()
+                )
+            },
+            len(self._resolution_templates),
+            sorted(
+                f"{w}x{h}"
+                for w, h in self._resolution_templates
+            ),
+        )
+
+        # Sem template não há detecção — mesmo sintoma de detector quebrado (bot parado).
+        if not self.templates:
+
+            logger.error(
+                "NENHUM template carregado de %s — o detector "
+                "não tem com o que comparar, e o bot não vai "
+                "agir.",
+                DEFAULT_TEMPLATES_DIR,
+            )
+
+    def _load_category_dirs(self, base_dir, origin):
+        """[template] de todas as subpastas de categoria dentro de base_dir."""
+
+        templates = []
+
+        if not base_dir.exists():
+            return templates
+
+        for category_dir in sorted(base_dir.iterdir()):
 
             if not category_dir.is_dir():
                 continue
@@ -172,42 +278,26 @@ class Detector:
                 template = self._load_template(
                     category,
                     image_path,
+                    origin,
                 )
 
                 if template is not None:
+                    templates.append(template)
 
-                    self.templates.append(template)
+        return templates
 
-        for template in self.templates:
+    @staticmethod
+    def _parse_resolution_dir_name(name):
+        """"LARGURAxALTURA" -> (largura, altura), ou None se o nome não seguir o padrão."""
 
-            self.by_category.setdefault(
-                template["category"],
-                [],
-            ).append(template)
+        largura, _, altura = name.partition("x")
 
-        logger.info(
-            "Templates: %d em %d categorias %s",
-            len(self.templates),
-            len(self.by_category),
-            {
-                categoria: len(lista)
-                for categoria, lista in sorted(
-                    self.by_category.items()
-                )
-            },
-        )
+        if not largura.isdigit() or not altura.isdigit():
+            return None
 
-        # Sem template não há detecção — mesmo sintoma de detector quebrado (bot parado).
-        if not self.templates:
+        return int(largura), int(altura)
 
-            logger.error(
-                "NENHUM template carregado de %s — o detector "
-                "não tem com o que comparar, e o bot não vai "
-                "agir.",
-                TEMPLATES_DIR,
-            )
-
-    def _load_template(self, category, image_path):
+    def _load_template(self, category, image_path, origin):
 
         raw = cv2.imread(
             str(image_path),
@@ -249,9 +339,10 @@ class Detector:
             image_path.name,
             image,
             mask,
+            origin,
         )
 
-    def _build_template(self, category, name, image, mask):
+    def _build_template(self, category, name, image, mask, origin):
         """Separado do carregamento: mesmo caminho para o PNG original e para a versão reescalada, para as duas não divergirem."""
 
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -298,6 +389,7 @@ class Detector:
         return {
             "category": category,
             "name": name,
+            "origin": origin,
 
             "image": image,
             "gray": gray,
@@ -425,25 +517,16 @@ class Detector:
                 interpolation=cv2.INTER_NEAREST,
             )
 
-        reescalado = self._build_template(
+        return self._build_template(
             template["category"],
             template["name"],
             image,
             mask,
+            template["origin"],
         )
 
-        # Marca a escala usada para este resize — usado para memorizar escalas bem-sucedidas.
-        reescalado["scale"] = scale
-
-        return reescalado
-
     def _templates_for(self, frame_width, frame_height):
-        """Templates deste frame por categoria, cacheados por resolução (resize 1x por tamanho de frame visto, não por passada)."""
-
-        # Já na referência: nada a reescalar, e nenhuma escala
-        # extra a procurar. É o caminho de custo zero.
-        if self._is_reference(frame_width, frame_height):
-            return self.by_category
+        """Templates deste frame por categoria: default (reescalado, ou direto se já na referência) + overrides da pasta do device, cacheados por resolução."""
 
         chave = (frame_width, frame_height)
 
@@ -452,11 +535,61 @@ class Detector:
         if cacheados is not None:
             return cacheados
 
+        extras = self._resolution_templates.get(chave)
+
+        # Já na referência e sem override: nada a reescalar nem mesclar. É o caminho de custo zero.
+        if self._is_reference(frame_width, frame_height) and not extras:
+
+            cacheados = self.by_category
+            self._scaled_cache[chave] = cacheados
+
+            return cacheados
+
+        default_categorias = (
+            self.by_category
+            if self._is_reference(frame_width, frame_height)
+            else self._rescale_defaults(frame_width, frame_height)
+        )
+
+        if not extras:
+
+            cacheados = default_categorias
+
+        else:
+
+            # Item com override não busca mais pelo default reescalado
+            # dele — o override É o template deste device para aquele
+            # item específico, os outros nomes da categoria continuam
+            # no default normalmente.
+            cacheados = {}
+
+            for categoria, lista in default_categorias.items():
+
+                aprendidos = {
+                    t["name"] for t in extras.get(categoria, [])
+                }
+
+                cacheados[categoria] = [
+                    t for t in lista if t["name"] not in aprendidos
+                ]
+
+            # Overrides do device tentados primeiro: já nasceram na
+            # resolução certa, sem depender de acerto de escala.
+            for categoria, lista in extras.items():
+
+                cacheados[categoria] = (
+                    lista + cacheados.get(categoria, [])
+                )
+
+        self._scaled_cache[chave] = cacheados
+
+        return cacheados
+
+    def _rescale_defaults(self, frame_width, frame_height):
+        """Templates default reescalados para este frame, em várias escalas ao redor da base (nenhuma aposta única: 8% de erro de escala já derruba a confiança abaixo de 0.95, e a supressão por sobreposição + ordenação por confiança escolhe o melhor entre elas)."""
+
         base = self._frame_scale(frame_width, frame_height)
 
-        # Várias escalas, não uma aposta: 8% de erro de escala já derruba a
-        # confiança abaixo de 0.95, então o template entra em vários tamanhos
-        # e a supressão por sobreposição + ordenação por confiança escolhe o melhor.
         escalas_base = sorted(
             {
                 round(base * passo, 4)
@@ -465,7 +598,7 @@ class Detector:
             }
         ) or [round(base, 4)]
 
-        cacheados = {}
+        categorias = {}
 
         for template in self.templates:
 
@@ -479,28 +612,115 @@ class Detector:
                 if variante is None:
                     continue
 
-                cacheados.setdefault(
+                categorias.setdefault(
                     variante["category"],
                     [],
                 ).append(variante)
 
-        self._scaled_cache[chave] = cacheados
-
         logger.info(
             "Frame %dx%d fora da referência %dx%d — %d "
-            "templates em %d escala(s) %s (base %.3f por '%s').",
+            "templates default em %d escala(s) %s (base %.3f por '%s').",
             frame_width,
             frame_height,
             REFERENCE_WIDTH,
             REFERENCE_HEIGHT,
-            sum(len(lista) for lista in cacheados.values()),
-            len(escalas),
-            escalas,
+            sum(len(lista) for lista in categorias.values()),
+            len(escalas_base),
+            escalas_base,
             base,
             TEMPLATE_SCALE_BASIS,
         )
 
-        return cacheados
+        return categorias
+
+    def _learn_resolution_template(
+        self,
+        frame_color,
+        template,
+        x,
+        y,
+        frame_width,
+        frame_height,
+    ):
+        """Achou via template default fora da referência: grava o recorte cru desta
+        resolução, para as próximas passadas usarem override em vez de reescalar."""
+
+        if (
+            template["origin"] != "default"
+            or self._is_reference(frame_width, frame_height)
+        ):
+            return
+
+        chave = (frame_width, frame_height)
+        categoria = template["category"]
+        nome = template["name"]
+
+        aprendido_id = (chave, categoria, nome)
+
+        if aprendido_id in self._learned:
+            return
+
+        destino_dir = (
+            TEMPLATES_DIR
+            / f"{frame_width}x{frame_height}"
+            / categoria
+        )
+
+        destino = destino_dir / nome
+
+        if destino.exists():
+
+            self._learned.add(aprendido_id)
+
+            return
+
+        crop = frame_color[
+            y:y + template["height"],
+            x:x + template["width"],
+        ]
+
+        if crop.shape[:2] != (
+            template["height"],
+            template["width"],
+        ):
+            return
+
+        destino_dir.mkdir(parents=True, exist_ok=True)
+
+        if not cv2.imwrite(str(destino), crop):
+
+            logger.warning(
+                "Não conseguiu gravar template aprendido: %s",
+                destino,
+            )
+
+            return
+
+        self._learned.add(aprendido_id)
+
+        novo = self._build_template(
+            categoria,
+            nome,
+            crop.copy(),
+            None,
+            "override",
+        )
+
+        self._resolution_templates.setdefault(
+            chave, {}
+        ).setdefault(categoria, []).append(novo)
+
+        # Cache mesclado desta resolução ficou velho: sem isto, a
+        # passada seguinte continuaria reescalando o default.
+        self._scaled_cache.pop(chave, None)
+
+        logger.info(
+            "Template aprendido para %dx%d: %s/%s",
+            frame_width,
+            frame_height,
+            categoria,
+            nome,
+        )
 
     def _color_similarity(
         self,
@@ -817,6 +1037,17 @@ class Detector:
                             "height": template["height"],
                         }
                     )
+
+                    if LEARN_RESOLUTION_TEMPLATES:
+
+                        self._learn_resolution_template(
+                            frame_color,
+                            template,
+                            x,
+                            y,
+                            frame_width,
+                            frame_height,
+                        )
 
             if achou and parar_na_prioridade:
                 break
