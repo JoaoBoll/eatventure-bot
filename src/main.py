@@ -319,6 +319,7 @@ def run_loop(
                 # template, threshold ou estado errado.
                 "state": state_machine.state,
                 "searched": detector.last_searched,
+                "searchable": detector.last_total,
                 "detections": len(detections),
 
                 # Cobertura da pasta da resolução sobre o default.

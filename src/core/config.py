@@ -202,11 +202,46 @@ TEMPLATE_SCALE_STEPS = (0.85, 0.92, 1.0, 1.08, 1.15)
 SHAPE_THRESHOLD = 0.80
 COLOR_THRESHOLD = 0.80
 
+# Quantas escalas de TEMPLATE_SCALE_STEPS a passada percorre por template.
+# Uma vez que um template bateu numa escala, as outras são desperdício: a
+# escala do device não muda sozinha. A passada usa só a escala vencedora e
+# volta a abrir o pente quando a categoria fica ESCALA_LIBERA_SECAS passadas
+# sem achar nada (zoom da câmera do jogo mudou, ou nunca foi calibrada).
+ESCALA_UNICA_POR_TEMPLATE = True
+ESCALA_LIBERA_SECAS = 6
+
+# Teto de detecções aprovadas por categoria numa passada: a StateMachine age
+# em UMA detecção por frame (_apply_rules), então varrer os 86 templates de
+# food depois de já ter 6 pratos na mão não muda nenhuma decisão. Só corta
+# DEPOIS de achar — passada parcial nunca vira "tela vazia", que dispararia
+# _explore_screen. Sobra margem para _is_ignored_food descartar alguns.
+# Categoria fora do dict é varrida inteira.
+CATEGORY_MATCH_BUDGET = {
+    "food": 6,
+    "new_point": 3,
+}
+
+# Quantos templates da categoria a passada olha antes de parar, e SÓ se já
+# achou alguma coisa. Sem isto, o teto acima não protege o caso em que os
+# primeiros templates da fila não batem: a passada percorreria os 86 de food
+# mesmo tendo 6 pratos na tela. Nada encontrado = varredura completa, sempre
+# (é o caso em que cortar cegaria o bot).
+CATEGORY_SCAN_QUOTA = {
+    "food": 20,
+    "new_point": 12,
+}
+
+# Por quanto tempo um template que bateu continua no início da fila da sua
+# categoria. Um restaurante tem ~6-10 pratos possíveis entre os 86 templates
+# de food; procurar os que apareceram há pouco antes dos outros faz o teto
+# acima ser atingido nos primeiros templates, não no quinquagésimo.
+QUENTES_TTL = 30.0
+
 CATEGORY_THRESHOLDS = {
     "build": 0.95,
     "new_point": 0.97,
     "food": 0.95,
-    "upgrade": 0.98,
+    "upgrade": 0.95,
     "up_food": 0.90,
     "up_upgrade": 0.90,
     "close": 0.85,
@@ -231,7 +266,12 @@ TEMPLATES_WATCH_INTERVAL = 2.0
 DETECTOR_DEBUG_MISSES = True
 DETECTOR_DEBUG_INTERVAL = 3.0
 
-COARSE_SCALE = 0.40
+# Teto da escala do estágio grosso. _coarse_scale_for devolve
+# min(COARSE_SCALE, grade), então isto só vincula para template PEQUENO: com
+# teto 0.40, todo template de lado menor < 30px caía fora do estágio grosso
+# (12/0.40) e ia para matchTemplate em resolução cheia na TELA INTEIRA, o
+# caminho mais caro do detector. Template grande não muda (lado 100px -> 0.15).
+COARSE_SCALE = 0.70
 COARSE_SCALE_MIN = 0.10
 COARSE_SCALE_STEP = 0.05
 COARSE_MARGIN = 0.18

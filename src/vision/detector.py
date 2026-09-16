@@ -15,18 +15,23 @@ import numpy as np
 from core import log
 from core.metrics import formata_duracao
 from core.config import (
+    CATEGORY_MATCH_BUDGET,
     CATEGORY_ROIS,
+    CATEGORY_SCAN_QUOTA,
     CATEGORY_THRESHOLDS,
     COARSE_MARGIN,
     COARSE_SCALE,
     COLOR_THRESHOLD,
     DETECTOR_DEBUG_INTERVAL,
     DETECTOR_DEBUG_MISSES,
+    ESCALA_LIBERA_SECAS,
+    ESCALA_UNICA_POR_TEMPLATE,
     LEARN_RESOLUTION_TEMPLATES,
     MAX_DETECTION_AGE,
     TEMPLATES_WATCH_INTERVAL,
     MAX_MATCHES_PER_TEMPLATE,
     NMS_IOU,
+    QUENTES_TTL,
     REFINE_SLACK,
     SHAPE_THRESHOLD,
     TEMPLATE_SCALE_BASIS,
@@ -123,6 +128,40 @@ class Detector:
         # ROI em pixels por (categoria, largura, altura).
         self._roi_cache = {}
 
+        # (resolução, categoria) -> {nome_base: (escala que bateu, quando)}.
+        # Enquanto há escala conhecida, a passada olha só ela — as outras
+        # variantes do pente existem no cache mas não são procuradas.
+        self._escala_ativa = {}
+
+        # (resolução, categoria) -> passadas dadas, para rotacionar a sonda
+        # de escala dos templates que ainda não bateram nenhuma vez.
+        self._sonda = {}
+
+        # (resolução, categoria) -> passadas completas seguidas sem detecção.
+        # Ao chegar em ESCALA_LIBERA_SECAS as escalas travadas da categoria
+        # são soltas, e a sonda volta a procurar a vencedora.
+        self._secas = {}
+
+        # (resolução, categoria) -> {nome_base: instante do último match}.
+        # Ordena a fila da categoria: quem bateu há pouco vem primeiro.
+        self._quentes = {}
+
+        # Ordem já montada por (resolução, categoria) e a versão do conjunto
+        # quente que a gerou — reordenar 86 templates a cada frame custaria
+        # mais que os matches que a ordem economiza.
+        self._ordem_cache = {}
+        self._quentes_versao = 0
+
+        # Categorias cuja última passada foi cortada pelo teto de detecções:
+        # _report_misses não pode chamar de "não detectado" o que não foi
+        # olhado, e o HUD não pode dizer que procurou tudo.
+        self.last_total = 0
+        self._parciais = set()
+
+        # Sobe a cada override commitado ou reload: quem calculou um merge
+        # fora do lock confere antes de publicá-lo.
+        self._overrides_versao = 0
+
         # Templates extras/override por device: (frame_width, frame_height) ->
         # {categoria: [template]}. Carregados 1x do disco, sem reescala (já
         # nasceram na resolução do device).
@@ -205,16 +244,31 @@ class Detector:
         with self._learn_lock:
             self._load_templates_locked()
 
-    def _load_templates_locked(self):
+    def _load_templates_locked(self, manter_defaults=False):
         """Corpo de load_templates() protegido pelo lock — a thread de
-        aprendizado também muda _resolution_templates/_fidelity."""
+        aprendizado também muda _resolution_templates/_fidelity.
 
-        self.templates.clear()
-        self.by_category.clear()
+        manter_defaults: os .png da pasta default não mudaram, só os de
+        alguma resolução. Reler os defaults e reescalar todas as variantes
+        neste caso custaria ~1400 cv2.resize dentro do detect(), na thread
+        de visão, a cada template aprendido."""
+
         self._scaled_cache.clear()
-        self._defaults_cache.clear()
+        self._ordem_cache.clear()
         self._resolution_templates.clear()
         self._fidelity.clear()
+
+        self._overrides_versao += 1
+
+        if not manter_defaults:
+
+            self.templates.clear()
+            self.by_category.clear()
+            self._defaults_cache.clear()
+            self._escala_ativa.clear()
+            self._sonda.clear()
+            self._secas.clear()
+            self._quentes.clear()
 
         if not TEMPLATES_DIR.exists():
 
@@ -223,22 +277,27 @@ class Detector:
                 TEMPLATES_DIR,
             )
 
-            self._templates_signature_cache = (0.0, 0)
+            self._templates_signature_cache = (
+                (0.0, 0),
+                (0.0, 0),
+            )
             self._templates_checked_at = time.monotonic()
 
             return
 
-        self.templates = self._load_category_dirs(
-            DEFAULT_TEMPLATES_DIR,
-            origin="default",
-        )
+        if not manter_defaults:
 
-        for template in self.templates:
+            self.templates = self._load_category_dirs(
+                DEFAULT_TEMPLATES_DIR,
+                origin="default",
+            )
 
-            self.by_category.setdefault(
-                template["category"],
-                [],
-            ).append(template)
+            for template in self.templates:
+
+                self.by_category.setdefault(
+                    template["category"],
+                    [],
+                ).append(template)
 
         for resolution_dir in sorted(TEMPLATES_DIR.iterdir()):
 
@@ -316,30 +375,10 @@ class Detector:
         self._templates_signature_cache = self._templates_signature()
         self._templates_checked_at = time.monotonic()
 
-    def _templates_signature(self):
-        """(mtime mais recente, total de .png) nas pastas realmente
-        carregadas — muda com qualquer template novo, editado ou removido,
-        sem precisar comparar conteúdo arquivo por arquivo."""
-
-        pastas = [DEFAULT_TEMPLATES_DIR]
-
-        if TEMPLATES_DIR.exists():
-
-            for pasta in sorted(TEMPLATES_DIR.iterdir()):
-
-                if not pasta.is_dir():
-                    continue
-
-                if pasta in (
-                    DEFAULT_TEMPLATES_DIR,
-                    FALLBACK_SELECTOR_DIR,
-                ):
-                    continue
-
-                if self._parse_resolution_dir_name(pasta.name) is None:
-                    continue
-
-                pastas.append(pasta)
+    @staticmethod
+    def _assina_pastas(pastas):
+        """(mtime mais recente, total de .png) — muda com qualquer template
+        novo, editado ou removido, sem comparar conteúdo arquivo por arquivo."""
 
         ultima = 0.0
         total = 0
@@ -362,6 +401,64 @@ class Detector:
 
         return (round(ultima, 3), total)
 
+    def _pastas_resolucao(self):
+        """Pastas "LARGURAxALTURA" irmãs da default — os overrides por device."""
+
+        pastas = []
+
+        if not TEMPLATES_DIR.exists():
+            return pastas
+
+        for pasta in sorted(TEMPLATES_DIR.iterdir()):
+
+            if not pasta.is_dir():
+                continue
+
+            if pasta in (
+                DEFAULT_TEMPLATES_DIR,
+                FALLBACK_SELECTOR_DIR,
+            ):
+                continue
+
+            if self._parse_resolution_dir_name(pasta.name) is None:
+                continue
+
+            pastas.append(pasta)
+
+        return pastas
+
+    def _templates_signature(self):
+        """Assinatura em duas metades: (defaults, overrides). Separadas porque
+        só a primeira obriga a reescalar tudo — e é a segunda que a própria
+        thread de aprendizado muda toda vez que grava um template."""
+
+        return (
+            self._assina_pastas([DEFAULT_TEMPLATES_DIR]),
+            self._assina_pastas(self._pastas_resolucao()),
+        )
+
+    def _reassina_overrides(self):
+        """Põe a metade de overrides da assinatura em dia com o disco. Chamada
+        pela thread de aprendizado depois de gravar: sem isto o watcher lê a
+        própria escrita como mudança externa e recarrega os templates a cada
+        item aprendido.
+
+        Recalcula do disco em vez de somar 1 ao total — o cv2.imwrite fica
+        fora do lock, então a thread de visão pode já ter absorvido esse
+        arquivo, e um incremento às cegas deixaria a contagem permanentemente
+        adiantada (nunca mais haveria reload). O rglob sai na thread de
+        aprendizado, não na de visão."""
+
+        if self._templates_signature_cache is None:
+            return
+
+        defaults, _ = self._templates_signature_cache
+
+        self._templates_signature_cache = (
+            defaults,
+            self._assina_pastas(self._pastas_resolucao()),
+        )
+
     def _maybe_reload_templates(self):
         """Recarrega do disco quando a pasta de templates muda — permite
         adicionar/editar templates (ex.: tools/template_selector.py) sem
@@ -380,16 +477,34 @@ class Detector:
 
         self._templates_checked_at = agora
 
-        assinatura = self._templates_signature()
+        # Comparar e recarregar sob o MESMO lock: entre calcular a assinatura
+        # e agir sobre ela, a thread de aprendizado pode gravar e absorver a
+        # própria escrita, e o reload seguinte desfaria esse registro.
+        # _load_templates_locked (não load_templates) porque o lock não é
+        # reentrante.
+        with self._learn_lock:
 
-        if assinatura == self._templates_signature_cache:
-            return
+            assinatura = self._templates_signature()
 
-        logger.info(
-            "Pasta de templates mudou — recarregando."
-        )
+            if assinatura == self._templates_signature_cache:
+                return
 
-        self.load_templates()
+            manter_defaults = (
+                self._templates_signature_cache is not None
+                and assinatura[0]
+                == self._templates_signature_cache[0]
+            )
+
+            logger.info(
+                "Pasta de templates mudou (%s) — recarregando.",
+                "overrides"
+                if manter_defaults
+                else "defaults",
+            )
+
+            self._load_templates_locked(
+                manter_defaults=manter_defaults,
+            )
 
     def _load_category_dirs(self, base_dir, origin):
         """[template] de todas as subpastas de categoria dentro de base_dir."""
@@ -807,6 +922,8 @@ class Detector:
         # (reescala, merge) é caro demais pra fazer com o lock preso.
         with self._learn_lock:
 
+            versao = self._overrides_versao
+
             extras_brutos = self._resolution_templates.get(chave)
 
             extras = (
@@ -824,20 +941,23 @@ class Detector:
             else {}
         )
 
-        if not extras:
+        # Sempre uma cópia, nunca o próprio dict de _defaults_cache: os dois
+        # caches são invalidados em momentos diferentes (override aprendido
+        # descarta só este), e compartilhar as listas fazia um pop() aqui
+        # mutilar o cache de defaults.
+        cacheados = {
+            categoria: list(lista)
+            for categoria, lista in default_categorias.items()
+        }
 
-            cacheados = default_categorias
-
-        else:
+        if extras:
 
             # Override não substitui o default na busca — só entra na
-            # frente. Se ele não bater neste frame, o default do mesmo
-            # nome ainda está na lista e pode salvar a detecção.
-            cacheados = {
-                categoria: list(lista)
-                for categoria, lista in default_categorias.items()
-            }
-
+            # frente. Se ele não bater neste frame, o default do mesmo nome
+            # ainda está na lista e pode salvar a detecção. Tirar as
+            # variantes de escala daqui tiraria justamente a que está
+            # vencendo neste device, e a sonda de escala já faz o pente
+            # inteiro custar 1 match por passada — não há o que economizar.
             for categoria, lista in extras.items():
 
                 cacheados[categoria] = (
@@ -845,7 +965,12 @@ class Detector:
                 )
 
         with self._learn_lock:
-            self._scaled_cache[chave] = cacheados
+
+            # Override commitado enquanto este merge era calculado: o pop
+            # dele não achou nada para invalidar, e publicar agora deixaria
+            # o cache sem o override, sem nada pendente para corrigi-lo.
+            if versao == self._overrides_versao:
+                self._scaled_cache[chave] = cacheados
 
         return cacheados
 
@@ -885,11 +1010,17 @@ class Detector:
             }
         ) or [round(base, 4)]
 
+        base_arredondada = round(base, 4)
+
+        total_escalas = len(escalas_base)
+
         categorias = {}
 
         for template in self.templates:
 
-            for escala in escalas_base:
+            nome_base = self._base_name(template["name"])
+
+            for indice, escala in enumerate(escalas_base):
 
                 variante = self._rescale_template(
                     template,
@@ -898,6 +1029,22 @@ class Detector:
 
                 if variante is None:
                     continue
+
+                # _rescale_template devolve o PRÓPRIO template quando a
+                # escala é ~1.0: anotar nele contaminaria self.templates.
+                if variante is template:
+                    variante = dict(template)
+
+                variante["nome_base"] = nome_base
+                variante["escala"] = escala
+                variante["escala_base"] = escala == base_arredondada
+
+                # Posição no pente: enquanto a escala deste template for
+                # desconhecida, cada passada sonda UMA posição (rotativa),
+                # então o custo é 1 match por template por passada em vez
+                # de 5, e a escala certa aparece em no máximo 5 passadas.
+                variante["indice_escala"] = indice
+                variante["total_escalas"] = total_escalas
 
                 categorias.setdefault(
                     variante["category"],
@@ -1055,7 +1202,14 @@ class Detector:
             # passada seguinte continuaria usando a versão antiga.
             self._scaled_cache.pop(chave, None)
 
+            # A fila ordenada aponta para os templates do cache antigo.
+            self._ordem_cache.clear()
+
+            self._overrides_versao += 1
+
             self._save_fidelity(chave)
+
+            self._reassina_overrides()
 
         logger.info(
             "Override %dx%d %s/%s: fidelidade %s -> %.4f",
@@ -1201,6 +1355,209 @@ class Detector:
 
         return (x1, y1, x2, y2)
 
+    def _na_escala_da_vez(self, template, escalas_ativas, agora):
+        """Esta variante entra na passada?
+
+        Override entra sempre (nasceu na resolução do device, não tem pente).
+        Escala já promovida: só a variante dela. Caso contrário, só as variantes
+        ainda não vistas — 1 match por passada em vez dos 5 do pente, com o pente
+        inteiro visto em no máximo 5 passadas."""
+
+        nome_base = template.get("nome_base")
+
+        if nome_base is None or not ESCALA_UNICA_POR_TEMPLATE:
+            return True
+
+        entrada = escalas_ativas.get(nome_base)
+
+        if entrada is None:
+            return True
+
+        _, _, quando, vistos = entrada
+
+        if agora - quando > QUENTES_TTL:
+
+            # Parou de bater há tempo demais para ainda ser a escala
+            # certa (zoom mudou): volta a sondar em vez de ficar cego.
+            del escalas_ativas[nome_base]
+            return True
+
+        total = template.get("total_escalas") or 1
+        completo = (1 << total) - 1
+
+        indice = template.get("indice_escala", 0)
+
+        if vistos == completo:
+            # Promovida: só a escala vencedora
+            return vistos >> indice & 1
+
+        # Provisória: só escalas não-vistas
+        return not (vistos >> indice & 1)
+
+    @staticmethod
+    def _anota_escala(
+        escalas_ativas,
+        template,
+        confidence,
+        agora,
+    ):
+        """Registra a escala que bateu. Marca o bit de vistos e compara
+        confiança. Promove quando todas as escalas foram vistas."""
+
+        nome_base = template["nome_base"]
+        indice = template.get("indice_escala", 0)
+        total = template.get("total_escalas") or 1
+        completo = (1 << total) - 1
+
+        anterior = escalas_ativas.get(nome_base)
+
+        if anterior is None:
+
+            escalas_ativas[nome_base] = (
+                template["escala"],
+                confidence,
+                agora,
+                1 << indice,
+            )
+
+            return
+
+        escala, melhor, _, vistos = anterior
+
+        vistos |= 1 << indice
+
+        if vistos < completo and confidence > melhor:
+
+            escala = template["escala"]
+            melhor = confidence
+
+        escalas_ativas[nome_base] = (
+            escala,
+            melhor,
+            agora,
+            vistos,
+        )
+
+    def _em_sonda(self, categoria):
+        """Categoria sem nenhuma escala promovida — o pico visto no
+        diagnóstico é de uma escala das cinco, não o melhor possível."""
+
+        if self._last_frame_size is None:
+            return False
+
+        ativas = self._escala_ativa.get(
+            (self._last_frame_size, categoria),
+            {},
+        )
+
+        if not ativas:
+            return True
+
+        total = 5
+
+        for _, _, _, vistos in ativas.values():
+            if vistos == (1 << total) - 1:
+                return False
+
+        return True
+
+    def _marca_quente(self, chave_categoria, nome, agora):
+        """Quem bateu vai para o início da fila da categoria."""
+
+        quentes = self._quentes.setdefault(chave_categoria, {})
+
+        if nome not in quentes:
+            self._quentes_versao += 1
+
+        quentes[nome] = agora
+
+    def _particao_quente(self, chave_categoria, lista, teto, agora):
+        """(quentes, frios) da categoria. O prefixo quente é limitado a
+        teto-2 nomes: sem essa folga, alguns falsos-positivos estáveis nas
+        primeiras posições consumiriam o teto todo frame e a cauda nunca
+        seria procurada."""
+
+        cacheada = self._ordem_cache.get(chave_categoria)
+
+        # cacheada[1] is lista: um reload/override troca a lista da
+        # categoria, e a thread de visão regravaria a partição antiga por
+        # cima do clear da thread de aprendizado.
+        if (
+            cacheada is not None
+            and cacheada[0] == self._quentes_versao
+            and cacheada[1] is lista
+            and agora - cacheada[2] <= QUENTES_TTL
+        ):
+            return cacheada[3], cacheada[4]
+
+        quentes = self._quentes.get(chave_categoria) or {}
+
+        recentes = sorted(
+            (
+                nome
+                for nome, quando in quentes.items()
+                if agora - quando <= QUENTES_TTL
+            ),
+            key=lambda nome: quentes[nome],
+            reverse=True,
+        )[: max(1, teto - 2)]
+
+        frescos = set(recentes)
+
+        na_frente = []
+        frios = []
+
+        for template in lista:
+
+            nome = (
+                template.get("nome_base")
+                or template["name"]
+            )
+
+            if nome in frescos:
+                na_frente.append(template)
+
+            else:
+                frios.append(template)
+
+        self._ordem_cache[chave_categoria] = (
+            self._quentes_versao,
+            lista,
+            agora,
+            na_frente,
+            frios,
+        )
+
+        return na_frente, frios
+
+    def _fila_categoria(self, chave_categoria, lista, sonda, agora):
+        """Fila da categoria: quem bateu há pouco na frente, e a cauda fria
+        girada a cada passada. Sem o giro, o corte por cota deixaria o fim da
+        cauda sem nunca ser procurado."""
+
+        teto = CATEGORY_MATCH_BUDGET.get(chave_categoria[1], 0)
+
+        if not teto:
+            return lista
+
+        na_frente, frios = self._particao_quente(
+            chave_categoria,
+            lista,
+            teto,
+            agora,
+        )
+
+        if not frios:
+            return na_frente
+
+        giro = (sonda * teto) % len(frios)
+
+        return (
+            na_frente
+            + frios[giro:]
+            + frios[:giro]
+        )
+
     def detect(self, frame, categories=None):
         """Detecções aprovadas, ordenadas por confiança (maior primeiro). `categories` filtra a busca (permite a StateMachine procurar 2 templates em vez de 43)."""
 
@@ -1234,7 +1591,9 @@ class Detector:
 
         frame_height, frame_width = frame_gray.shape[:2]
 
-        self._last_frame_size = (frame_width, frame_height)
+        chave = (frame_width, frame_height)
+
+        self._last_frame_size = chave
 
         # Frames reduzidos sob demanda (cada template tem sua escala): no
         # estado UPGRADE, com 4 templates, sai 1 resize e não 7.
@@ -1292,9 +1651,20 @@ class Detector:
 
             parar_na_prioridade = False
 
+        # Sem filtro de categoria, quem chamou quer a tela inteira
+        # (cobertura do main_layouts, overlay de diagnóstico): nem teto de
+        # detecções nem sonda de escala — as duas existem para poupar
+        # trabalho que não viraria ação, e aqui não há ação nenhuma.
+        exaustiva = categories is None
+
         # Quantos templates a passada de fato olhou: é o
         # número que explica um HUD vazio ("procurou 0").
         self.last_searched = 0
+        self.last_total = 0
+
+        self._parciais = set()
+
+        agora = time.monotonic()
 
         detections = []
 
@@ -1319,9 +1689,54 @@ class Detector:
             # categoria, para o diagnóstico.
             self._debug_category = category
 
-            achou = False
+            chave_categoria = (chave, category)
 
-            for template in por_categoria[category]:
+            escalas_ativas = self._escala_ativa.setdefault(
+                chave_categoria,
+                {},
+            )
+
+            sonda = self._sonda.get(chave_categoria, 0)
+
+            # A StateMachine age em UMA detecção por frame: varrer os 86
+            # templates de food depois de já ter o teto de pratos na mão não
+            # muda decisão nenhuma. Corta só DEPOIS de achar, então passada
+            # parcial nunca é confundida com tela vazia (que dispararia o
+            # swipe de exploração). 0 = categoria varrida inteira.
+            teto = (
+                0
+                if exaustiva
+                else CATEGORY_MATCH_BUDGET.get(category, 0)
+            )
+
+            cota = (
+                0
+                if exaustiva
+                else CATEGORY_SCAN_QUOTA.get(category, 0)
+            )
+
+            fila = (
+                por_categoria[category]
+                if exaustiva
+                else self._fila_categoria(
+                    chave_categoria,
+                    por_categoria[category],
+                    sonda,
+                    agora,
+                )
+            )
+
+            self.last_total += len(fila)
+
+            # Itens distintos, não candidatos: MAX_MATCHES_PER_TEMPLATE
+            # permite 12 candidatos de um único template, e o teto existe
+            # para a StateMachine ter alternativas de verdade quando
+            # descarta uma detecção (_is_ignored_food).
+            achados = set()
+
+            olhados = 0
+
+            for template in fila:
 
                 if (
                     template["width"] > frame_width
@@ -1329,7 +1744,16 @@ class Detector:
                 ):
                     continue
 
+                if not exaustiva and not self._na_escala_da_vez(
+                    template,
+                    escalas_ativas,
+                    agora,
+                ):
+                    continue
+
                 self.last_searched += 1
+
+                olhados += 1
 
                 candidates = self._search(
                     frame_gray,
@@ -1364,7 +1788,26 @@ class Detector:
                     ):
                         continue
 
-                    achou = True
+                    nome_base = template.get("nome_base")
+
+                    achados.add(
+                        nome_base or template["name"]
+                    )
+
+                    if nome_base is not None:
+
+                        self._anota_escala(
+                            escalas_ativas,
+                            template,
+                            confidence,
+                            agora,
+                        )
+
+                    self._marca_quente(
+                        chave_categoria,
+                        nome_base or template["name"],
+                        agora,
+                    )
 
                     detections.append(
                         {
@@ -1401,6 +1844,50 @@ class Detector:
                             confidence,
                         )
 
+                # Os dois cortes só valem DEPOIS de achar: passada parcial
+                # com detecção não pode ser confundida com tela vazia, que em
+                # NORMAL dispara o swipe de exploração. Nada encontrado =
+                # categoria varrida inteira.
+                if achados and (
+                    (teto and len(achados) >= teto)
+                    or (cota and olhados >= cota)
+                ):
+
+                    self._parciais.add(category)
+
+                    break
+
+            achou = len(achados)
+
+            if achou:
+
+                self._secas.pop(chave_categoria, None)
+
+            elif category not in self._parciais:
+
+                secas = self._secas.get(chave_categoria, 0) + 1
+
+                # Categoria sumiu por várias passadas seguidas: pode ser o
+                # zoom da câmera do jogo, que muda a escala de tudo. Remove
+                # apenas as escalas promovidas (vistos == completo), preservando
+                # as provisórias e o acúmulo de confiança.
+                if secas >= ESCALA_LIBERA_SECAS:
+
+                    for nome in list(escalas_ativas.keys()):
+
+                        _, _, _, vistos = escalas_ativas[nome]
+
+                        total = self.templates[0].get("total_escalas", 5) if self.templates else 5
+
+                        if vistos == (1 << total) - 1:
+                            del escalas_ativas[nome]
+
+                    secas = 0
+
+                self._secas[chave_categoria] = secas
+
+            self._sonda[chave_categoria] = sonda + 1
+
             if achou and parar_na_prioridade:
                 break
 
@@ -1410,7 +1897,10 @@ class Detector:
 
             # Só as categorias que a passada realmente olhou — com parada por
             # prioridade, listar as de baixo como "não detectado" seria falso.
-            self._report_misses(set(procuradas), detections)
+            self._report_misses(
+                set(procuradas) - self._parciais,
+                detections,
+            )
 
         detections = self._suppress(detections)
 
@@ -1565,8 +2055,11 @@ class Detector:
                 cv2.TM_CCOEFF_NORMED,
             )
 
+        # copy=False: sem isto cada match aloca outra cópia do mapa de
+        # resposta, que no caminho sem estágio grosso tem o tamanho da tela.
         result = np.nan_to_num(
             result,
+            copy=False,
             nan=0.0,
             posinf=0.0,
             neginf=0.0,
@@ -1685,6 +2178,12 @@ class Detector:
                     f" C:{cor:.3f}"
                     f"/{self.color_threshold:.2f}"
                 )
+
+            # Sem escala promovida, o pico acima é de UMA escala das cinco:
+            # ler "0.412" como "o template não parece com a tela" seria
+            # errado, pode ser só a escala que ainda não foi sondada.
+            if self._em_sonda(categoria):
+                texto += " ~sonda"
 
             partes.append(texto)
 
@@ -2040,7 +2539,17 @@ class Detector:
             procurados = stats.get("searched")
 
             if procurados is not None:
-                label += f"  ({procurados} templates)"
+
+                # "12/430" em vez de "12": com sonda de escala e teto por
+                # categoria a passada olha de propósito uma fração da lista,
+                # e só "12" pareceria detector quebrado.
+                na_lista = stats.get("searchable")
+
+                label += (
+                    f"  ({procurados} templates)"
+                    if not na_lista
+                    else f"  ({procurados}/{na_lista} templates)"
+                )
 
             self._hud_text(
                 output,
