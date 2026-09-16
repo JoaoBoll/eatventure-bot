@@ -13,6 +13,7 @@ import cv2
 import numpy as np
 
 from core import log
+from dataset import layout
 from core.config import (
     DATASET_ACTIONS,
     DATASET_DIR,
@@ -85,8 +86,9 @@ class DatasetRecorder:
 
         self.enabled = enabled
 
-        self.images_dir = self.root / "images"
-        self.index_path = self.root / "samples.jsonl"
+        # Destino é por resolução e decidido por amostra: o device pode
+        # trocar de resolução no meio da sessão (outro aparelho, rotação).
+        self.data_dir = self.root / layout.DATA_DIRNAME
 
         # Fila limitada e descartável: o bot nunca espera o disco.
         self.queue = queue.Queue(maxsize=DATASET_QUEUE_SIZE)
@@ -124,7 +126,7 @@ class DatasetRecorder:
         if self.running or not self.enabled:
             return
 
-        self.images_dir.mkdir(parents=True, exist_ok=True)
+        self.data_dir.mkdir(parents=True, exist_ok=True)
 
         self.running = True
 
@@ -484,7 +486,15 @@ class DatasetRecorder:
 
         dia = sample.created.strftime("%Y-%m-%d")
 
-        pasta = self.images_dir / dia
+        altura_frame, largura_frame = sample.frame.shape[:2]
+
+        shard = layout.shard_root(
+            self.root,
+            largura_frame,
+            altura_frame,
+        )
+
+        pasta = layout.images_dir(shard) / dia
 
         pasta.mkdir(parents=True, exist_ok=True)
 
@@ -510,9 +520,12 @@ class DatasetRecorder:
 
             return
 
-        registro = self._record(sample, caminho, chave)
+        registro = self._record(sample, caminho, chave, shard)
 
-        with self.index_path.open("a", encoding="utf-8") as arquivo:
+        with layout.index_path(shard).open(
+            "a",
+            encoding="utf-8",
+        ) as arquivo:
 
             arquivo.write(
                 json.dumps(registro, ensure_ascii=False) + "\n"
@@ -541,7 +554,7 @@ class DatasetRecorder:
                     error,
                 )
 
-    def _record(self, sample, caminho, phash):
+    def _record(self, sample, caminho, phash, shard):
 
         altura, largura = sample.frame.shape[:2]
 
@@ -552,10 +565,11 @@ class DatasetRecorder:
             "session": self.session,
             "created_at": sample.created.isoformat(),
 
-            # Relativo à raiz do dataset: mover a pasta não
-            # invalida o índice.
+            # Relativo à raiz DA RESOLUÇÃO: a pasta daquela resolução
+            # inteira pode ser movida, copiada ou apagada sem invalidar
+            # o índice dela nem o das outras.
             "image": str(
-                caminho.relative_to(self.root).as_posix()
+                caminho.relative_to(shard).as_posix()
             ),
 
             "image_sha256": self._sha256(caminho),

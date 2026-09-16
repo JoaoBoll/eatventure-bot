@@ -14,11 +14,10 @@ sys.path.insert(0, str(ROOT / "src"))
 
 # Sem output_dir, grava em tests/capture/ — nunca em
 # tests/images/, que são os fixtures da regressão.
-from android_screenshot import AndroidScreenshot  # noqa: E402
 from renumerar import proximo_numero, renumerar   # noqa: E402
 import selector_layout as layout                  # noqa: E402
+from capture.screen import ScreenCapture          # noqa: E402
 from core import devices, log                     # noqa: E402
-from vision.detector import Detector               # noqa: E402
 from core.config import (                         # noqa: E402
     DEVICE_SERIAL,
     LOG_LEVEL,
@@ -35,16 +34,20 @@ WINDOW_NAME = "Template Selector"
 TEMPLATES_DIR = ROOT / "src" / "vision" / "templates"
 DEFAULT_TEMPLATES_DIR = TEMPLATES_DIR / "default"
 
-# Captura fora da referência: fica aqui, crua, fora do runtime (o bot
-# aprende o override certo da resolução dele sozinho, jogando aqui um
-# recorte torto só pioraria o default para todo mundo).
-FALLBACK_TEMPLATES_DIR = TEMPLATES_DIR / "default_selector"
+# Recorte manual vai SEMPRE para default/, em qualquer resolução: a pasta
+# da resolução é escrita só pelo bot. Por isso o nome carrega a resolução
+# em que o recorte foi tirado — é a procedência, não o destino.
+def _prefixo_resolucao(width, height):
+    return f"{width}x{height}_"
 
 
 class TemplateSelector:
 
     def __init__(self, serial=None):
-        self.screenshot = AndroidScreenshot(serial=serial)
+        # Mesma fonte que o bot usa em runtime: recortar de screencap dava
+        # template lossless que perde ~0.13 de confiança contra o frame
+        # H.264 que o detector de fato compara.
+        self.capture = ScreenCapture(serial=serial)
         self.image = None  # imagem original
         self.display = None  # visualização reduzida
         self.scale = 1.0
@@ -64,20 +67,18 @@ class TemplateSelector:
         print()
         print("[SCREEN] Capturando nova tela...")
 
-        path = self.screenshot.capture(
-            "screen.png"
-        )
+        if not self.capture.is_running():
+            self.capture.start()
 
-        self.image = cv2.imread(
-            str(path)
-        )
+        frame, _, _ = self.capture.get_frame()
 
-        if self.image is None:
+        if frame is None:
 
             raise RuntimeError(
-                "Não foi possível carregar "
-                "o screenshot."
+                "Não veio frame do stream."
             )
+
+        self.image = frame.copy()
 
         self._reset_selection()
 
@@ -351,6 +352,8 @@ class TemplateSelector:
 
         self._tk_root.destroy()
 
+        self.capture.stop()
+
     def _valid_selection(self):
 
         if self.start_x is None:
@@ -408,14 +411,9 @@ class TemplateSelector:
 
             return
 
-        # Fora da referência o recorte não é reescalado: o bot aprende o
-        # override certo daquela resolução em runtime, então um "default"
-        # torto só pioraria a detecção para todo mundo.
-        group_dir = (
-            DEFAULT_TEMPLATES_DIR
-            if Detector._is_reference(width, height)
-            else FALLBACK_TEMPLATES_DIR
-        )
+        # O recorte nunca é reescalado, e nunca vai para a pasta de uma
+        # resolução: quem escreve lá é só o bot. Quem reescala é o detector.
+        prefixo = _prefixo_resolucao(width, height)
 
         category = self._select_category(crop)
 
@@ -423,7 +421,7 @@ class TemplateSelector:
             return
 
         category_dir = (
-            group_dir
+            DEFAULT_TEMPLATES_DIR
             / category
         )
 
@@ -437,6 +435,7 @@ class TemplateSelector:
             output_path = self._food_output_path(
                 category_dir,
                 crop,
+                prefixo,
             )
 
             if output_path is None:
@@ -465,20 +464,25 @@ class TemplateSelector:
                         f"  {origem.name} -> {destino.name}"
                     )
 
+            # A numeração é única na categoria, não por prefixo: dois
+            # recortes de telas diferentes não podem virar item_001 os dois.
             number = proximo_numero(category_dir)
 
             output_path = (
                 category_dir
-                / f"item_{number:03d}.png"
+                / f"{prefixo}item_{number:03d}.png"
             )
 
-            while output_path.exists():
+            while any(
+                candidato.stem.endswith(f"item_{number:03d}")
+                for candidato in category_dir.glob("*.png")
+            ):
 
                 number += 1
 
                 output_path = (
                     category_dir
-                    / f"item_{number:03d}.png"
+                    / f"{prefixo}item_{number:03d}.png"
                 )
 
         success = cv2.imwrite(
@@ -498,7 +502,7 @@ class TemplateSelector:
         print("Template salvo!")
         print("===================================")
         print(
-            f"Pasta:     {group_dir.name}"
+            f"Pasta:     {DEFAULT_TEMPLATES_DIR.name}"
         )
         print(
             f"Categoria: {category}"
@@ -517,7 +521,7 @@ class TemplateSelector:
         print("===================================")
         print()
 
-    def _food_output_path(self, category_dir, crop):
+    def _food_output_path(self, category_dir, crop, prefixo):
         """Food é nomeado pelo item, não por número — vários bots/estágios usam o mesmo template e o nome no arquivo ajuda a identificar qual é qual."""
 
         name = self._ask_name("Nome do food", "Nome do item:", crop)
@@ -527,13 +531,16 @@ class TemplateSelector:
 
         name = name.replace(" ", "_")
 
-        output_path = category_dir / f"{name}.png"
+        output_path = category_dir / f"{prefixo}{name}.png"
 
         numero = 2
 
         while output_path.exists():
 
-            output_path = category_dir / f"{name}_{numero}.png"
+            output_path = (
+                category_dir
+                / f"{prefixo}{name}_{numero}.png"
+            )
 
             numero += 1
 

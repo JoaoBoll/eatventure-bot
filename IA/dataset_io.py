@@ -1,31 +1,37 @@
-"""Dataset I/O: leitura, split por grupo (phash/sessão) para evitar vazamento."""
+"""Dataset I/O: leitura de todas as raízes, split por grupo (phash/sessão) para evitar vazamento."""
 
 import json
+import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
+# Guarda próprio: dataset_io é importado por train_ai, bot_ai, simulate_bot e
+# pelos testes — não dá para depender de quem importa ter montado o path.
+for _candidato in (
+    str(Path(__file__).resolve().parent.parent / "src"),
+):
+    if _candidato not in sys.path:
+        sys.path.insert(0, _candidato)
 
-def read_index(dataset_root):
+# Convenção de pastas mora num lugar só, com quem escreve (src/dataset).
+from dataset.layout import (  # noqa: E402
+    DATA_DIRNAME,
+    INDEX_NAME,
+    shard_roots,
+)
+
+
+def _read_shard(raiz, rotulo):
+    """Registros de uma raiz; `image` é relativo a ELA, não à raiz do dataset."""
+
     # linha inválida é contada e ignorada, não derruba a leitura: o arquivo
     # é append de uma thread e pode truncar se a sessão foi morta no meio
-    raiz = Path(dataset_root)
-
-    caminho = raiz / "samples.jsonl"
-
-    if not caminho.exists():
-
-        raise FileNotFoundError(
-            f"Índice não encontrado: {caminho}\n"
-            "Ligue DATASET_SAVE em src/core/config.py e rode "
-            "o bot para gerar amostras."
-        )
-
     registros = []
 
     invalidas = 0
     sem_imagem = 0
 
-    with caminho.open("r", encoding="utf-8") as arquivo:
+    with (raiz / INDEX_NAME).open("r", encoding="utf-8") as arquivo:
 
         for linha in arquivo:
 
@@ -60,12 +66,54 @@ def read_index(dataset_root):
                 continue
 
             registro["_path"] = imagem
+            registro["_root"] = raiz
+            registro["_shard"] = rotulo
 
             registros.append(registro)
+
+    return registros, invalidas, sem_imagem
+
+
+def read_index(dataset_root):
+    """Registros de TODAS as raízes sob dataset_root, juntos."""
+
+    raiz = Path(dataset_root)
+
+    raizes = shard_roots(raiz)
+
+    if not raizes:
+
+        raise FileNotFoundError(
+            f"Nenhum índice ({INDEX_NAME}) encontrado em {raiz} "
+            f"nem em {raiz / DATA_DIRNAME}/<resolucao>/\n"
+            "Ligue DATASET_SAVE em src/core/config.py e rode "
+            "o bot para gerar amostras."
+        )
+
+    registros = []
+
+    invalidas = 0
+    sem_imagem = 0
+
+    por_raiz = {}
+
+    for pasta in raizes:
+
+        rotulo = "." if pasta == raiz else pasta.name
+
+        lidos, ruins, sem = _read_shard(pasta, rotulo)
+
+        registros.extend(lidos)
+
+        invalidas += ruins
+        sem_imagem += sem
+
+        por_raiz[rotulo] = len(lidos)
 
     return registros, {
         "invalidas": invalidas,
         "sem_imagem": sem_imagem,
+        "raizes": por_raiz,
     }
 
 

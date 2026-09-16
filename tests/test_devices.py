@@ -353,7 +353,7 @@ def test_selector_repassa_o_serial():
 
     selector = TemplateSelector(USB)
 
-    comando = selector.screenshot._adb("exec-out")
+    comando = selector.capture._adb("exec-out")
 
     assert _sem_o_binario(comando)[:2] == ["-s", USB], comando
 

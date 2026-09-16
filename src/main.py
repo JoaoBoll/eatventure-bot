@@ -62,6 +62,17 @@ def parse_args(argv=None):
         help="Ativa coleta de dados de IA para o dataset.",
     )
 
+    parser.add_argument(
+        "--layout-only",
+        action="store_true",
+        help=(
+            "detect() busca só os overrides da resolução, sem os "
+            "templates default (mais rápido, mas cego onde ainda não há "
+            "override). Rode src/main_layouts.py em paralelo para manter "
+            "os overrides atualizados."
+        ),
+    )
+
     return parser.parse_args(argv)
 
 
@@ -310,6 +321,9 @@ def run_loop(
                 "searched": detector.last_searched,
                 "detections": len(detections),
 
+                # Cobertura da pasta da resolução sobre o default.
+                "coverage": detector.template_coverage(),
+
                 # Overlay parado após uma ação é ESPERADO (worker
                 # pulando frames de antes do efeito assentar), não defeito.
                 "waiting_settle": vision.waiting_settle,
@@ -374,7 +388,7 @@ def main(argv=None):
 
     capture = ScreenCapture(device_id)
 
-    detector = Detector()
+    detector = Detector(use_defaults=not args.layout_only)
 
     vision = VisionWorker(detector)
 

@@ -10,8 +10,8 @@ sys.path.insert(0, str(ROOT / "tests"))
 sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(0, str(ROOT / "src"))
 
-from android_screenshot import AndroidScreenshot  # noqa: E402
 import selector_layout as layout                  # noqa: E402
+from capture.screen import ScreenCapture          # noqa: E402
 from core import devices, log                     # noqa: E402
 from vision.detector import Detector               # noqa: E402
 from core.config import (                         # noqa: E402
@@ -35,7 +35,9 @@ COR_OVERRIDE = (0, 255, 0)
 class DetectPreview:
 
     def __init__(self, serial=None):
-        self.screenshot = AndroidScreenshot(serial=serial)
+        # Mesma fonte que o bot: preview em cima de screencap mostrava uma
+        # confiança que o detector nunca vê no frame H.264 real.
+        self.capture = ScreenCapture(serial=serial)
         self.detector = Detector()
         self.image = None
         self.display = None
@@ -46,15 +48,18 @@ class DetectPreview:
         print()
         print("[SCREEN] Capturando nova tela...")
 
-        path = self.screenshot.capture("screen.png")
+        if not self.capture.is_running():
+            self.capture.start()
 
-        self.image = cv2.imread(str(path))
+        frame, _, _ = self.capture.get_frame()
 
-        if self.image is None:
+        if frame is None:
 
             raise RuntimeError(
-                "Não foi possível carregar o screenshot."
+                "Não veio frame do stream."
             )
+
+        self.image = frame.copy()
 
         height, width = self.image.shape[:2]
 
@@ -92,7 +97,11 @@ class DetectPreview:
         nome do item. Sem override na resolução atual, prefixa com 'default_'."""
 
         if detection["category"] == "food":
-            base = Path(detection["name"]).stem
+            # Nome-base: o prefixo de resolução do default é procedência,
+            # não faz parte do nome do item.
+            base = Detector._base_name(
+                detection["name"]
+            ).removesuffix(".png")
         else:
             base = detection["category"]
 
@@ -212,6 +221,8 @@ class DetectPreview:
                 self.capture_screen()
 
         cv2.destroyWindow(WINDOW_NAME)
+
+        self.capture.stop()
 
 
 def main(argv=None):

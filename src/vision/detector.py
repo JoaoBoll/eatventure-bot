@@ -5,6 +5,7 @@ from pathlib import Path
 import json
 import math
 import queue
+import re
 import threading
 import time
 
@@ -75,7 +76,13 @@ class Detector:
         category_rois=None,
         coarse_scale=COARSE_SCALE,
         coarse_margin=COARSE_MARGIN,
+        use_defaults=True,
     ):
+
+        # False: busca só os overrides da resolução (rápido, mas cego onde
+        # ainda não há override) — para o bot rodar enquanto outro processo
+        # (main_layouts.py) escaneia os defaults e atualiza os overrides.
+        self.use_defaults = use_defaults
 
         # Similaridade do formato/padrão
         self.threshold = threshold
@@ -105,8 +112,13 @@ class Detector:
 
         # Templates são reescalados para o frame (1x por resolução), não o
         # inverso: evita letterbox do frame inteiro e conversão de coordenada
-        # por passada. No caso comum (frame já na referência) nada disso roda.
+        # por passada.
         self._scaled_cache = {}
+
+        # Defaults reescalados, separados do merge acima: um template
+        # aprendido invalida o merge daquela resolução, e sem este cache
+        # isso obrigaria reescalar todos os defaults no frame seguinte.
+        self._defaults_cache = {}
 
         # ROI em pixels por (categoria, largura, altura).
         self._roi_cache = {}
@@ -145,6 +157,10 @@ class Detector:
 
         # Templates olhados na última passada.
         self.last_searched = 0
+
+        # Resolução do último frame analisado: o draw() recebe o frame já
+        # reduzido para a janela e não teria como saber a original.
+        self._last_frame_size = None
 
         # Só populado com DETECTOR_DEBUG_MISSES ligado (custo: 1 bool por
         # match). Distingue "não detectou" de "detectou e o threshold
@@ -196,6 +212,7 @@ class Detector:
         self.templates.clear()
         self.by_category.clear()
         self._scaled_cache.clear()
+        self._defaults_cache.clear()
         self._resolution_templates.clear()
         self._fidelity.clear()
 
@@ -415,6 +432,67 @@ class Detector:
 
         return int(largura), int(altura)
 
+    # "1080x2400_item_001.png" -> ("1080x2400", "item_001.png"). O default
+    # acumula recortes de devices diferentes, então o nome carrega a
+    # resolução de origem; o miolo é a identidade que liga default e override.
+    _SOURCE_PREFIX = re.compile(r"^(\d+x\d+)_(.+)$")
+
+    @classmethod
+    def _split_source(cls, name):
+
+        casou = cls._SOURCE_PREFIX.match(name)
+
+        if casou is None:
+            return None, name
+
+        return casou.group(1), casou.group(2)
+
+    @classmethod
+    def _base_name(cls, name):
+        """Nome sem o prefixo de resolução — mesma identidade em qualquer pasta."""
+
+        return cls._split_source(name)[1]
+
+    def template_coverage(self, frame_width=None, frame_height=None):
+        """(quantos defaults já têm override nesta resolução, total de defaults).
+        É o número que diz se a pasta da resolução está completa."""
+
+        if frame_width is None or frame_height is None:
+
+            if self._last_frame_size is None:
+                return None
+
+            frame_width, frame_height = self._last_frame_size
+
+        with self._learn_lock:
+
+            # Par (categoria, nome-base): categorias diferentes reusam o
+            # mesmo item_NNN.png, então só o nome colapsaria box/item_001
+            # com upgrade/item_001 e o total sairia menor que a verdade.
+            defaults = {
+                (
+                    template["category"],
+                    self._base_name(template["name"]),
+                )
+                for template in self.templates
+            }
+
+            extras = self._resolution_templates.get(
+                (frame_width, frame_height),
+                {},
+            )
+
+            overrides = {
+                (
+                    template["category"],
+                    self._base_name(template["name"]),
+                )
+                for lista in extras.values()
+                for template in lista
+            }
+
+        return len(defaults & overrides), len(defaults)
+
     @staticmethod
     def _fidelity_path(resolution_dir):
         return resolution_dir / "_fidelity.json"
@@ -449,7 +527,11 @@ class Detector:
             if not categoria or not nome:
                 continue
 
-            self._fidelity[(chave, categoria, nome)] = float(confianca)
+            # Nome-base na chave: é a identidade que liga default e
+            # override, e é o formato que os _fidelity.json já têm em disco.
+            self._fidelity[
+                (chave, categoria, self._base_name(nome))
+            ] = float(confianca)
 
     def _save_fidelity(self, chave):
         """Persiste a fidelidade dos overrides desta resolução — sem isto, um
@@ -571,6 +653,10 @@ class Detector:
             "category": category,
             "name": name,
             "origin": origin,
+
+            # Resolução em que este recorte foi capturado, quando o nome
+            # diz — é o que o overlay mostra como "layout".
+            "source": self._split_source(name)[0],
 
             "image": image,
             "gray": gray,
@@ -707,7 +793,7 @@ class Detector:
         )
 
     def _templates_for(self, frame_width, frame_height):
-        """Templates deste frame por categoria: default (reescalado, ou direto se já na referência) + overrides da pasta do device, cacheados por resolução."""
+        """Templates deste frame por categoria: default (reescalado para o frame, em várias escalas) + overrides da pasta do device, cacheados por resolução."""
 
         chave = (frame_width, frame_height)
 
@@ -732,18 +818,10 @@ class Detector:
                 }
             )
 
-            # Já na referência e sem override: nada a reescalar nem mesclar. É o caminho de custo zero.
-            if self._is_reference(frame_width, frame_height) and not extras:
-
-                cacheados = self.by_category
-                self._scaled_cache[chave] = cacheados
-
-                return cacheados
-
         default_categorias = (
-            self.by_category
-            if self._is_reference(frame_width, frame_height)
-            else self._rescale_defaults(frame_width, frame_height)
+            self._defaults_for(frame_width, frame_height)
+            if self.use_defaults
+            else {}
         )
 
         if not extras:
@@ -768,6 +846,29 @@ class Detector:
 
         with self._learn_lock:
             self._scaled_cache[chave] = cacheados
+
+        return cacheados
+
+    def _defaults_for(self, frame_width, frame_height):
+        """Defaults reescalados desta resolução, cacheados à parte do merge.
+
+        Também na referência: o zoom da câmera do jogo muda o tamanho do
+        ícone na tela (medido: 10% menor derruba 0.98 -> 0.80), então escala
+        1.0 fixa deixava justo a resolução de referência sem a tolerância
+        que todas as outras já tinham."""
+
+        chave = (frame_width, frame_height)
+
+        cacheados = self._defaults_cache.get(chave)
+
+        if cacheados is None:
+
+            cacheados = self._rescale_defaults(
+                frame_width,
+                frame_height,
+            )
+
+            self._defaults_cache[chave] = cacheados
 
         return cacheados
 
@@ -804,7 +905,7 @@ class Detector:
                 ).append(variante)
 
         logger.info(
-            "Frame %dx%d fora da referência %dx%d — %d "
+            "Frame %dx%d (referência %dx%d) — %d "
             "templates default em %d escala(s) %s (base %.3f por '%s').",
             frame_width,
             frame_height,
@@ -835,7 +936,12 @@ class Detector:
 
         chave = (frame_width, frame_height)
         categoria = template["category"]
-        nome = template["name"]
+
+        # Nome-base: o default carrega a resolução em que foi recortado e o
+        # override não, então só o miolo identifica os dois como o mesmo
+        # template — sem isso o mesmo item viraria duas entradas de
+        # fidelidade e o aprendizado regravaria a cada passada.
+        nome = self._base_name(template["name"])
 
         # Checagem sem lock: leitura de dict é uma operação atômica o
         # bastante pra esse fim — o pior caso é uma candidata a mais na
@@ -937,7 +1043,11 @@ class Detector:
                 chave, {}
             ).setdefault(categoria, [])
 
-            lista[:] = [t for t in lista if t["name"] != nome]
+            lista[:] = [
+                t
+                for t in lista
+                if self._base_name(t["name"]) != nome
+            ]
 
             lista.append(novo)
 
@@ -1124,6 +1234,8 @@ class Detector:
 
         frame_height, frame_width = frame_gray.shape[:2]
 
+        self._last_frame_size = (frame_width, frame_height)
+
         # Frames reduzidos sob demanda (cada template tem sua escala): no
         # estado UPGRADE, com 4 templates, sai 1 resize e não 7.
         coarse_frames = {}
@@ -1259,6 +1371,7 @@ class Detector:
                             "category": category,
                             "name": template["name"],
                             "origin": template["origin"],
+                            "source": template["source"],
 
                             "confidence": float(confidence),
                             "color_similarity": float(
@@ -1708,6 +1821,30 @@ class Detector:
                 cv2.LINE_AA,
             )
 
+    def _layout_label(self, detection):
+        """Primeira linha do rótulo: de qual layout veio o template que casou."""
+
+        origem = detection.get("origin")
+        source = detection.get("source")
+
+        # Detecção que não veio de template (IA/bot_ai.py usa o modelo e não
+        # preenche origin) não tem layout para mostrar.
+        if origem not in ("default", "override"):
+            return ""
+
+        if origem == "override":
+
+            # Específico da resolução: mostra a resolução no lugar do tipo.
+            # O template é sempre da resolução do frame; o nome só confirma.
+            if source is None and self._last_frame_size is not None:
+                source = "x".join(str(n) for n in self._last_frame_size)
+
+            return source or "resolucao"
+
+        # No default a resolução é procedência: diz em qual tela o recorte
+        # foi tirado, não em qual ele casou.
+        return f"default {source}" if source else "default"
+
     def draw(self, frame, detections, stats=None, scale=1.0):
         """stats: capture_fps, detect_fps, detect_ms, lag, battery, cycle — chaves ausentes não aparecem. `scale` reconverte detecções (em coords de frame cheio) para o frame reduzido que chega aqui, senão as caixas aparecem fora de lugar."""
 
@@ -1739,30 +1876,48 @@ class Detector:
             if not SHOW_DETECTION_LABELS:
                 continue
 
-            text = (
-                f"{category} "
-                f"F:{detection['confidence']:.2f} "
-                f"C:{detection.get('color_similarity', 0.0):.2f}"
-            )
+            # Em food o nome do item vale mais que a categoria (são 70+
+            # templates numa categoria só); nas outras a categoria já diz tudo.
+            if category == "food":
+                rotulo = self._base_name(detection["name"]).removesuffix(".png")
+            else:
+                rotulo = category
 
-            text_y = max(y - 10, 24)
-
-            # Contorno escuro + texto colorido.
-            for thickness, text_color in (
-                (6, (0, 0, 0)),
-                (2, color),
-            ):
-
-                cv2.putText(
-                    output,
-                    text,
-                    (x, text_y),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.7,
-                    text_color,
-                    thickness,
-                    cv2.LINE_AA,
+            linhas = [
+                linha
+                for linha in (
+                    self._layout_label(detection),
+                    (
+                        f"{rotulo} "
+                        f"F:{detection['confidence']:.2f} "
+                        f"C:{detection.get('color_similarity', 0.0):.2f}"
+                    ),
                 )
+                if linha
+            ]
+
+            # Empilha acima da caixa; o piso mantém as duas na tela sem
+            # uma escrever em cima da outra.
+            primeira_y = max(y - 32, 16)
+
+            for indice, linha in enumerate(linhas):
+
+                # Contorno escuro + texto colorido.
+                for thickness, text_color in (
+                    (5, (0, 0, 0)),
+                    (1, color),
+                ):
+
+                    cv2.putText(
+                        output,
+                        linha,
+                        (x, primeira_y + indice * 18),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.5,
+                        text_color,
+                        thickness,
+                        cv2.LINE_AA,
+                    )
 
         if not stats:
             return output
@@ -1892,6 +2047,26 @@ class Detector:
                 label,
                 y,
                 self.HUD_NEUTRAL,
+            )
+
+            y += 40
+
+        # Quantos defaults já têm equivalente na pasta desta resolução:
+        # é o que diz se a cobertura do device está completa (e, quando
+        # não está, que a busca ainda depende do default reescalado).
+        coverage = stats.get("coverage")
+
+        if coverage:
+
+            cobertos, total = coverage
+
+            self._hud_text(
+                output,
+                f"template {cobertos:4d}/{total} da resolucao",
+                y,
+                self.HUD_OK
+                if total and cobertos >= total
+                else self.HUD_NEUTRAL,
             )
 
             y += 40

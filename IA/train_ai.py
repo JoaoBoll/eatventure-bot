@@ -21,10 +21,11 @@ o que garante que a acurácia significa algo.
 """
 
 import argparse
+import hashlib
 import json
 import sys
 import time
-from collections import Counter
+from collections import Counter, defaultdict
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -88,31 +89,62 @@ def progress(feito, total, fase):
         sys.stdout.flush()
 
 
-def build_category_dataset(registros, negativos_por_frame, seed=42):
-    import cv2
-    import numpy as np
-    from dataset_io import box_labels, sample_negative_boxes
-    from features import FEATURE_SIZE, box_features
+def _seed_negativos(sample_id):
+    """Seed derivada do id da amostra, não da posição na lista: o negativo
+    daquela amostra sai igual em qualquer execução, que é o que permite
+    guardar ele no cache."""
 
-    # tamanhos reais, para negativos não serem distinguíveis do alvo por dimensão
-    tamanhos = [
+    digest = hashlib.sha1(str(sample_id).encode("utf-8")).hexdigest()
+
+    return int(digest[:8], 16)
+
+
+def box_sizes(registros):
+    """Tamanhos reais das caixas, para negativo não ser distinguível do alvo por dimensão."""
+
+    return [
         (c["width"], c["height"])
         for r in registros
         for c in (r.get("boxes") or [])
         if c.get("width") and c.get("height")
     ]
 
+
+def extract_category_rows(
+    registros,
+    negativos_por_frame,
+    tamanhos,
+    fase="extraindo features",
+):
+    """(X, y, donos, info) — donos[i] é o id da amostra que gerou a linha i.
+
+    É o único ponto que decodifica imagem; com o cache formado ele só roda
+    para amostra nova."""
+
+    import cv2
+    import numpy as np
+    from dataset_io import box_labels, sample_negative_boxes
+    from features import FEATURE_SIZE, box_features
+
     linhas = []
     rotulos = []
+    donos = []
+
     ilegiveis = 0
     vazios = 0
     total = len(registros)
 
     for indice, registro in enumerate(registros, start=1):
+
+        dono = str(
+            registro.get("id") or registro["_path"].stem
+        )
+
         imagem = cv2.imread(str(registro["_path"]))
+
         if imagem is None:
             ilegiveis += 1
-            progress(indice, total, "lendo imagens")
+            progress(indice, total, fase)
             continue
 
         for caixa, categoria, _agiu in box_labels(registro):
@@ -122,28 +154,165 @@ def build_category_dataset(registros, negativos_por_frame, seed=42):
                 continue
             linhas.append(vetor)
             rotulos.append(categoria)
+            donos.append(dono)
 
         if negativos_por_frame > 0:
-            for caixa in sample_negative_boxes(registro, negativos_por_frame, tamanhos, seed=seed + indice):
+            for caixa in sample_negative_boxes(
+                registro,
+                negativos_por_frame,
+                tamanhos,
+                seed=_seed_negativos(dono),
+            ):
                 vetor = box_features(imagem, caixa)
                 if vetor is None:
                     vazios += 1
                     continue
                 linhas.append(vetor)
                 rotulos.append("background")
+                donos.append(dono)
 
         if indice % 25 == 0 or indice == total:
-            progress(indice, total, "lendo imagens")
+            progress(indice, total, fase)
 
-    if not linhas:
+    X = (
+        np.asarray(linhas, dtype=np.float32)
+        if linhas
+        else np.empty((0, FEATURE_SIZE), dtype=np.float32)
+    )
+
+    assert X.shape[1] == FEATURE_SIZE, (X.shape[1], FEATURE_SIZE)
+
+    return (
+        X,
+        np.asarray(rotulos, dtype="<U32"),
+        np.asarray(donos, dtype="<U40"),
+        {"ilegiveis": ilegiveis, "recortes_vazios": vazios},
+    )
+
+
+def category_dataset(
+    registros,
+    negativos_por_frame,
+    cache_root,
+    usar_cache=True,
+):
+    """(X, y, donos, info) de todas as resoluções, usando o cache por resolução.
+
+    Cada resolução tem cache próprio: só as amostras que ainda não estão lá
+    são extraídas, e o resultado vira um chunk novo. O cache é um superconjunto
+    (guarda o que já foi visto), então no fim as linhas são filtradas para as
+    amostras realmente pedidas nesta execução."""
+
+    import numpy as np
+    from feature_cache import FeatureCache, signature
+    from features import FEATURE_SIZE, HSV_BINS, PATCH_MARGIN, PATCH_SIZE
+
+    tamanhos = box_sizes(registros)
+
+    assinatura = signature(
+        "category",
+        negativos_por_frame,
+        FEATURE_SIZE,
+        PATCH_SIZE,
+        PATCH_MARGIN,
+        HSV_BINS,
+    )
+
+    por_shard = defaultdict(list)
+
+    for registro in registros:
+        por_shard[registro.get("_shard") or "."].append(registro)
+
+    # Shards que só existem no cache (amostras brutas já apagadas do disco)
+    # continuam entrando no treino — é isso que faz o conhecimento acumular
+    # em vez de se perder quando o dataset bruto é limpo.
+    cache_kind_root = Path(cache_root) / "category"
+
+    if usar_cache and cache_kind_root.exists():
+        for pasta in cache_kind_root.iterdir():
+            if pasta.is_dir():
+                por_shard.setdefault(pasta.name, [])
+
+    partes = []
+
+    info = {
+        "ilegiveis": 0,
+        "recortes_vazios": 0,
+        "extraidas": 0,
+        "reaproveitadas": 0,
+        "invalidados": [],
+    }
+
+    for shard, lote in sorted(por_shard.items()):
+
+        if not usar_cache:
+
+            X, y, donos, extra = extract_category_rows(
+                lote,
+                negativos_por_frame,
+                tamanhos,
+                f"extraindo {shard}",
+            )
+
+            info["ilegiveis"] += extra["ilegiveis"]
+            info["recortes_vazios"] += extra["recortes_vazios"]
+            info["extraidas"] += len(lote)
+
+            partes.append((X, y, donos))
+
+            continue
+
+        cache = FeatureCache(cache_root, "category", shard, assinatura)
+
+        # Assinatura diferente = vetor guardado não é mais comparável.
+        if not cache.valido():
+            cache.descartar()
+            info["invalidados"].append(shard)
+
+        conhecidos = cache.ids()
+
+        novos = [
+            r
+            for r in lote
+            if str(r.get("id") or r["_path"].stem) not in conhecidos
+        ]
+
+        if novos:
+
+            X, y, donos, extra = extract_category_rows(
+                novos,
+                negativos_por_frame,
+                tamanhos,
+                f"extraindo {shard} ({len(novos)} novas)",
+            )
+
+            info["ilegiveis"] += extra["ilegiveis"]
+            info["recortes_vazios"] += extra["recortes_vazios"]
+            info["extraidas"] += len(novos)
+
+            cache.append(X, y, donos)
+
+        # Sem filtro por id: o cache é a memória acumulada, não só o que o
+        # dataset bruto ainda tem no disco agora.
+        X, y, donos = cache.load()
+
+        info["reaproveitadas"] += len(donos) - len(novos)
+
+        partes.append((X, y, donos))
+
+    if not partes:
+        raise SystemExit("Nenhuma amostra para montar o dataset.")
+
+    X = np.concatenate([p[0] for p in partes])
+    y = np.concatenate([p[1] for p in partes])
+    donos = np.concatenate([p[2] for p in partes])
+
+    if len(X) == 0:
         raise SystemExit(
             "Nenhum recorte válido. Imagens ilegíveis ou caixas com dimensão zero."
         )
 
-    X = np.asarray(linhas, dtype=np.float32)
-    assert X.shape[1] == FEATURE_SIZE, (X.shape[1], FEATURE_SIZE)
-
-    return X, np.asarray(rotulos), {"ilegiveis": ilegiveis, "recortes_vazios": vazios}
+    return X, y, donos, info
 
 
 def build_action_dataset(registros):
@@ -385,6 +554,7 @@ def train(args):
         ceiling_state_categories,
         filter_by_outcome,
         read_index,
+        split_groups,
         state_baseline,
     )
 
@@ -393,6 +563,14 @@ def train(args):
     print(f"dataset ......... {raiz}")
 
     registros, aviso = read_index(raiz)
+
+    print(
+        "resolucoes ...... "
+        + ", ".join(
+            f"{nome} ({quantas})"
+            for nome, quantas in sorted(aviso["raizes"].items())
+        )
+    )
 
     print(f"amostras ........ {len(registros)}")
 
@@ -441,27 +619,23 @@ def train(args):
 
     random.seed(args.seed)
 
-    amostras_teste_qtd = max(1, int(len(registros) * args.test_ratio))
-    indices_teste = sorted(
-        random.sample(range(len(registros)), amostras_teste_qtd)
+    # Split por GRUPO, não por amostra: 56% das amostras repetem phash, e
+    # dividir por índice deixa o mesmo quadro dos dois lados — a acurácia sai
+    # inflada por decorar, não por generalizar.
+    treino, teste, info = split_groups(
+        registros,
+        train_ratio=1.0 - args.test_ratio,
+        mode=args.split,
+        seed=args.seed,
     )
-    indices_teste_set = set(indices_teste)
 
-    treino = [r for i, r in enumerate(registros) if i not in indices_teste_set]
-    teste = [registros[i] for i in indices_teste]
+    info["test_ratio"] = args.test_ratio
 
     print()
-    print(f"treino 100%, teste {args.test_ratio*100:.0f}% aleatório:")
-    print(f"  {len(treino)} amostras de treino (100% do dataset)")
-    print(f"  {len(teste)} amostras de teste (selecionadas aleatoriamente)")
+    print(f"split por {args.split} (nenhum grupo nos dois lados):")
+    print(f"  {info['grupos_treino']} grupos / {len(treino)} amostras de treino")
+    print(f"  {info['grupos_teste']} grupos / {len(teste)} amostras de teste")
     print()
-
-    info = {
-        "mode": "random_test",
-        "amostras_treino": len(treino),
-        "amostras_teste": len(teste),
-        "test_ratio": args.test_ratio,
-    }
 
     if not teste:
 
@@ -473,21 +647,46 @@ def train(args):
 
     if args.kind == "category":
 
-        print(f"montando recortes de treino ({len(treino)} frames)")
+        import numpy as np
 
-        X_treino, y_treino, extra = build_category_dataset(
-            treino,
-            args.negatives,
-            seed=args.seed,
+        cache_root = (
+            Path(args.cache_root).expanduser().resolve()
+            if args.cache_root
+            else raiz / "cache"
         )
 
-        print(f"montando recortes de teste ({len(teste)} frames)")
-
-        X_teste, y_teste, _ = build_category_dataset(
-            teste,
-            args.negatives,
-            seed=args.seed + 9999,
+        print(
+            f"features ........ {'cache em ' + str(cache_root) if not args.no_cache else 'sem cache'}"
         )
+
+        X, y, donos, extra = category_dataset(
+            registros,
+            args.negatives,
+            cache_root,
+            usar_cache=not args.no_cache,
+        )
+
+        if extra["invalidados"]:
+
+            print(
+                f"  cache invalidado (features mudaram): "
+                f"{', '.join(extra['invalidados'])}"
+            )
+
+        print(
+            f"  {extra['extraidas']} amostra(s) extraída(s), "
+            f"{extra['reaproveitadas']} reaproveitada(s) do cache"
+        )
+
+        ids_teste = {
+            str(r.get("id") or r["_path"].stem)
+            for r in teste
+        }
+
+        mascara_teste = np.isin(donos, list(ids_teste))
+
+        X_treino, y_treino = X[~mascara_teste], y[~mascara_teste]
+        X_teste, y_teste = X[mascara_teste], y[mascara_teste]
 
     else:
 
@@ -693,8 +892,8 @@ def parse_args(argv=None):
 
     parser = argparse.ArgumentParser(
         description=(
-            "Treina o modelo de visão a partir de "
-            "dataset/samples.jsonl."
+            "Treina o modelo de visão juntando todas as "
+            "resoluções em dataset/data/."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -709,7 +908,29 @@ def parse_args(argv=None):
     parser.add_argument(
         "--dataset-root",
         default=str(DEFAULT_DATASET),
-        help="pasta do dataset (padrão: dataset/)",
+        help="pasta do dataset (padrão: dataset/) — todas as resoluções dentro dela",
+    )
+
+    parser.add_argument(
+        "--split",
+        choices=("phash", "session"),
+        default="phash",
+        help=(
+            "agrupamento do split: phash (quadros iguais no mesmo lado) "
+            "ou session (partida inteira num lado)"
+        ),
+    )
+
+    parser.add_argument(
+        "--cache-root",
+        default=None,
+        help="pasta do cache de features (padrão: <dataset>/cache)",
+    )
+
+    parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="extrai tudo do zero, sem ler nem gravar o cache",
     )
 
     parser.add_argument(

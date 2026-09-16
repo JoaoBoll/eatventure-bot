@@ -10,6 +10,7 @@ sobrescrever, e pula com aviso se o destino já existir.
 """
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
@@ -17,21 +18,45 @@ ROOT = Path(__file__).resolve().parent.parent
 
 TEMPLATES_DIR = ROOT / "src" / "vision" / "templates"
 
+# O nome pode trazer a resolução em que o recorte foi tirado
+# ("1080x2400_item_001.png"): em default/ isso é procedência, já que ele
+# recebe recorte de telas diferentes. O prefixo é preservado no rename — a
+# numeração é única dentro da categoria, independente de prefixo.
+NUMERADO = re.compile(r"^(?:(\d+x\d+)_)?item_(\d+)$")
+
+
+def _partes(path):
+    """(prefixo pronto para concatenar, número), ou None se não for item numerado."""
+
+    casou = NUMERADO.match(path.stem)
+
+    if casou is None:
+        return None
+
+    prefixo, numero = casou.groups()
+
+    return (
+        f"{prefixo}_" if prefixo else "",
+        int(numero),
+    )
+
 
 def numerados(category_dir):
-    """[(numero, caminho)] dos item_NNN.png, em ordem crescente."""
+    """[(numero, caminho)] dos item_NNN.png, com ou sem prefixo, em ordem crescente."""
 
     encontrados = []
 
-    for path in category_dir.glob("item_*.png"):
+    for path in category_dir.glob("*.png"):
 
-        sufixo = path.stem.split("_")[-1]
+        partes = _partes(path)
 
-        if sufixo.isdigit():
+        if partes is not None:
 
-            encontrados.append((int(sufixo), path))
+            encontrados.append((partes[1], path))
 
-    encontrados.sort(key=lambda item: item[0])
+    # Nome desempata: dois prefixos podem trazer o mesmo número, e sem
+    # critério estável a ordem viria da pasta e o plano mudaria a cada run.
+    encontrados.sort(key=lambda item: (item[0], item[1].name))
 
     return encontrados
 
@@ -41,15 +66,20 @@ def planejar(category_dir):
 
     mudancas = []
 
-    for indice, (numero, path) in enumerate(
+    for indice, (_, path) in enumerate(
         numerados(category_dir),
         start=1,
     ):
 
-        if numero == indice:
-            continue
+        prefixo = _partes(path)[0]
 
-        destino = category_dir / f"item_{indice:03d}.png"
+        destino = (
+            category_dir
+            / f"{prefixo}item_{indice:03d}.png"
+        )
+
+        if destino == path:
+            continue
 
         mudancas.append((path, destino))
 
