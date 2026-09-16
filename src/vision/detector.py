@@ -2,7 +2,10 @@
 
 from pathlib import Path
 
+import json
 import math
+import queue
+import threading
 import time
 
 import cv2
@@ -20,6 +23,7 @@ from core.config import (
     DETECTOR_DEBUG_MISSES,
     LEARN_RESOLUTION_TEMPLATES,
     MAX_DETECTION_AGE,
+    TEMPLATES_WATCH_INTERVAL,
     MAX_MATCHES_PER_TEMPLATE,
     NMS_IOU,
     REFINE_SLACK,
@@ -112,9 +116,32 @@ class Detector:
         # nasceram na resolução do device).
         self._resolution_templates = {}
 
-        # (largura, altura, categoria, nome) já aprendidos ou já existentes
-        # em disco nesta resolução — evita checar o disco a cada frame.
-        self._learned = set()
+        # (chave, categoria, nome) -> confiança do match que gerou a versão
+        # salva do override. Nova candidata só substitui se vier com
+        # confiança maior — o override melhora com o tempo, nunca piora.
+        self._fidelity = {}
+
+        # Protege _fidelity/_resolution_templates/_scaled_cache de corrida
+        # entre a thread de visão (detect) e a thread de aprendizado.
+        self._learn_lock = threading.Lock()
+
+        # Fila descartável: a thread de visão só copia o recorte (barato) e
+        # devolve — quem grava em disco é a thread de aprendizado, para
+        # não bloquear o detect() com I/O.
+        self._learn_queue = queue.Queue()
+
+        self._learn_thread = threading.Thread(
+            target=self._learn_worker,
+            name="template-learner",
+            daemon=True,
+        )
+
+        self._learn_thread.start()
+
+        # (mtime mais recente, total de .png) na última checagem — permite
+        # notar template novo/editado na pasta sem reiniciar o bot.
+        self._templates_signature_cache = None
+        self._templates_checked_at = 0.0
 
         # Templates olhados na última passada.
         self.last_searched = 0
@@ -159,11 +186,18 @@ class Detector:
 
     def load_templates(self):
 
+        with self._learn_lock:
+            self._load_templates_locked()
+
+    def _load_templates_locked(self):
+        """Corpo de load_templates() protegido pelo lock — a thread de
+        aprendizado também muda _resolution_templates/_fidelity."""
+
         self.templates.clear()
         self.by_category.clear()
         self._scaled_cache.clear()
         self._resolution_templates.clear()
-        self._learned.clear()
+        self._fidelity.clear()
 
         if not TEMPLATES_DIR.exists():
 
@@ -171,6 +205,9 @@ class Detector:
                 "Pasta de templates não encontrada: %s",
                 TEMPLATES_DIR,
             )
+
+            self._templates_signature_cache = (0.0, 0)
+            self._templates_checked_at = time.monotonic()
 
             return
 
@@ -226,7 +263,10 @@ class Detector:
                 ).append(template)
 
             if por_categoria:
+
                 self._resolution_templates[resolucao] = por_categoria
+
+                self._load_fidelity(resolucao, resolution_dir)
 
         logger.info(
             "Templates: %d default em %d categorias %s | "
@@ -255,6 +295,84 @@ class Detector:
                 "agir.",
                 DEFAULT_TEMPLATES_DIR,
             )
+
+        self._templates_signature_cache = self._templates_signature()
+        self._templates_checked_at = time.monotonic()
+
+    def _templates_signature(self):
+        """(mtime mais recente, total de .png) nas pastas realmente
+        carregadas — muda com qualquer template novo, editado ou removido,
+        sem precisar comparar conteúdo arquivo por arquivo."""
+
+        pastas = [DEFAULT_TEMPLATES_DIR]
+
+        if TEMPLATES_DIR.exists():
+
+            for pasta in sorted(TEMPLATES_DIR.iterdir()):
+
+                if not pasta.is_dir():
+                    continue
+
+                if pasta in (
+                    DEFAULT_TEMPLATES_DIR,
+                    FALLBACK_SELECTOR_DIR,
+                ):
+                    continue
+
+                if self._parse_resolution_dir_name(pasta.name) is None:
+                    continue
+
+                pastas.append(pasta)
+
+        ultima = 0.0
+        total = 0
+
+        for pasta in pastas:
+
+            if not pasta.exists():
+                continue
+
+            for arquivo in pasta.rglob("*.png"):
+
+                try:
+                    mtime = arquivo.stat().st_mtime
+
+                except OSError:
+                    continue
+
+                ultima = max(ultima, mtime)
+                total += 1
+
+        return (round(ultima, 3), total)
+
+    def _maybe_reload_templates(self):
+        """Recarrega do disco quando a pasta de templates muda — permite
+        adicionar/editar templates (ex.: tools/template_selector.py) sem
+        reiniciar o bot."""
+
+        if not TEMPLATES_WATCH_INTERVAL:
+            return
+
+        agora = time.monotonic()
+
+        if (
+            agora - self._templates_checked_at
+            < TEMPLATES_WATCH_INTERVAL
+        ):
+            return
+
+        self._templates_checked_at = agora
+
+        assinatura = self._templates_signature()
+
+        if assinatura == self._templates_signature_cache:
+            return
+
+        logger.info(
+            "Pasta de templates mudou — recarregando."
+        )
+
+        self.load_templates()
 
     def _load_category_dirs(self, base_dir, origin):
         """[template] de todas as subpastas de categoria dentro de base_dir."""
@@ -296,6 +414,69 @@ class Detector:
             return None
 
         return int(largura), int(altura)
+
+    @staticmethod
+    def _fidelity_path(resolution_dir):
+        return resolution_dir / "_fidelity.json"
+
+    def _load_fidelity(self, chave, resolution_dir):
+        """Carrega a confiança salva de cada override desta resolução — sem
+        entrada aqui, a próxima candidata (mesmo fraca) substitui de cara."""
+
+        caminho = self._fidelity_path(resolution_dir)
+
+        if not caminho.exists():
+            return
+
+        try:
+
+            dados = json.loads(caminho.read_text(encoding="utf-8"))
+
+        except (OSError, ValueError) as error:
+
+            logger.warning(
+                "Não consegui ler %s: %s",
+                caminho,
+                error,
+            )
+
+            return
+
+        for chave_item, confianca in dados.items():
+
+            categoria, _, nome = chave_item.partition("/")
+
+            if not categoria or not nome:
+                continue
+
+            self._fidelity[(chave, categoria, nome)] = float(confianca)
+
+    def _save_fidelity(self, chave):
+        """Persiste a fidelidade dos overrides desta resolução — sem isto, um
+        restart esquece a confiança e a próxima candidata substitui à toa."""
+
+        resolution_dir = TEMPLATES_DIR / f"{chave[0]}x{chave[1]}"
+
+        dados = {
+            f"{categoria}/{nome}": confianca
+            for (res, categoria, nome), confianca in self._fidelity.items()
+            if res == chave
+        }
+
+        try:
+
+            self._fidelity_path(resolution_dir).write_text(
+                json.dumps(dados, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+
+        except OSError as error:
+
+            logger.warning(
+                "Não consegui salvar %s: %s",
+                self._fidelity_path(resolution_dir),
+                error,
+            )
 
     def _load_template(self, category, image_path, origin):
 
@@ -535,15 +716,29 @@ class Detector:
         if cacheados is not None:
             return cacheados
 
-        extras = self._resolution_templates.get(chave)
+        # Snapshot rápido sob lock: a thread de aprendizado também escreve
+        # em _resolution_templates/_scaled_cache, e o resto desta função
+        # (reescala, merge) é caro demais pra fazer com o lock preso.
+        with self._learn_lock:
 
-        # Já na referência e sem override: nada a reescalar nem mesclar. É o caminho de custo zero.
-        if self._is_reference(frame_width, frame_height) and not extras:
+            extras_brutos = self._resolution_templates.get(chave)
 
-            cacheados = self.by_category
-            self._scaled_cache[chave] = cacheados
+            extras = (
+                None
+                if extras_brutos is None
+                else {
+                    categoria: list(lista)
+                    for categoria, lista in extras_brutos.items()
+                }
+            )
 
-            return cacheados
+            # Já na referência e sem override: nada a reescalar nem mesclar. É o caminho de custo zero.
+            if self._is_reference(frame_width, frame_height) and not extras:
+
+                cacheados = self.by_category
+                self._scaled_cache[chave] = cacheados
+
+                return cacheados
 
         default_categorias = (
             self.by_category
@@ -557,31 +752,22 @@ class Detector:
 
         else:
 
-            # Item com override não busca mais pelo default reescalado
-            # dele — o override É o template deste device para aquele
-            # item específico, os outros nomes da categoria continuam
-            # no default normalmente.
-            cacheados = {}
+            # Override não substitui o default na busca — só entra na
+            # frente. Se ele não bater neste frame, o default do mesmo
+            # nome ainda está na lista e pode salvar a detecção.
+            cacheados = {
+                categoria: list(lista)
+                for categoria, lista in default_categorias.items()
+            }
 
-            for categoria, lista in default_categorias.items():
-
-                aprendidos = {
-                    t["name"] for t in extras.get(categoria, [])
-                }
-
-                cacheados[categoria] = [
-                    t for t in lista if t["name"] not in aprendidos
-                ]
-
-            # Overrides do device tentados primeiro: já nasceram na
-            # resolução certa, sem depender de acerto de escala.
             for categoria, lista in extras.items():
 
                 cacheados[categoria] = (
                     lista + cacheados.get(categoria, [])
                 )
 
-        self._scaled_cache[chave] = cacheados
+        with self._learn_lock:
+            self._scaled_cache[chave] = cacheados
 
         return cacheados
 
@@ -633,7 +819,7 @@ class Detector:
 
         return categorias
 
-    def _learn_resolution_template(
+    def _queue_learn_candidate(
         self,
         frame_color,
         template,
@@ -641,24 +827,74 @@ class Detector:
         y,
         frame_width,
         frame_height,
+        confidence,
     ):
-        """Achou via template default fora da referência: grava o recorte cru desta
-        resolução, para as próximas passadas usarem override em vez de reescalar."""
-
-        if (
-            template["origin"] != "default"
-            or self._is_reference(frame_width, frame_height)
-        ):
-            return
+        """Chamado de dentro do detect() — tem que ser barato. Só copia o
+        recorte (pequeno) e entrega pra thread de aprendizado decidir; nada
+        de disco aqui, pra não atrasar a visão."""
 
         chave = (frame_width, frame_height)
         categoria = template["category"]
         nome = template["name"]
 
-        aprendido_id = (chave, categoria, nome)
-
-        if aprendido_id in self._learned:
+        # Checagem sem lock: leitura de dict é uma operação atômica o
+        # bastante pra esse fim — o pior caso é uma candidata a mais na
+        # fila, que a thread de aprendizado descarta na conferência final.
+        if confidence <= self._fidelity.get((chave, categoria, nome), 0.0):
             return
+
+        altura = template["height"]
+        largura = template["width"]
+
+        crop = frame_color[y:y + altura, x:x + largura]
+
+        if crop.shape[:2] != (altura, largura):
+            return
+
+        try:
+
+            self._learn_queue.put_nowait(
+                (categoria, nome, chave, crop.copy(), confidence)
+            )
+
+        except queue.Full:
+            pass
+
+    def _learn_worker(self):
+        """Roda numa thread própria: grava em disco e atualiza os overrides
+        em uso sem bloquear o detect() da thread de visão."""
+
+        while True:
+
+            item = self._learn_queue.get()
+
+            try:
+
+                self._process_learn_candidate(*item)
+
+            except Exception:
+
+                logger.exception(
+                    "Erro processando candidata de aprendizado"
+                )
+
+    def _process_learn_candidate(
+        self,
+        categoria,
+        nome,
+        chave,
+        crop,
+        confidence,
+    ):
+
+        fidelity_id = (chave, categoria, nome)
+
+        with self._learn_lock:
+
+            if confidence <= self._fidelity.get(fidelity_id, 0.0):
+                return
+
+        frame_width, frame_height = chave
 
         destino_dir = (
             TEMPLATES_DIR
@@ -666,26 +902,9 @@ class Detector:
             / categoria
         )
 
-        destino = destino_dir / nome
-
-        if destino.exists():
-
-            self._learned.add(aprendido_id)
-
-            return
-
-        crop = frame_color[
-            y:y + template["height"],
-            x:x + template["width"],
-        ]
-
-        if crop.shape[:2] != (
-            template["height"],
-            template["width"],
-        ):
-            return
-
         destino_dir.mkdir(parents=True, exist_ok=True)
+
+        destino = destino_dir / nome
 
         if not cv2.imwrite(str(destino), crop):
 
@@ -696,30 +915,46 @@ class Detector:
 
             return
 
-        self._learned.add(aprendido_id)
-
         novo = self._build_template(
             categoria,
             nome,
-            crop.copy(),
+            crop,
             None,
             "override",
         )
 
-        self._resolution_templates.setdefault(
-            chave, {}
-        ).setdefault(categoria, []).append(novo)
+        with self._learn_lock:
 
-        # Cache mesclado desta resolução ficou velho: sem isto, a
-        # passada seguinte continuaria reescalando o default.
-        self._scaled_cache.pop(chave, None)
+            # Outra candidata pode ter vencido enquanto gravávamos.
+            if confidence <= self._fidelity.get(fidelity_id, 0.0):
+                return
+
+            anterior = self._fidelity.get(fidelity_id)
+
+            self._fidelity[fidelity_id] = confidence
+
+            lista = self._resolution_templates.setdefault(
+                chave, {}
+            ).setdefault(categoria, [])
+
+            lista[:] = [t for t in lista if t["name"] != nome]
+
+            lista.append(novo)
+
+            # Cache mesclado desta resolução ficou velho: sem isto, a
+            # passada seguinte continuaria usando a versão antiga.
+            self._scaled_cache.pop(chave, None)
+
+            self._save_fidelity(chave)
 
         logger.info(
-            "Template aprendido para %dx%d: %s/%s",
+            "Override %dx%d %s/%s: fidelidade %s -> %.4f",
             frame_width,
             frame_height,
             categoria,
             nome,
+            "-" if anterior is None else f"{anterior:.4f}",
+            confidence,
         )
 
     def _color_similarity(
@@ -858,6 +1093,8 @@ class Detector:
 
     def detect(self, frame, categories=None):
         """Detecções aprovadas, ordenadas por confiança (maior primeiro). `categories` filtra a busca (permite a StateMachine procurar 2 templates em vez de 43)."""
+
+        self._maybe_reload_templates()
 
         if frame is None:
             return []
@@ -1021,6 +1258,7 @@ class Detector:
                         {
                             "category": category,
                             "name": template["name"],
+                            "origin": template["origin"],
 
                             "confidence": float(confidence),
                             "color_similarity": float(
@@ -1040,13 +1278,14 @@ class Detector:
 
                     if LEARN_RESOLUTION_TEMPLATES:
 
-                        self._learn_resolution_template(
+                        self._queue_learn_candidate(
                             frame_color,
                             template,
                             x,
                             y,
                             frame_width,
                             frame_height,
+                            confidence,
                         )
 
             if achou and parar_na_prioridade:

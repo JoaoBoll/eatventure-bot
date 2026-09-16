@@ -216,10 +216,14 @@ CATEGORY_THRESHOLDS = {
 
 CATEGORY_ROIS = {}
 
-# Ao detectar via template default (reescalado) num device fora da
-# referência, grava o recorte na resolução exata dele — as próximas
-# passadas usam esse override em vez de reescalar de novo.
+# Ao detectar via template default, grava o recorte na resolução exata do
+# device (mesmo na referência) — as próximas passadas usam esse override
+# em vez do default.
 LEARN_RESOLUTION_TEMPLATES = True
+
+# De quanto em quanto tempo checar se a pasta de templates mudou (template
+# novo, editado ou removido) e recarregar sem reiniciar o bot. 0 desliga.
+TEMPLATES_WATCH_INTERVAL = 2.0
 
 
 # ==== DETECTOR ====

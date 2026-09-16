@@ -1,6 +1,8 @@
 import argparse
 import sys
+import tkinter as tk
 from pathlib import Path
+from tkinter import messagebox
 
 import cv2
 
@@ -51,6 +53,11 @@ class TemplateSelector:
         self.end_x = None
         self.end_y = None
         self.selecting = False
+
+        # Raiz oculta: só existe para os diálogos (categoria/nome) terem
+        # onde se ancorar — a janela de seleção continua sendo a do cv2.
+        self._tk_root = tk.Tk()
+        self._tk_root.withdraw()
 
     def capture_screen(self):
 
@@ -342,6 +349,8 @@ class TemplateSelector:
             WINDOW_NAME
         )
 
+        self._tk_root.destroy()
+
     def _valid_selection(self):
 
         if self.start_x is None:
@@ -408,7 +417,7 @@ class TemplateSelector:
             else FALLBACK_TEMPLATES_DIR
         )
 
-        category = self._select_category()
+        category = self._select_category(crop)
 
         if category is None:
             return
@@ -426,8 +435,12 @@ class TemplateSelector:
         if category == "food":
 
             output_path = self._food_output_path(
-                category_dir
+                category_dir,
+                crop,
             )
+
+            if output_path is None:
+                return
 
         else:
 
@@ -504,37 +517,13 @@ class TemplateSelector:
         print("===================================")
         print()
 
-    def _food_output_path(self, category_dir):
+    def _food_output_path(self, category_dir, crop):
         """Food é nomeado pelo item, não por número — vários bots/estágios usam o mesmo template e o nome no arquivo ajuda a identificar qual é qual."""
 
-        invalid_chars = '<>:"/\\|?*'
+        name = self._ask_name("Nome do food", "Nome do item:", crop)
 
-        while True:
-
-            name = input(
-                "Nome do food: "
-            ).strip()
-
-            if not name:
-
-                print(
-                    "Nome inválido."
-                )
-
-                continue
-
-            if any(
-                char in name
-                for char in invalid_chars
-            ):
-
-                print(
-                    "Nome contém caracteres inválidos."
-                )
-
-                continue
-
-            break
+        if name is None:
+            return None
 
         name = name.replace(" ", "_")
 
@@ -549,6 +538,100 @@ class TemplateSelector:
             numero += 1
 
         return output_path
+
+    def _preview_image(self, crop, max_side=420):
+
+        altura, largura = crop.shape[:2]
+
+        escala = max_side / max(altura, largura)
+
+        interpolacao = (
+            cv2.INTER_AREA
+            if escala < 1.0
+            else cv2.INTER_NEAREST
+        )
+
+        redimensionado = cv2.resize(
+            crop,
+            (round(largura * escala), round(altura * escala)),
+            interpolation=interpolacao,
+        )
+
+        rgb = cv2.cvtColor(redimensionado, cv2.COLOR_BGR2RGB)
+
+        altura, largura = rgb.shape[:2]
+
+        cabecalho = f"P6\n{largura} {altura}\n255\n".encode("ascii")
+
+        return tk.PhotoImage(data=cabecalho + rgb.tobytes())
+
+    def _ask_name(self, title, prompt, crop=None):
+
+        invalid_chars = '<>:"/\\|?*'
+
+        while True:
+
+            resultado = {"value": None}
+
+            janela = tk.Toplevel(self._tk_root)
+            janela.title(title)
+            janela.attributes("-topmost", True)
+
+            corpo = tk.Frame(janela)
+            corpo.pack(padx=12, pady=12)
+
+            if crop is not None:
+
+                preview = self._preview_image(crop)
+
+                preview_label = tk.Label(corpo, image=preview)
+                preview_label.image = preview
+                preview_label.pack(side="left", padx=(0, 12))
+
+            lado_direito = tk.Frame(corpo)
+            lado_direito.pack(side="left")
+
+            tk.Label(lado_direito, text=prompt).pack(pady=(0, 6))
+
+            entrada = tk.Entry(lado_direito, width=30)
+            entrada.pack()
+            entrada.focus_set()
+
+            def confirmar(event=None):
+                resultado["value"] = entrada.get()
+                janela.destroy()
+
+            def cancelar():
+                janela.destroy()
+
+            entrada.bind("<Return>", confirmar)
+
+            botoes = tk.Frame(lado_direito)
+            botoes.pack(pady=(6, 0))
+
+            tk.Button(botoes, text="OK", width=10, command=confirmar).pack(side="left", padx=4)
+            tk.Button(botoes, text="Cancelar", width=10, command=cancelar).pack(side="left", padx=4)
+
+            janela.protocol("WM_DELETE_WINDOW", cancelar)
+
+            self._tk_root.wait_window(janela)
+
+            name = resultado["value"]
+
+            if name is None:
+                return None
+
+            name = name.strip()
+
+            if not name:
+                messagebox.showwarning(title, "Nome inválido.")
+                continue
+
+            if any(char in name for char in invalid_chars):
+                messagebox.showwarning(title, "Nome contém caracteres inválidos.")
+                continue
+
+            return name
 
     def _reset_selection(self):
 
@@ -581,90 +664,71 @@ class TemplateSelector:
             key=str.lower
         )
 
-    def _select_category(self):
+    def _select_category(self, crop):
 
         categories = self._get_categories()
 
-        print()
-        print("===================================")
-        print("           CATEGORIAS")
-        print("===================================")
-        print()
+        resultado = {"value": None}
 
-        if categories:
+        janela = tk.Toplevel(self._tk_root)
+        janela.title("Categoria")
+        janela.attributes("-topmost", True)
 
-            for index, category in enumerate(
-                categories,
-                start=1
-            ):
+        corpo = tk.Frame(janela)
+        corpo.pack(padx=12, pady=12)
 
-                print(
-                    f"{index} - {category}"
-                )
+        preview = self._preview_image(crop)
 
-            print()
+        preview_label = tk.Label(corpo, image=preview)
+        preview_label.image = preview
+        preview_label.pack(side="left", padx=(0, 12))
 
-        print("0 - Criar nova categoria")
-        print()
+        lado_direito = tk.Frame(corpo)
+        lado_direito.pack(side="left")
 
-        while True:
+        tk.Label(lado_direito, text="Selecione a categoria:").pack(pady=(0, 6))
 
-            choice = input(
-                "Escolha: "
-            ).strip()
+        grade = tk.Frame(lado_direito)
+        grade.pack()
 
-            if not choice.isdigit():
+        def escolher(categoria):
+            resultado["value"] = categoria
+            janela.destroy()
 
-                print(
-                    "Digite apenas um número."
-                )
+        colunas = 3
 
-                continue
+        for indice, categoria in enumerate(categories):
 
-            choice = int(choice)
-
-            if choice == 0:
-
-                while True:
-
-                    category = input(
-                        "Nome da nova categoria: "
-                    ).strip()
-
-                    if not category:
-
-                        print(
-                            "Nome inválido."
-                        )
-
-                        continue
-
-                    invalid_chars = (
-                        '<>:"/\\|?*'
-                    )
-
-                    if any(
-                        char in category
-                        for char in invalid_chars
-                    ):
-
-                        print(
-                            "Nome contém caracteres inválidos."
-                        )
-
-                        continue
-
-                    return category
-
-            if 1 <= choice <= len(categories):
-
-                return categories[
-                    choice - 1
-                ]
-
-            print(
-                "Opção inválida."
+            tk.Button(
+                grade,
+                text=categoria,
+                width=14,
+                command=lambda c=categoria: escolher(c),
+            ).grid(
+                row=indice // colunas,
+                column=indice % colunas,
+                padx=4,
+                pady=4,
             )
+
+        def nova_categoria():
+
+            categoria = self._ask_name("Nova categoria", "Nome da categoria:", crop)
+
+            if categoria:
+                escolher(categoria)
+
+        tk.Button(
+            lado_direito,
+            text="+ Nova categoria",
+            command=nova_categoria,
+        ).pack(pady=(6, 0))
+
+        janela.protocol("WM_DELETE_WINDOW", janela.destroy)
+
+        self._tk_root.wait_window(janela)
+
+        return resultado["value"]
 
 
 def main(argv=None):
