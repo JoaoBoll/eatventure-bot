@@ -240,7 +240,7 @@ QUENTES_TTL = 30.0
 CATEGORY_THRESHOLDS = {
     "build": 0.95,
     "new_point": 0.97,
-    "food": 0.95,
+    "food": 0.90,
     "upgrade": 0.95,
     "up_food": 0.90,
     "up_upgrade": 0.90,
@@ -263,7 +263,7 @@ TEMPLATES_WATCH_INTERVAL = 2.0
 
 # ==== DETECTOR ====
 
-DETECTOR_DEBUG_MISSES = True
+DETECTOR_DEBUG_MISSES = False
 DETECTOR_DEBUG_INTERVAL = 3.0
 
 # Teto da escala do estágio grosso. _coarse_scale_for devolve

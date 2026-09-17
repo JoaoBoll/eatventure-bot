@@ -1809,10 +1809,15 @@ class Detector:
                         agora,
                     )
 
+                    # Caminho do template: /origin/category/name
+                    origin = template.get("origin", "default")
+                    template_path = f"/{origin}/{category}/{template['name']}"
+
                     detections.append(
                         {
                             "category": category,
                             "name": template["name"],
+                            "template_path": template_path,
                             "origin": template["origin"],
                             "source": template["source"],
 

@@ -127,7 +127,7 @@ Uma linha JSON por amostra em `samples.jsonl`:
   "click_x": 348,
   "click_y": 1544,
   "target_category": "box",
-  "target_template": "item_003.png",
+  "target_template": "/default/box/item_003.png",
   "target_confidence": 0.9712,
   "detect_lag_ms": 420,
   "outcome": "changed",
@@ -158,6 +158,9 @@ Notas que evitam armadilha:
   identidade exata do arquivo.
 - **`action` é `null`** nas amostras negativas, e `boxes` vem
   vazio.
+- **`target_template`** é o caminho completo da template usada
+  (ex: `/default/box/item_003.png` ou `/1080x2400/food/Pizza.png`).
+  Permite rastrear a origem exata de cada amostra para o treino.
 
 O treino pode ler só isto. **O banco é opcional.**
 

@@ -594,7 +594,7 @@ class DatasetRecorder:
                 None if alvo is None else alvo.get("category")
             ),
             "target_template": (
-                None if alvo is None else alvo.get("name")
+                None if alvo is None else alvo.get("template_path")
             ),
             "target_confidence": (
                 None if alvo is None else float(alvo.get("confidence", 0.0))
