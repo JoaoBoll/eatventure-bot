@@ -122,11 +122,6 @@ class GPUAccelerator:
 _gpu = GPUAccelerator()
 
 
-def gpu_status():
-    """Retorna 'CUDA' ou 'CPU' para exibir no HUD."""
-    return "CUDA" if _gpu.cuda_available else "CPU"
-
-
 class Detector:
 
     def __init__(
@@ -2532,19 +2527,6 @@ class Detector:
                 )
 
                 y += 40
-
-        gpu = stats.get("gpu")
-
-        if gpu is not None:
-
-            self._hud_text(
-                output,
-                f"aceleração {gpu}",
-                y,
-                self.HUD_OK,
-            )
-
-            y += 40
 
         # Sem isso, detecção atrasada parece detecção errada.
         lag = stats.get("lag")

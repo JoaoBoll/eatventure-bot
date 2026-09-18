@@ -34,7 +34,7 @@ from core.config import (
 )
 from core.state_machine import StateMachine
 from core.status import StatusPanel, formata_bateria
-from vision.detector import Detector, gpu_status
+from vision.detector import Detector
 from vision.worker import VisionWorker
 
 logger = log.get("main")
@@ -320,7 +320,6 @@ def run_loop(
                 "state": state_machine.state,
                 "searched": detector.last_searched,
                 "searchable": detector.last_total,
-                "gpu": gpu_status(),
                 "detections": len(detections),
 
                 # Cobertura da pasta da resolução sobre o default.
