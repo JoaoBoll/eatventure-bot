@@ -37,3 +37,6 @@ tests/capture/
 .aider*
 
 /tools/scrcpy/
+
+/src/vision/templates/*
+!/src/vision/templates/default/
