@@ -9,7 +9,10 @@
 
 av==18.1.0
 numpy==2.5.2
-opencv-python==5.0.0.93
+# opencv-contrib-python: inclui CUDA support (GPU acceleration)
+# Se DETECTOR_USE_GPU=True no config, usa GPU automáticamente
+# Com fallback pra CPU se CUDA indisponível
+opencv-contrib-python==5.0.0.93
 
 # Opcional: só para indexar o dataset no PostgreSQL
 # (DATASET_DB_ENABLED em src/core/config.py).
