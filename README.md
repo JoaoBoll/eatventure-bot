@@ -9,9 +9,9 @@ through adb.
 ## Requirements
 
 - Python 3.12+
-- [scrcpy](https://github.com/Genymobile/scrcpy) at `C:\scrcpy`
-  (adjust `SCRCPY_PATH` and `SCRCPY_SERVER_PATH` in
-  [config.py](src/core/config.py))
+- [scrcpy](https://github.com/Genymobile/scrcpy) on `PATH`, or extracted
+  under `tools/scrcpy/`; the project discovers `scrcpy` and its server
+  automatically (see [config.py](src/core/config.py))
 - `adb` on PATH, with a single device connected
 
 ```bash
@@ -63,7 +63,7 @@ The same applies to the tools, which depend on the same
 `screencap`:
 
 ```bash
-python tests/template_selector.py --device e2615705
+python tools/template_selector.py --device e2615705
 python tests/android_screenshot.py --device e2615705
 ```
 
@@ -202,7 +202,7 @@ on from the restaurant".
 To crop a new template:
 
 ```bash
-python tests/template_selector.py
+python tools/template_selector.py
 ```
 
 With more than one device connected it asks which one to use, like
@@ -222,7 +222,7 @@ Now it **follows the height of your screen** (80% of it by
 default) and maintains the image aspect ratio. The device screen appears
 in full, all at once.
 
-Measured on a 3440x1440 monitor:
+Measured on a 3440x1440 monitor at the time of writing:
 
 | `SELECTOR_HEIGHT_FRACTION` | Window | Scale | 1 px on screen = |
 |---|---|---|---|
@@ -352,18 +352,19 @@ The order of the rules in [state_machine.py](src/core/state_machine.py)
 | 1 | `open_store` | taps | — |
 | 2 | `close` | clicks the X | — |
 | 3 | `gray_max` | taps a neutral point | — |
-| 4 | `up_food` | **long press** on the button, upgrading food | — |
-| 5 | `plane` | clicks | `RENOVATE` |
-| 6 | `build` | clicks | `RENOVATE` |
-| 7 | `upgrade` | clicks | `UPGRADE` |
-| 8 | `new_point` | clicks | `NEW_POINT` |
-| 9 | `box` | clicks | — |
-| 10 | `food` | clicks | `FOOD` |
+| 4 | `gray_coin` | taps a neutral point | — |
+| 5 | `up_food` | **long press** on the button, upgrading food | — |
+| 6 | `plane` | clicks | `RENOVATE` |
+| 7 | `build` | clicks | `RENOVATE` |
+| 8 | `upgrade` | clicks | `UPGRADE` |
+| 9 | `new_point` | clicks | `NEW_POINT` |
+| 10 | `box` | clicks | — |
+| 11 | `food` | clicks | `FOOD` |
 
-The first three close things that should not be open, which is why
+The first four close things that should not be open, which is why
 they come before any game action.
 
-The fourth is different: `up_food` in `NORMAL` does the **same** as
+The fifth is different: `up_food` in `NORMAL` does the **same** as
 in `FOOD` — a long press of `UPGRADE_FOOD_PRESS` seconds on the button,
 upgrading food. This is deliberate, and it is worth knowing the cost:
 the food panel sometimes opens accidentally, in which case the bot
@@ -408,18 +409,18 @@ I [state] NORMAL -> UPGRADE
 The line says which priority won **and what it beat** — answering
 "why did it click this and not that?".
 
-`up_food` does **opposite** things depending on the state, deliberately:
+`up_food` upgrades food in both states, deliberately:
 
 | State | What it does | Where | Duration | Spends currency? |
 |---|---|---|---|---|
-| `NORMAL` | closes the panel | `DISMISS_POINT` | 0.4 s | no |
+| `NORMAL` | upgrades food | center of the detection | 4 s | **yes** |
 | `FOOD` | upgrades food | center of the detection | 4 s | **yes** |
 
-The state decides the meaning of the same detection. Both are holds,
-not taps: at the neutral point, a quick adb tap sometimes does not close
-the panel. The durations are separate (`DISMISS_HOLD_DURATION` and
-`UPGRADE_FOOD_PRESS`) because holding for 4 s just to close a panel
-would freeze the action for 4 s.
+The state machine intentionally keeps the same behavior in both states.
+It can spend currency and remain busy for the duration of the press if
+the food panel opens unexpectedly. To restore panel dismissal, change the
+`NORMAL` rule to the `dismiss` action; that action is implemented and
+covered by `tests/test_pipeline.py::test_dismiss_toca_no_ponto_neutro`.
 
 Because `NORMAL` has no timeout (it is the base state), a rule that
 triggers without resolving anything would repeat forever — and finding
@@ -601,15 +602,16 @@ used by the bot.
 
 ## Recording a training dataset
 
-**Enabled.** In [config.py](src/core/config.py):
+Dataset recording is **off by default**. Enable it for a run with
+`--ai-collect`, or set `DATASET_SAVE = True` in [config.py](src/core/config.py):
 
 ```python
-DATASET_SAVE = True
+DATASET_SAVE = False
 DATASET_DIR = PROJECT_ROOT / "dataset"
 DATASET_IMAGE_FORMAT = "jpg"    # 4.3x smaller than png
 ```
 
-It records **all 16 actions** of the bot, plus the two exploration
+It records 19 dataset action categories, including the two exploration
 swipes.
 
 For each action, it records the frame that motivated the decision and the
@@ -624,7 +626,7 @@ with much more labeling per image. And the result because it allows
 training only on actions that **worked**, instead of inheriting every
 mistake from the teacher.
 
-MEASURED on the device: **no impact** on the bot (lag 58 → 50 ms,
+Historical device measurement: **no impact** on the bot (lag 58 → 50 ms,
 capture 30 fps in both cases) — recording runs in a thread with a
 queue that discards items when full.
 
@@ -640,7 +642,17 @@ dataset would no longer be copyable with `rsync`.
 
 ```bash
 psql -h host -U usuario -d eatventure -f docs/schema.sql
-python tools/dataset_import.py            # loads samples.jsonl
+python tools/dataset_import.py --dsn postgresql://user:password@host:5432/eatventure
+```
+
+The PostgreSQL driver is optional and is commented out in
+`requirements.txt`; install `psycopg[binary]` separately when using the
+database. The importer also accepts `DATASET_DB_DSN` from the config. Its
+default `dataset/samples.jsonl` path is the legacy flat layout; for a current
+collection, pass a shard explicitly, for example:
+
+```bash
+python tools/dataset_import.py --jsonl dataset/data/1088x1742/samples.jsonl
 ```
 
 Format, table DDL, indexes, and useful queries:
@@ -655,13 +667,15 @@ Format, table DDL, indexes, and useful queries:
 ## Detector cost
 
 The cost is **linear in the number of templates** — each one is a
-full-screen scan. There are **106** today, and **75 of them are
+full-screen scan. The historical measurement below used **106** templates,
+**75 of them are
 `food`**.
 
 ### The bottleneck: global scale constrained by the smallest template
 
-The coarse stage searches a reduced copy of the frame. Below
-`MIN_COARSE_SIDE` (12 px), the template does not survive the reduction,
+The coarse stage searches a reduced copy of the frame. Below the detector's
+internal `MIN_COARSE_SIDE` threshold (12 px), the template does not survive
+the reduction,
 the coarse stage is abandoned, and the search falls back to full
 resolution — which is precisely the slow one.
 
@@ -675,7 +689,7 @@ The scale is now **derived per template**, as
 by hand, because the rule is exact: the cost explodes *precisely*
 when the scale falls below this floor.
 
-Measured on the device (1080x2400, 106 templates, 30 fps capture):
+Historical device measurement (1080x2400, 106 templates, 30 fps capture):
 
 | | detect | average lag | p95 | worst |
 |---|---|---|---|---|

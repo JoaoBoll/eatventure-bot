@@ -1,7 +1,12 @@
-Dataset tools
-=============
+Dataset tools (legacy layout)
+=============================
 
-Este diretório contém utilitários para inspecionar e gerenciar o dataset gravado pelo bot (pasta `dataset/`):
+Este diretório contém utilitários para inspecionar e gerenciar o layout
+antigo do dataset (`dataset/samples.jsonl` + `dataset/images/`). As coletas
+atuais ficam em shards por resolução (`dataset/data/<resolução>/`). Estes
+utilitários ainda não descobrem shards automaticamente; use `--jsonl` quando
+o comando aceitar essa opção e confira o comportamento antes de operações
+destrutivas.
 
 - dataset_manager.py  - ferramenta única com vários subcomandos (recomendada)
 - delete_session_images.py - utilitário menor (legacy) que apaga imagens por session id
@@ -32,7 +37,7 @@ python tools\dataset_manager.py remove-session --session <SESSION_ID> --yes
 # Comando legado: apagar imagens por session (sem reescrever o index salvo automaticamente)
 python tools\delete_session_images.py --session <SESSION_ID> --dry-run
 
-# Listar imagens órfãs (presentes em dataset/images mas não referenciadas em samples.jsonl)
+# Listar imagens órfãs do layout antigo
 python tools\dataset_manager.py list-orphans
 
 # Mover órfãs para backup (criando dataset/backup_orphans_<ts>)
@@ -52,7 +57,7 @@ Comportamento importante e segurança
 Arquivos gerados por operações
 ------------------------------
 
-- `dataset/samples.jsonl.bak` — backup automático do índice antes de reescrever
+- `dataset/samples.jsonl.bak` — backup automático do índice legado antes de reescrever
 - `dataset/backup_orphans_<ts>/...` — pasta de backup para imagens órfãs movidas
 - `dataset/backup_session_<session>_<ts>/...` — pasta de backup para imagens movidas por `remove-session`
 - `moved_list.txt` dentro da pasta de backup — lista dos arquivos movidos

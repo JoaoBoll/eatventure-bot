@@ -7,9 +7,9 @@ via adb.
 ## Requisitos
 
 - Python 3.12+
-- [scrcpy](https://github.com/Genymobile/scrcpy) em `C:\scrcpy`
-  (ajuste `SCRCPY_PATH` e `SCRCPY_SERVER_PATH` em
-  [config.py](src/core/config.py))
+- [scrcpy](https://github.com/Genymobile/scrcpy) no `PATH` ou extraído em
+  `tools/scrcpy/`; o projeto encontra automaticamente o `scrcpy` e o
+  servidor (veja [config.py](src/core/config.py))
 - `adb` no PATH, com um único device conectado
 
 ```bash
@@ -61,7 +61,7 @@ Vale para as ferramentas também, que dependem do mesmo
 `screencap`:
 
 ```bash
-python tests/template_selector.py --device e2615705
+python tools/template_selector.py --device e2615705
 python tests/android_screenshot.py --device e2615705
 ```
 
@@ -201,7 +201,7 @@ restaurante".
 Recortar um template novo:
 
 ```bash
-python tests/template_selector.py
+python tools/template_selector.py
 ```
 
 Com mais de um device conectado ele pergunta qual usar, igual ao
@@ -221,7 +221,7 @@ Agora ela **acompanha a altura da sua tela** (80% dela por
 padrão) e mantém a proporção da imagem. A tela do device aparece
 inteira, de uma vez.
 
-Medido num monitor 3440x1440:
+Medição feita em um monitor 3440x1440 na época da escrita:
 
 | `SELECTOR_HEIGHT_FRACTION` | Janela | Escala | 1 px na tela = |
 |---|---|---|---|
@@ -352,18 +352,19 @@ A ordem das regras em [state_machine.py](src/core/state_machine.py)
 | 1 | `open_store` | clica | — |
 | 2 | `close` | clica no X | — |
 | 3 | `gray_max` | toca ponto neutro | — |
-| 4 | `up_food` | **long press** no botão, evoluindo a comida | — |
-| 5 | `plane` | clica | `RENOVATE` |
-| 6 | `build` | clica | `RENOVATE` |
-| 7 | `upgrade` | clica | `UPGRADE` |
-| 8 | `new_point` | clica | `NEW_POINT` |
-| 9 | `box` | clica | — |
-| 10 | `food` | clica | `FOOD` |
+| 4 | `gray_coin` | toca ponto neutro | — |
+| 5 | `up_food` | **long press** no botão, evoluindo a comida | — |
+| 6 | `plane` | clica | `RENOVATE` |
+| 7 | `build` | clica | `RENOVATE` |
+| 8 | `upgrade` | clica | `UPGRADE` |
+| 9 | `new_point` | clica | `NEW_POINT` |
+| 10 | `box` | clica | — |
+| 11 | `food` | clica | `FOOD` |
 
-As três primeiras fecham o que não deveria estar aberto, e por
+As quatro primeiras fecham o que não deveria estar aberto, e por
 isso vêm antes de qualquer ação de jogo.
 
-A quarta é diferente: `up_food` em `NORMAL` faz o **mesmo** que
+A quinta é diferente: `up_food` em `NORMAL` faz o **mesmo** que
 em `FOOD` — long press de `UPGRADE_FOOD_PRESS` segundos no botão,
 evoluindo a comida. É escolha deliberada, e vale saber o que
 custa: o painel de comida às vezes abre sem querer, e nesse caso
@@ -410,19 +411,19 @@ I [state] NORMAL -> UPGRADE
 A linha diz qual prioridade venceu **e o que ela venceu** — é o
 que responde "por que clicou nisso e não naquilo".
 
-`up_food` faz coisas **opostas** conforme o estado, e é de
-propósito:
+`up_food` evolui a comida nos dois estados, de propósito:
 
 | Estado | O que faz | Onde | Duração | Gasta moeda? |
 |---|---|---|---|---|
-| `NORMAL` | fecha o painel | `DISMISS_POINT` | 0.4 s | não |
+| `NORMAL` | evolui a comida | centro da detecção | 4 s | **sim** |
 | `FOOD` | evolui a comida | centro da detecção | 4 s | **sim** |
 
-É o estado que decide o significado da mesma detecção. Os dois
-são toque mantido, e não tap: no ponto neutro um tap seco do adb
-às vezes não fecha o painel. As durações são separadas
-(`DISMISS_HOLD_DURATION` e `UPGRADE_FOOD_PRESS`) porque segurar
-4 s só para fechar um painel congelaria a ação por 4 s.
+A máquina de estados mantém intencionalmente o mesmo comportamento
+nos dois estados. Ela pode gastar moeda e ficar ocupada durante o
+press se o painel de comida abrir inesperadamente. Para voltar a
+dispensar o painel, troque a regra de `NORMAL` para a ação `dismiss`;
+essa ação está implementada e coberta por
+`tests/test_pipeline.py::test_dismiss_toca_no_ponto_neutro`.
 
 Como `NORMAL` não tem timeout (é o estado base), uma regra que
 dispara sem resolver nada repetiria para sempre — e achar algo
@@ -608,15 +609,17 @@ usado pelo bot.
 
 ## Gravar dataset de treino
 
-**Ligado.** Em [config.py](src/core/config.py):
+A gravação do dataset fica **desligada por padrão**. Ative em uma
+execução com `--ai-collect` ou defina `DATASET_SAVE = True` em
+[config.py](src/core/config.py):
 
 ```python
-DATASET_SAVE = True
+DATASET_SAVE = False
 DATASET_DIR = PROJECT_ROOT / "dataset"
 DATASET_IMAGE_FORMAT = "jpg"    # 4.3x menor que png
 ```
 
-Grava **todas as 16 ações** do bot, mais os dois swipes de
+Grava 19 categorias de ação do dataset, incluindo os dois swipes de
 exploração.
 
 Grava, para cada ação, o frame que motivou a decisão e os rótulos
@@ -631,7 +634,7 @@ muito mais rótulo por imagem. E o resultado porque é ele que
 permite treinar só nas ações que **funcionaram**, em vez de herdar
 todo erro do professor.
 
-MEDIDO no device: **nenhum impacto** no bot (atraso 58 → 50 ms,
+Medição histórica no device: **nenhum impacto** no bot (atraso 58 → 50 ms,
 captura 30 fps nos dois casos) — a gravação roda em thread com
 fila que descarta quando enche.
 
@@ -647,7 +650,17 @@ dataset deixaria de ser copiável com `rsync`.
 
 ```bash
 psql -h host -U usuario -d eatventure -f docs/schema.sql
-python tools/dataset_import.py            # carrega o samples.jsonl
+python tools/dataset_import.py --dsn postgresql://usuario:senha@host:5432/eatventure
+```
+
+O driver do PostgreSQL é opcional e está comentado em
+`requirements.txt`; instale `psycopg[binary]` separadamente ao usar o
+banco. O importador também aceita `DATASET_DB_DSN` na configuração. O
+caminho padrão `dataset/samples.jsonl` é do layout plano legado; para uma
+coleta atual, informe explicitamente um shard, por exemplo:
+
+```bash
+python tools/dataset_import.py --jsonl dataset/data/1088x1742/samples.jsonl
 ```
 
 Formato, DDL das tabelas, índices e consultas úteis:
@@ -662,13 +675,15 @@ Formato, DDL das tabelas, índices e consultas úteis:
 ## Custo do detector
 
 O custo é **linear no número de templates** — cada um é uma
-varredura da tela inteira. Hoje são **106**, e **75 deles são
+varredura da tela inteira. A medição histórica abaixo usou **106** templates,
+**75 deles são
 `food`**.
 
 ### O gargalo: escala global travada pelo menor template
 
-O estágio grosso procura numa cópia reduzida do frame. Abaixo de
-`MIN_COARSE_SIDE` (12 px) o template não sobrevive à redução, o
+O estágio grosso procura numa cópia reduzida do frame. Abaixo do limite
+interno `MIN_COARSE_SIDE` do detector (12 px), o template não sobrevive à
+redução, o
 estágio grosso é abandonado e a busca cai em resolução cheia —
 que é justamente a lenta.
 
@@ -682,7 +697,7 @@ A escala agora é **derivada por template**, de
 na mão, porque o padrão é exato: o custo explode *precisamente*
 quando a escala cai abaixo desse piso.
 
-Medido no device (1080x2400, 106 templates, 30 fps de captura):
+Medição histórica no device (1080x2400, 106 templates, 30 fps de captura):
 
 | | detect | lag médio | p95 | pior |
 |---|---|---|---|---|

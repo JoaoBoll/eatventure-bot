@@ -23,9 +23,12 @@ relativo à raiz **dela**, então dá para mover, copiar ou apagar uma resoluç�
 sem invalidar as outras.
 
 O layout antigo (`dataset/samples.jsonl` + `dataset/images/`) continua sendo
-lido, então dado já coletado treina sem migração.
+lido, então dado já coletado treina sem migração. O importador e algumas
+ferramentas legadas ainda usam esse layout quando nenhum caminho é informado;
+para uma coleta nova, aponte explicitamente para o shard em `dataset/data/`.
 
-Nada disso entra no git (`.gitignore`).
+`dataset/data/` não entra no git. `dataset/cache/` é mantido no repositório
+para compartilhar features já calculadas.
 
 ## Cache de features
 
@@ -76,7 +79,8 @@ Junta todas as resoluções, usa o cache, grava `IA/model.joblib` e
 | `--limit N` | todas | corta o número de amostras |
 | `--seed N` | `42` | semente do split e do modelo |
 
-O split é **por grupo, não por amostra**: 56% das amostras repetem `phash`, e
+Na coleta analisada, 56% das amostras repetiam `phash`. O split é
+**por grupo, não por amostra**:
 dividir por amostra deixa o mesmo quadro nos dois lados — a acurácia sai
 inflada por decorar em vez de generalizar.
 

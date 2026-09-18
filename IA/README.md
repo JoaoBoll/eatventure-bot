@@ -2,6 +2,9 @@
 
 Treino e execução do modelo de visão.
 
+Os números de amostras, caixas e acurácia abaixo são uma fotografia de uma
+coleta específica; eles não são métricas garantidas para o dataset atual.
+
 | Arquivo | O quê |
 |---|---|
 | `features.py` | extração de features — **fonte única** para treino e inferência |
@@ -10,7 +13,7 @@ Treino e execução do modelo de visão.
 | `train_ai.py` | treina o modelo |
 | `bot_ai.py` | roda o modelo, mostrando ou agindo |
 | `model.joblib` | modelo treinado |
-| `model.joblib.meta.json` | como o modelo foi feito e quanto ele acerta |
+| `model.meta.json` | como o modelo foi feito e quanto ele acerta |
 
 Os testes ficam em `../tests/test_ia.py`, fora desta pasta.
 
@@ -118,7 +121,7 @@ Uma linha, um exemplo, o que ela muda de verdade.
 |---|---|---|
 | `--kind` | `--kind category` | `category` (padrão): recorte de caixa → categoria, e a ação sai da tabela de prioridade. `--kind action`: tela inteira → ação, existe só para comparar. **O bot só usa `category`.** |
 | `--split` | `--split session` | Define o **grupo** do split. `phash` (padrão): quadros iguais não cruzam treino/teste. `session`: a partida inteira vai para um lado — mede generalizar para outra partida. A queda entre os dois é o quanto o modelo decorou o restaurante. |
-| `--train-ratio` | `--train-ratio 0.7` | Fração de **grupos** (não de amostras) para treino. Abaixe se o teste sair vazio com `--split session`. A contagem final de amostras não bate exato com a fração, e isso é esperado. |
+| `--test-ratio` | `--test-ratio 0.3` | Fração de **grupos** (não de amostras) para teste. Reduza se o teste sair vazio com `--split session`. A contagem final de amostras não bate exato com a fração, e isso é esperado. |
 | `--outcome` | `--outcome changed negative` | Só amostras com esses resultados: `changed`, `unchanged`, `unknown`, `negative`. `changed negative` deixa de fora as ações do professor que **não funcionaram** — o modelo não herda os erros dele. |
 | `--negatives` | `--negatives 4` | Recortes de fundo sorteados por frame, rotulados `background`. Sem eles todo pedaço de cenário viraria detecção. `--negatives 0` desliga. |
 | `--trees` | `--trees 60` | Árvores da floresta (padrão 200). Menos = treino rápido para ensaio; mais = ganho pequeno e custo linear. |
@@ -174,7 +177,8 @@ medir o modelo em tela real antes de confiar nele, e é o caminho
 que funciona hoje.
 
 `--source proposer`: regiões por cor e contorno, o caminho para
-largar os 184 templates. **Experimental** — é a única parte
+largar os templates da coleta de referência (184 naquele snapshot).
+**Experimental** — é a única parte
 destes arquivos que não saiu de número medido no dataset.
 Confira antes com:
 

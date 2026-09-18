@@ -88,7 +88,7 @@ sempre "clique no que apareceu", e isso a `StateMachine` já faz.
 | **A interface `detect()`** | é o contrato inteiro, ver abaixo |
 | **Os 50 recortes de template** | viram **fonte de dados sintéticos** |
 | Os 4 fixtures + `tests/golden/` | viram conjunto de validação e comparador |
-| `tests/template_selector.py` | vira ferramenta de anotação, com pouca mudança |
+| `tools/template_selector.py` | vira ferramenta de anotação, com pouca mudança |
 | `Detector.draw()` | desenha caixa igual, venha de onde vier |
 
 O contrato é uma linha só:
@@ -195,7 +195,8 @@ arte 2D achatada e determinística — não são fotos. Então colar
 recortes em fundos gera anotação **perfeita e gratuita**, o que
 não funcionaria com objetos fotográficos.
 
-Script `tools/gerar_dataset.py`:
+Esta etapa ainda não tem um script implementado no repositório. O gerador
+abaixo é uma proposta de ferramenta futura, não um comando disponível:
 
 1. Junte fundos: screenshots de gameplay **sem** os elementos de
    interesse (ou com eles apagados/desfocados).

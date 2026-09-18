@@ -23,7 +23,8 @@ Para cada ação do bot: o **frame** que motivou a decisão e os
 
 Isto é **behavior cloning**: o professor é o template matcher, e
 rótulo nenhum fica melhor que ele. Serve porque o objetivo não é
-decidir melhor — é **generalizar**. Hoje são 184 templates
+decidir melhor — é **generalizar**. A coleta que originou este documento
+tinha 184 templates
 recortados à mão (124 só de comida), e cada prato novo exige um
 recorte novo. Uma rede reconhece o que nunca viu; template
 matching, por construção, não.
@@ -38,24 +39,29 @@ em `changed`, os erros do professor ficam de fora.
 Em [src/core/config.py](../src/core/config.py):
 
 ```python
-DATASET_SAVE = True                      # já ligado
-DATASET_DIR = PROJECT_ROOT / "dataset"     # destino, e origem do treino
-DATASET_IMAGE_FORMAT = "jpg"               # já em jpg
+DATASET_SAVE = False                       # desligado por padrão
+DATASET_DIR = PROJECT_ROOT / "dataset"      # destino e raiz do treino
+DATASET_IMAGE_FORMAT = "jpg"
 ```
 
-Rode o bot normalmente. A pasta fica assim:
+Ative uma coleta com `python src/main.py --ai-collect` ou defina
+`DATASET_SAVE = True`. A coleta atual separa os dados por resolução:
 
 ```
 dataset/
-├── samples.jsonl               índice — a FONTE DE VERDADE
-└── images/
-    └── 2026-08-21/
-        ├── 405b15c4….png
-        └── de97ab51….png
+├── data/
+│   └── 1088x1742/
+│       ├── samples.jsonl       índice — a FONTE DE VERDADE
+│       └── images/
+│           └── 2026-09-17/
+│               ├── 405b15c4….jpg
+│               └── de97ab51….jpg
+└── cache/                      cache de features do treino
 ```
 
-`dataset/` está no `.gitignore`: imagem pesa e não entra em
-commit. Backup por cópia/`rsync`.
+`dataset/data/` está no `.gitignore`: as imagens e índices de coleta não
+entram em commit. O cache de features em `dataset/cache/` é mantido no
+repositório por decisão do projeto. Faça backup dos dados por cópia/`rsync`.
 
 ### Espaço em disco (medido)
 
@@ -82,15 +88,15 @@ jogando.
 
 ### Quais ações entram
 
-`DATASET_ACTIONS` no config: **todas as 16 que o bot sabe
-fazer**, mais os dois swipes de exploração.
+`DATASET_ACTIONS` no config contém 19 categorias, incluindo os dois
+swipes de exploração.
 
 | Comportamento | Ações |
 |---|---|
 | toque no centro da detecção | `click` (o build), `close`, `food`, `new_point`, `new_point_click`, `open_box`, `open_renovate`, `open_store_click`, `plane`, `renovate_click`, `upgrade` |
 | vários toques | `upgrade_item` |
 | toque longo | `upgrade_food` — cobre a evolução da comida inteira, em `NORMAL` e em `FOOD` |
-| ponto fixo | `gray_max`, `dismiss` |
+| ponto fixo | `gray_max`, `gray_coin`, `dismiss` |
 | sem alvo pontual | `scroll_bottom`, `swipe_up`, `swipe_down` |
 
 `swipe_up`/`swipe_down` não estão em `ACTION_TABLE`: são a
@@ -116,7 +122,7 @@ Uma linha JSON por amostra em `samples.jsonl`:
   "id": "405b15c441eb4bfd8a9d533cf9a9f4d2",
   "session": "aa2f92cd…",
   "created_at": "2026-08-21T15:15:32.481+00:00",
-  "image": "images/2026-08-21/405b15c4….png",
+  "image": "images/2026-08-21/405b15c4….jpg",
   "image_sha256": "9f2a…",
   "phash": "0110100…",
   "frame_width": 1080,
@@ -227,9 +233,13 @@ DATASET_DB_BATCH = 20
 O caminho recomendado é **importar depois**, não gravar ao vivo:
 
 ```bash
-python tools/dataset_import.py
+python tools/dataset_import.py --jsonl dataset/data/1088x1742/samples.jsonl
 python tools/dataset_import.py --dsn postgresql://... --jsonl outro/samples.jsonl
 ```
+
+Sem `--jsonl`, o importador procura o layout plano legado em
+`dataset/samples.jsonl`. Para coletas atuais, escolha cada shard em
+`dataset/data/<resolução>/samples.jsonl`.
 
 Funciona para sessões antigas, gravadas antes de existir banco.
 Reimportar é seguro: chave primária + `ON CONFLICT DO NOTHING`.
