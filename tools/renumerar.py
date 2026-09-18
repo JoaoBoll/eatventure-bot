@@ -1,32 +1,16 @@
 """
-Compacta a numeração dos templates: item_001..item_NNN, sem
-lacunas.
+Compacta a numeração dos templates: item_001..item_NNN, sem lacunas
+(lacuna deixa o "próximo número" ambíguo). Por padrão só mostra, pois
+renomear é irreversível; processa em ordem crescente para nunca
+sobrescrever, e pula com aviso se o destino já existir.
 
     python tools/renumerar.py              # mostra o que mudaria
     python tools/renumerar.py --aplicar    # renomeia
     python tools/renumerar.py --aplicar --categoria food
-
-Por padrão só MOSTRA, porque renomear arquivo é irreversível.
-
-O template_selector chama isto sozinho antes de salvar, então o
-template novo sempre entra no último número da sequência.
-
-Apagar um template no meio deixa lacuna (item_005 faltando entre
-004 e 006), e daí o "próximo número" fica ambíguo. Compactar
-resolve na origem.
-
-Segurança:
-
-  - processa em ordem CRESCENTE, então o destino de cada
-    arquivo já está livre: alvo <= origem, e quem ainda não foi
-    processado tem número maior que a origem
-  - nunca sobrescreve: se o destino existir, pula e avisa
-  - a numeração não aparece em nenhuma parte do runtime além do
-    log, e o golden da regressão não guarda o nome do arquivo,
-    então renomear não invalida a linha de base
 """
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
@@ -34,45 +18,68 @@ ROOT = Path(__file__).resolve().parent.parent
 
 TEMPLATES_DIR = ROOT / "src" / "vision" / "templates"
 
+# O nome pode trazer a resolução em que o recorte foi tirado
+# ("1080x2400_item_001.png"): em default/ isso é procedência, já que ele
+# recebe recorte de telas diferentes. O prefixo é preservado no rename — a
+# numeração é única dentro da categoria, independente de prefixo.
+NUMERADO = re.compile(r"^(?:(\d+x\d+)_)?item_(\d+)$")
+
+
+def _partes(path):
+    """(prefixo pronto para concatenar, número), ou None se não for item numerado."""
+
+    casou = NUMERADO.match(path.stem)
+
+    if casou is None:
+        return None
+
+    prefixo, numero = casou.groups()
+
+    return (
+        f"{prefixo}_" if prefixo else "",
+        int(numero),
+    )
+
 
 def numerados(category_dir):
-    """
-    [(numero, caminho)] dos item_NNN.png, em ordem crescente.
-    Arquivos com nome fora do padrão são ignorados.
-    """
+    """[(numero, caminho)] dos item_NNN.png, com ou sem prefixo, em ordem crescente."""
 
     encontrados = []
 
-    for path in category_dir.glob("item_*.png"):
+    for path in category_dir.glob("*.png"):
 
-        sufixo = path.stem.split("_")[-1]
+        partes = _partes(path)
 
-        if sufixo.isdigit():
+        if partes is not None:
 
-            encontrados.append((int(sufixo), path))
+            encontrados.append((partes[1], path))
 
-    encontrados.sort(key=lambda item: item[0])
+    # Nome desempata: dois prefixos podem trazer o mesmo número, e sem
+    # critério estável a ordem viria da pasta e o plano mudaria a cada run.
+    encontrados.sort(key=lambda item: (item[0], item[1].name))
 
     return encontrados
 
 
 def planejar(category_dir):
-    """
-    Devolve [(origem, destino)] para deixar a sequência
-    contígua. Lista vazia = já está compacta.
-    """
+    """[(origem, destino)] para deixar a sequência contígua; vazio = já compacta."""
 
     mudancas = []
 
-    for indice, (numero, path) in enumerate(
+    for indice, (_, path) in enumerate(
         numerados(category_dir),
         start=1,
     ):
 
-        if numero == indice:
-            continue
+        prefixo = _partes(path)[0]
 
-        destino = category_dir / f"item_{indice:03d}.png"
+        destino = (
+            category_dir
+            / f"{prefixo}item_{indice:03d}.png"
+        )
+
+        if destino == path:
+            continue
 
         mudancas.append((path, destino))
 
@@ -80,10 +87,7 @@ def planejar(category_dir):
 
 
 def renumerar(category_dir, aplicar=False, log=print):
-    """
-    Compacta a categoria. Devolve as mudanças realizadas (ou
-    planejadas, quando aplicar=False).
-    """
+    """Compacta a categoria; devolve as mudanças realizadas (ou planejadas, se aplicar=False)."""
 
     mudancas = planejar(category_dir)
 
@@ -111,17 +115,10 @@ def renumerar(category_dir, aplicar=False, log=print):
 
 
 def proximo_numero(category_dir):
-    """
-    Número do próximo template, assumindo a sequência já
-    compacta: len + 1.
-    """
+    """Número do próximo template, assumindo a sequência já compacta: len + 1."""
 
     return len(numerados(category_dir)) + 1
 
-
-# =========================================================
-# Main
-# =========================================================
 
 def main():
 
@@ -151,8 +148,14 @@ def main():
 
         return 1
 
+    # TEMPLATES_DIR/default/<categoria> e TEMPLATES_DIR/<resolucao>/<categoria> —
+    # duas camadas, não uma: o grupo (default ou resolução) não é categoria.
     pastas = sorted(
-        d for d in TEMPLATES_DIR.iterdir() if d.is_dir()
+        categoria
+        for grupo in TEMPLATES_DIR.iterdir()
+        if grupo.is_dir()
+        for categoria in grupo.iterdir()
+        if categoria.is_dir()
     )
 
     if args.categoria:

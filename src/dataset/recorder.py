@@ -1,31 +1,4 @@
-"""
-Gravação do dataset de treino.
-
-Grava, para cada ação do bot, o frame que motivou a decisão e os
-RÓTULOS que o template matcher produziu — as caixas com
-categoria, o alvo escolhido, o ponto tocado e o RESULTADO da
-ação.
-
-Por que caixas e não só o ponto do clique:
-
-    Um ponto por imagem é a formulação mais fraca possível —
-    ambígua quando há vários alvos na tela, e não ensina quantos
-    existem. Com as caixas, a tarefa é detecção de objetos: a
-    mesma que o template matcher faz, com muito mais rótulo por
-    imagem. O ponto do clique se deriva da caixa; o contrário
-    não.
-
-Por que gravar o resultado:
-
-    Sem ele o treino herda todo erro do professor, e o modelo
-    não passa do template matcher. Com ele dá para treinar só
-    nas ações que mudaram a tela como esperado.
-
-Nada disto roda no caminho crítico: codificar PNG de 1080x2400
-custa mais que uma passada do detector. A gravação vai para uma
-thread com fila LIMITADA que DESCARTA quando enche — perder
-amostra é aceitável, atrasar o bot não é.
-"""
+"""Grava dataset: frame, detecções (caixas+categoria), ação e resultado. Assíncrono com fila descartável."""
 
 import hashlib
 import json
@@ -40,6 +13,7 @@ import cv2
 import numpy as np
 
 from core import log
+from dataset import layout
 from core.config import (
     DATASET_ACTIONS,
     DATASET_DIR,
@@ -65,12 +39,7 @@ UNKNOWN = "unknown"        # não chegou frame para julgar
 
 
 class Sample:
-    """
-    Uma amostra em construção.
-
-    Fica pendente entre a ação e o frame que mostra o efeito
-    dela — é essa espera que permite gravar o resultado.
-    """
+    """Amostra em construção: fica pendente entre a ação e o frame que mostra o efeito dela."""
 
     __slots__ = (
         "id",
@@ -117,47 +86,24 @@ class DatasetRecorder:
 
         self.enabled = enabled
 
-        self.images_dir = self.root / "images"
-        self.index_path = self.root / "samples.jsonl"
+        # Destino é por resolução e decidido por amostra: o device pode
+        # trocar de resolução no meio da sessão (outro aparelho, rotação).
+        self.data_dir = self.root / layout.DATA_DIRNAME
 
-        # -------------------------------------------------
-        # FILA
-        # -------------------------------------------------
-        #
-        # Limitada e descartável: o bot nunca espera o disco.
-        #
+        # Fila limitada e descartável: o bot nunca espera o disco.
         self.queue = queue.Queue(maxsize=DATASET_QUEUE_SIZE)
 
         self.running = False
         self.thread = None
 
-        # -------------------------------------------------
-        # AMOSTRA PENDENTE
-        # -------------------------------------------------
-
         self.pending = None
         self.lock = threading.Lock()
 
-        # -------------------------------------------------
-        # BOT TRAVADO
-        # -------------------------------------------------
-        #
-        # Sem isto, um bot preso repetindo a mesma ação enche o
-        # dataset com a mesma tela: medido, 35 amostras em 30 s.
-        #
-        # A deduplicação por CONTEÚDO foi tentada e não serve —
-        # a tela do jogo anima sozinha, e as faixas de "mesma
-        # tela" e "telas distintas" se sobrepõem. O que separa
-        # limpo é o RESULTADO: travado dá `unchanged` sempre,
-        # produtivo dá `changed` (open_box 5x seguidas, todas
-        # changed).
-        #
+        # Corta amostragem de ação travada (medido: 35 amostras/30s repetindo a mesma tela).
+        # Dedup por conteúdo não serve aqui pois a tela anima sozinha; o que separa
+        # limpo é o RESULTADO (unchanged em sequência = travado).
         self.unchanged_action = None
         self.unchanged_streak = 0
-
-        # -------------------------------------------------
-        # CONTADORES
-        # -------------------------------------------------
 
         self.saved = 0
         self.dropped = 0
@@ -175,16 +121,12 @@ class DatasetRecorder:
 
         self.disk_warned = False
 
-    # =====================================================
-    # CICLO DE VIDA
-    # =====================================================
-
     def start(self):
 
         if self.running or not self.enabled:
             return
 
-        self.images_dir.mkdir(parents=True, exist_ok=True)
+        self.data_dir.mkdir(parents=True, exist_ok=True)
 
         self.running = True
 
@@ -207,8 +149,7 @@ class DatasetRecorder:
         if not self.running:
             return
 
-        # Fecha a amostra pendente antes de sair: ela já tem o
-        # frame e os rótulos, só não tem veredito.
+        # Fecha a pendente com veredito UNKNOWN em vez de perdê-la.
         self._flush_pending(UNKNOWN, None)
 
         self.running = False
@@ -239,10 +180,6 @@ class DatasetRecorder:
 
             self.store.close()
 
-    # =====================================================
-    # ENTRADA: AÇÃO
-    # =====================================================
-
     def on_action(
         self,
         action,
@@ -255,13 +192,7 @@ class DatasetRecorder:
         lag,
         cycle_count=0,
     ):
-        """
-        Chamado quando uma ação SAIU de verdade.
-
-        `click` é o ponto tocado em coordenada do FRAME (o
-        mesmo espaço da imagem gravada), ou None para ações sem
-        coordenada.
-        """
+        """Chamado quando uma ação SAIU de verdade. `click` está em coordenada do FRAME."""
 
         if not self.running:
             return
@@ -287,15 +218,12 @@ class DatasetRecorder:
                 created=datetime.now(timezone.utc),
                 action_time=agora,
 
-                # O frame já é cópia privada do ScreenCapture,
-                # mas a partir daqui ele vive além do loop:
-                # copiar evita depender disso.
+                # Cópia própria: o frame do ScreenCapture não sobrevive além do loop.
                 frame=frame.copy(),
 
                 detections=list(detections or []),
 
-                # Miniatura do ANTES, para julgar ação sem alvo
-                # pontual pela mudança de tela.
+                # Miniatura do ANTES, para julgar ação sem alvo pela mudança de tela.
                 thumb=self._thumb(frame),
 
                 action=action,
@@ -307,20 +235,9 @@ class DatasetRecorder:
                 cycle_count=cycle_count,
             )
 
-    # =====================================================
-    # ENTRADA: CADA FRAME
-    # =====================================================
-
     def observe(self, frame, detections, frame_time, state):
-        """
-        Chamado a cada passada, com o frame que gerou as
-        detecções atuais.
-
-        Faz duas coisas: julga a ação pendente, e recolhe
-        amostra NEGATIVA (tela sem alvo nenhum) de vez em
-        quando — um detector treinado só em telas com alvo
-        aprende que sempre existe alvo.
-        """
+        """Julga a ação pendente e, de vez em quando, recolhe uma amostra NEGATIVA
+        (tela sem alvo) — senão o detector aprende que sempre existe alvo."""
 
         if not self.running:
             return
@@ -328,10 +245,6 @@ class DatasetRecorder:
         self._resolve(frame, detections, frame_time)
 
         self._maybe_negative(frame, detections, state)
-
-    # =====================================================
-    # RESULTADO
-    # =====================================================
 
     def _resolve(self, frame, detections, frame_time):
 
@@ -362,13 +275,7 @@ class DatasetRecorder:
         )
 
     def _julgar(self, pendente, frame, detections):
-        """
-        A ação surtiu efeito?
-
-        Com alvo, a pergunta é se ele saiu da tela. SEM alvo
-        (swipe, scroll, dismiss), isso não quer dizer nada — a
-        pergunta passa a ser se a TELA mudou.
-        """
+        """Com alvo, julga se ele saiu da tela; sem alvo (swipe/scroll/dismiss), se a TELA mudou."""
 
         if pendente.target is not None:
 
@@ -386,13 +293,8 @@ class DatasetRecorder:
         return CHANGED if mudou else UNCHANGED
 
     def _alvo_continua(self, pendente, detections):
-        """
-        O alvo ainda está lá, mais ou menos no mesmo lugar?
-
-        Comparar só a categoria daria falso "continua" quando
-        há outra instância da mesma categoria em outro canto da
-        tela — comum com comida.
-        """
+        """Checa categoria E posição — só categoria daria falso "continua" com
+        outra instância da mesma categoria em outro canto da tela (comum com comida)."""
 
         alvo = pendente.target
 
@@ -430,10 +332,6 @@ class DatasetRecorder:
         pendente.outcome_after = depois
 
         self._submit(pendente)
-
-    # =====================================================
-    # NEGATIVAS
-    # =====================================================
 
     def _maybe_negative(self, frame, detections, state):
 
@@ -476,10 +374,6 @@ class DatasetRecorder:
             )
         )
 
-    # =====================================================
-    # FILA
-    # =====================================================
-
     def _submit(self, sample):
 
         try:
@@ -500,10 +394,6 @@ class DatasetRecorder:
                     "muito rápido?",
                     self.dropped,
                 )
-
-    # =====================================================
-    # THREAD
-    # =====================================================
 
     def _run(self):
 
@@ -530,10 +420,6 @@ class DatasetRecorder:
                     error,
                 )
 
-    # =====================================================
-    # ESCRITA
-    # =====================================================
-
     def _write(self, sample):
 
         frame = sample.frame
@@ -541,13 +427,7 @@ class DatasetRecorder:
         if frame is None:
             return
 
-        # -------------------------------------------------
-        # TETO DE DISCO
-        # -------------------------------------------------
-        #
-        # O bot roda horas sem ninguém olhando; sem teto, o
-        # sintoma é disco cheio.
-        #
+        # Teto de disco: o bot roda horas sem ninguém olhando.
         if (
             DATASET_MAX_DISK_MB
             and self.bytes_written >= DATASET_MAX_DISK_MB * 1_000_000
@@ -568,14 +448,7 @@ class DatasetRecorder:
 
             return
 
-        # -------------------------------------------------
-        # BOT TRAVADO?
-        # -------------------------------------------------
-        #
-        # Mesma ação dando `unchanged` de novo e de novo = preso.
-        # Guardar a terceira em diante só engorda o dataset com
-        # a mesma tela.
-        #
+        # Mesma ação dando unchanged repetidamente = bot preso; para de gravar a mesma tela.
         if sample.action and sample.outcome == UNCHANGED:
 
             if sample.action == self.unchanged_action:
@@ -611,13 +484,17 @@ class DatasetRecorder:
 
         chave = self._perceptual_hash(frame)
 
-        # -------------------------------------------------
-        # IMAGEM
-        # -------------------------------------------------
-
         dia = sample.created.strftime("%Y-%m-%d")
 
-        pasta = self.images_dir / dia
+        altura_frame, largura_frame = sample.frame.shape[:2]
+
+        shard = layout.shard_root(
+            self.root,
+            largura_frame,
+            altura_frame,
+        )
+
+        pasta = layout.images_dir(shard) / dia
 
         pasta.mkdir(parents=True, exist_ok=True)
 
@@ -643,13 +520,12 @@ class DatasetRecorder:
 
             return
 
-        # -------------------------------------------------
-        # REGISTRO
-        # -------------------------------------------------
+        registro = self._record(sample, caminho, chave, shard)
 
-        registro = self._record(sample, caminho, chave)
-
-        with self.index_path.open("a", encoding="utf-8") as arquivo:
+        with layout.index_path(shard).open(
+            "a",
+            encoding="utf-8",
+        ) as arquivo:
 
             arquivo.write(
                 json.dumps(registro, ensure_ascii=False) + "\n"
@@ -663,13 +539,7 @@ class DatasetRecorder:
 
         self.by_action[rotulo] = self.by_action.get(rotulo, 0) + 1
 
-        # -------------------------------------------------
-        # ÍNDICE NO BANCO (opcional)
-        # -------------------------------------------------
-        #
-        # Falha de banco não pode derrubar a gravação: o JSONL
-        # continua sendo a fonte de verdade do treino.
-        #
+        # Índice no banco é opcional; falha aqui não pode derrubar a gravação (JSONL é a fonte de verdade).
         if self.store:
 
             try:
@@ -684,7 +554,7 @@ class DatasetRecorder:
                     error,
                 )
 
-    def _record(self, sample, caminho, phash):
+    def _record(self, sample, caminho, phash, shard):
 
         altura, largura = sample.frame.shape[:2]
 
@@ -695,10 +565,11 @@ class DatasetRecorder:
             "session": self.session,
             "created_at": sample.created.isoformat(),
 
-            # Relativo à raiz do dataset: mover a pasta não
-            # invalida o índice.
+            # Relativo à raiz DA RESOLUÇÃO: a pasta daquela resolução
+            # inteira pode ser movida, copiada ou apagada sem invalidar
+            # o índice dela nem o das outras.
             "image": str(
-                caminho.relative_to(self.root).as_posix()
+                caminho.relative_to(shard).as_posix()
             ),
 
             "image_sha256": self._sha256(caminho),
@@ -723,7 +594,7 @@ class DatasetRecorder:
                 None if alvo is None else alvo.get("category")
             ),
             "target_template": (
-                None if alvo is None else alvo.get("name")
+                None if alvo is None else alvo.get("template_path")
             ),
             "target_confidence": (
                 None if alvo is None else float(alvo.get("confidence", 0.0))
@@ -769,14 +640,7 @@ class DatasetRecorder:
             ],
         }
 
-    # =====================================================
-    # MINIATURA
-    # =====================================================
-
     def _thumb(self, frame):
-        """
-        Miniatura NxN em tons de cinza, para comparar telas.
-        """
 
         lado = DATASET_HASH_SIZE
 
@@ -789,19 +653,8 @@ class DatasetRecorder:
         ).astype(np.int16)
 
     def _mudou(self, antes, depois):
-        """
-        A tela mudou de forma visível entre os dois frames?
-
-        Usado nas ações SEM alvo pontual (swipe, scroll,
-        dismiss), onde "o alvo saiu da tela" não quer dizer
-        nada — o que interessa é se a ação surtiu efeito.
-
-        Detectar mudança GRANDE é confiável: uma rolagem move a
-        vista inteira (8.9 a 59.8 nos dados medidos), enquanto o
-        ruído de animação fica abaixo de 5.8. É a distinção que
-        a deduplicação NÃO consegue fazer, porque lá o problema
-        é separar "nada mudou" de "mudou pouco".
-        """
+        """Mudança GRANDE é confiável: rolagem move 8.9-59.8 (medido) vs ruído de
+        animação abaixo de 5.8 — a distinção que a dedup por conteúdo não consegue fazer."""
 
         if antes is None or depois is None:
             return None
@@ -811,14 +664,7 @@ class DatasetRecorder:
         )
 
     def _perceptual_hash(self, frame):
-        """
-        Hash de similaridade, gravado como METADADO.
-
-        Não é usado para filtrar — a deduplicação por conteúdo
-        foi medida e não separa os casos aqui. Fica no índice
-        para deduplicar offline depois, com métrica melhor e sem
-        pressa.
-        """
+        """Gravado só como metadado — não filtra aqui, é para dedup offline depois."""
 
         pequeno = self._thumb(frame)
 
@@ -827,10 +673,7 @@ class DatasetRecorder:
         return "".join("1" if b else "0" for b in bits)
 
     def _sha256(self, caminho):
-        """
-        Identidade exata do arquivo, para o treino poder
-        detectar duplicata entre sessões e conferir integridade.
-        """
+        """Identidade exata do arquivo, para detectar duplicata entre sessões."""
 
         digest = hashlib.sha256()
 
@@ -841,10 +684,6 @@ class DatasetRecorder:
                 digest.update(bloco)
 
         return digest.hexdigest()
-
-    # =====================================================
-    # ESTATÍSTICAS
-    # =====================================================
 
     def stats(self):
 

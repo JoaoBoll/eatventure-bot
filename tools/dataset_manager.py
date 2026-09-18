@@ -1,23 +1,11 @@
 """
-Dataset manager utilities
+Dataset manager: list-sessions, delete-session, remove-session,
+list-orphans, move-orphans, delete-orphans. Usa DATASET_DIR de
+src/core/config.py.
 
-Subcommands:
-  list-sessions    : list session ids and counts in samples.jsonl
-  delete-session   : delete images by session id (with --prune-index, --dry-run, --yes)
-  list-orphans     : list images present in dataset/images but not referenced in samples.jsonl
-  move-orphans     : move orphan images to a timestamped backup folder
-  delete-orphans   : delete orphan images (optionally move first as backup)
-
-Usage examples:
   python tools/dataset_manager.py list-sessions
   python tools/dataset_manager.py delete-session --session <id> --dry-run
-  python tools/dataset_manager.py list-orphans
   python tools/dataset_manager.py move-orphans --yes
-  python tools/dataset_manager.py delete-orphans --backup
-
-Notes:
-- Uses DATASET_DIR from src/core/config.py (default dataset/)
-- Does not create git commits; operates on workspace files
 """
 
 import argparse
@@ -40,7 +28,6 @@ SAMPLES = lambda jsonl: Path(jsonl)
 
 
 def load_samples(path: Path):
-    """Yield (lineno, obj) for each valid JSON line in path."""
     with path.open("r", encoding="utf-8") as fh:
         for lineno, line in enumerate(fh, start=1):
             line = line.strip()
@@ -68,7 +55,6 @@ def find_orphans(jsonl_path: Path, images_root: Path):
     for _, s in load_samples(jsonl_path):
         im = s.get("image")
         if im:
-            # normalize to posix style relative path
             referenced.add(str(Path(im).as_posix()))
 
     orphans = []
@@ -79,14 +65,13 @@ def find_orphans(jsonl_path: Path, images_root: Path):
     for f in images_root.rglob("*"):
         if f.is_file():
             rel = str(f.relative_to(images_root.parent).as_posix())
-            # rel like images/2026-08-21/name.jpg
             if rel not in referenced:
                 orphans.append(rel)
     return orphans
 
 
 def delete_session_images(jsonl_path: Path, session_id: str, yes=False, prune_index=False, dry_run=False):
-    to_delete = []  # list of (lineno, Path)
+    to_delete = []
     lines_to_drop = set()
 
     for lineno, sample in load_samples(jsonl_path):
@@ -97,7 +82,6 @@ def delete_session_images(jsonl_path: Path, session_id: str, yes=False, prune_in
                 lines_to_drop.add(lineno)
                 continue
             image_path = (DATASET_DIR / Path(image_rel)).resolve()
-            # Safety: ensure it's inside DATASET_DIR
             try:
                 if DATASET_DIR.resolve() in image_path.parents or image_path == DATASET_DIR.resolve():
                     to_delete.append((lineno, image_path))
@@ -164,14 +148,9 @@ def delete_session_images(jsonl_path: Path, session_id: str, yes=False, prune_in
 
 
 def remove_session(jsonl_path: Path, session_id: str, yes=False, dry_run=False, backup_images=False):
-    """Remove images and index lines for a given session.
+    """Remove imagens e linhas do índice de uma session; sempre faz backup do índice antes de reescrever."""
 
-    By default deletes images (irreversible). If backup_images is True,
-    moves images to DATASET_DIR/backup_session_<session>_<ts> instead.
-    Always creates a backup of the json index before rewriting it.
-    """
-
-    to_remove = []  # list of (lineno, image_rel, image_path)
+    to_remove = []
     lines_to_drop = set()
 
     for lineno, sample in load_samples(jsonl_path):
@@ -210,11 +189,9 @@ def remove_session(jsonl_path: Path, session_id: str, yes=False, dry_run=False, 
             print("Abortado pelo usuário.")
             return 0
 
-    # Backup the json index first
     backup_json = jsonl_path.with_suffix(jsonl_path.suffix + ".bak")
     jsonl_path.rename(backup_json)
 
-    # Handle images: either delete or move to session-specific backup
     moved = 0
     deleted = 0
     missing = 0
@@ -242,7 +219,6 @@ def remove_session(jsonl_path: Path, session_id: str, yes=False, dry_run=False, 
             logger.exception("Erro ao manipular %s", p)
             errors += 1
 
-    # Rewrite jsonl skipping the dropped lines. Use the backup as source.
     try:
         with backup_json.open("r", encoding="utf-8") as rfh, jsonl_path.open("w", encoding="utf-8") as wfh:
             for lineno, line in enumerate(rfh, start=1):
@@ -316,7 +292,6 @@ def delete_orphans(images_root: Path, orphan_list, backup_before=False, yes=Fals
             if src.exists():
                 shutil.move(str(src), str(dest))
         print(f"Arquivos movidos para backup em {backup}")
-        # after backup, nothing left to delete
         return 0
 
     print(f"Apagar {len(orphan_list)} arquivos órfãos (irreversível)")

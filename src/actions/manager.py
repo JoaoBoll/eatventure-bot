@@ -1,19 +1,4 @@
-"""
-Tradução de "ação" em toque no device.
-
-Duas mudanças estruturais em relação à versão anterior:
-
-1. Despacho por TABELA, não por cadeia de if/elif.
-   Todas as ações que só clicam no centro da detecção
-   apontam para o mesmo handler — o clique é escrito
-   uma vez, num lugar só.
-
-2. Execução ASSÍNCRONA, numa thread própria.
-   O long press do upgrade de comida dura 4 segundos.
-   Antes isso congelava o loop principal inteiro: nenhum
-   frame consumido, ESC sem resposta. Agora a ação corre
-   em paralelo e a StateMachine consulta is_busy().
-"""
+"""ActionManager: despacho por tabela, execução assíncrona em thread própria."""
 
 import queue
 import threading
@@ -22,6 +7,7 @@ import time
 from actions.android import AndroidActions
 from core import log
 from core.config import (
+    ACTION_POINTS,
     DISMISS_HOLD_DURATION,
     DISMISS_POINT,
     SCROLL_BOTTOM_DIRECTION,
@@ -39,36 +25,17 @@ from core.config import (
 logger = log.get("action")
 
 
-# =========================================================
-# TIPOS DE AÇÃO
-# =========================================================
+CLICK = "click"        # toque no centro da detecção
+REPEAT = "repeat"      # vários toques
+PRESS = "press"        # toque longo
+DISMISS = "dismiss"    # tap em ponto fixo
+HOLD = "hold"          # toque mantido em ponto fixo
+SCROLL = "scroll"      # rola tela até fim
 
-CLICK = "click"        # um toque no centro da detecção
-REPEAT = "repeat"      # vários toques no centro da detecção
-PRESS = "press"        # toque longo no centro da detecção
-DISMISS = "dismiss"    # tap em ponto fixo, ignora a detecção
-HOLD = "hold"          # toque MANTIDO em ponto fixo
-SCROLL = "scroll"      # rola a tela até o fim, para escapar
-
-# Comportamentos que não precisam de detecção: agem em ponto
-# fixo ou não usam coordenada nenhuma.
-SEM_DETECCAO = {DISMISS, HOLD, SCROLL}
+SEM_DETECCAO = {DISMISS, HOLD, SCROLL}  # Ações sem detecção
 
 
-# =========================================================
-# TABELA DE AÇÕES
-# =========================================================
-#
-# Antes eram 20 ramos de if/elif chamando seis métodos
-# (_food, _upgrade, _plane, _close, _new_point, _open_box)
-# que faziam exatamente a mesma coisa: android.click().
-#
-# Aqui cada nome aponta para o COMPORTAMENTO. Nomes com o
-# mesmo comportamento compartilham o mesmo handler, então
-# o clique existe uma vez só e não há duplicata para
-# manter em sincronia.
-#
-
+# Tabela de ações: nome -> comportamento (deduplicação de handlers)
 ACTION_TABLE = {
     "click": CLICK,
     "food": CLICK,
@@ -86,23 +53,19 @@ ACTION_TABLE = {
 
     "upgrade_food": PRESS,
 
-    # Fechar painel que abriu sem querer, tocando num ponto
-    # neutro. Dois gatilhos com alvo igual e DURAÇÃO
-    # diferente: o gray_max fecha com tap, o painel de comida
-    # precisa de toque mantido ou não registra.
-    "gray_max": DISMISS,
-    "dismiss": HOLD,
+    "gray_max": DISMISS,  # Fechar painel indesejado com tap
+    "dismiss": HOLD,      # Idem mas com toque mantido
 
-    # Rola a tela até o fim. Não fecha nada por si — serve para
-    # chegar na posição de rolagem em que o canto de baixo fica
-    # vazio, e aí o toque no ponto finalmente fecha em vez de
-    # abrir outra coisa.
-    #
-    # NÃO existe ação "back" aqui de propósito: neste jogo o
-    # botão voltar do Android SAI DO JOGO. O android.back()
-    # continua implementado, mas fora da tabela.
-    "scroll_bottom": SCROLL,
+    "gray_coin": DISMISS,  # Tap em ponto fixo diferente (ACTION_POINTS)
+
+    "scroll_bottom": SCROLL,  # Rola até vazio (não fecha nada)
 }
+
+
+def ponto_fixo(action):
+    """Ponto em coordenadas de REFERÊNCIA. Função de módulo para sincronizar dataset e despacho."""
+
+    return ACTION_POINTS.get(action, DISMISS_POINT)
 
 
 class ActionManager:
@@ -111,24 +74,9 @@ class ActionManager:
 
         self.android = AndroidActions(serial)
 
-        # -------------------------------------------------
-        # ESCALA FRAME -> DEVICE
-        # -------------------------------------------------
-        #
-        # As detecções vêm em coordenada do frame decodificado
-        # do scrcpy. O toque vai em coordenada do device.
-        #
-        # Se o stream vier reduzido, as duas coisas são
-        # diferentes e o clique cai no lugar errado. Aqui
-        # elas ficam explicitamente separadas.
-        #
-
+        # Detecção em frame coords, toque em device coords (podem diferir se stream reduzido)
         self.device_size = None
         self.frame_size = None
-
-        # -------------------------------------------------
-        # THREAD DE AÇÃO
-        # -------------------------------------------------
 
         self.queue = queue.Queue(maxsize=1)
 
@@ -138,26 +86,8 @@ class ActionManager:
         self.busy = False
         self.busy_lock = threading.Lock()
 
-        # -------------------------------------------------
-        # QUANDO A ÚLTIMA AÇÃO TERMINOU
-        # -------------------------------------------------
-        #
-        # As ações são assíncronas e algumas são LONGAS: o swipe
-        # leva SWIPE_DURATION_MS, o long press de comida leva
-        # UPGRADE_FOOD_PRESS (4 s). A StateMachine só conhecia o
-        # instante da SUBMISSÃO.
-        #
-        # A diferença importa porque a espera pelo efeito
-        # (ACTION_SETTLE / SWIPE_WAITING_TIME) é contada a
-        # partir daqui. Medindo da submissão, um settle de 0.4 s
-        # já estava vencido quando um press de 4 s terminava — o
-        # bot agia sobre um frame capturado no MEIO da ação
-        # anterior.
+        # Quando a última ação terminou (settle é contado daqui, não da submissão)
         self.last_finished_at = 0.0
-
-    # =====================================================
-    # SETUP
-    # =====================================================
 
     def start(self):
 
@@ -218,10 +148,7 @@ class ActionManager:
             self.thread = None
 
     def set_frame_size(self, width, height):
-        """
-        Informa em que resolução as detecções estão sendo
-        calculadas. Chamado pelo loop principal.
-        """
+        """Resolução em que as detecções estão sendo calculadas."""
 
         size = (width, height)
 
@@ -241,14 +168,8 @@ class ActionManager:
                 self.device_size[1],
             )
 
-    # =====================================================
-    # CONVERSÃO DE COORDENADAS
-    # =====================================================
-
     def _from_frame(self, x, y):
-        """
-        Coordenada do frame -> coordenada do device.
-        """
+        """Frame coords -> device coords."""
 
         if not self.frame_size or not self.device_size:
             return int(x), int(y)
@@ -265,10 +186,7 @@ class ActionManager:
         )
 
     def _from_reference(self, x, y):
-        """
-        Coordenada da resolução de referência (onde os
-        pontos fixos foram anotados) -> device.
-        """
+        """Resolução de referência (onde os pontos fixos foram anotados) -> device."""
 
         if not self.device_size:
             return int(x), int(y)
@@ -281,13 +199,7 @@ class ActionManager:
         )
 
     def _reference_to_frame(self, x, y):
-        """
-        Coordenada da resolução de referência -> FRAME.
-
-        Existe para o rótulo do dataset: a imagem gravada é o
-        frame, então o ponto tocado tem de estar no espaço
-        dele. Não é usada para tocar.
-        """
+        """Referência -> FRAME. Usado só para o rótulo do dataset, não para tocar."""
 
         if not self.frame_size:
             return int(x), int(y)
@@ -300,18 +212,10 @@ class ActionManager:
         )
 
     def target_frame(self, action, detection):
-        """
-        Onde esta ação vai tocar, em coordenada de FRAME —
-        o mesmo espaço da imagem que o dataset grava.
+        """Onde a ação toca, em coords de FRAME (para o dataset). None se não há alvo pontual (scroll).
 
-        None quando a ação não tem alvo pontual (scroll).
-
-        Deliberadamente separada de _dispatch: o caminho do
-        toque continua convertendo direto da referência para o
-        device, sem passar pelo frame, porque dupla conversão
-        introduz arredondamento e é aquele caminho que gasta
-        moeda. As duas leem a MESMA constante, e
-        tests/test_dataset.py confere que caem no mesmo ponto.
+        Separada de _dispatch: o toque real converte direto de referência
+        para device, sem passar pelo frame (evita arredondamento em dinheiro real).
         """
 
         kind = ACTION_TABLE.get(action)
@@ -321,7 +225,9 @@ class ActionManager:
 
         if kind in (DISMISS, HOLD):
 
-            return self._reference_to_frame(*DISMISS_POINT)
+            return self._reference_to_frame(
+                *ponto_fixo(action)
+            )
 
         if detection is None:
             return None
@@ -332,15 +238,7 @@ class ActionManager:
         )
 
     def kind_of(self, action):
-        """
-        Comportamento por trás do nome da ação.
-        """
-
         return ACTION_TABLE.get(action)
-
-    # =====================================================
-    # SUBMISSÃO
-    # =====================================================
 
     def is_busy(self):
 
@@ -348,12 +246,7 @@ class ActionManager:
             return self.busy
 
     def execute(self, action, detection):
-        """
-        Enfileira uma ação. NÃO bloqueia.
-
-        Devolve False se já existe ação em andamento — a
-        StateMachine usa isso para não empilhar cliques.
-        """
+        """Enfileira uma ação (não bloqueia). False se já há ação em andamento."""
 
         kind = ACTION_TABLE.get(action)
 
@@ -400,10 +293,6 @@ class ActionManager:
             return False
 
         return True
-
-    # =====================================================
-    # WORKER
-    # =====================================================
 
     def _run(self):
 
@@ -452,10 +341,6 @@ class ActionManager:
 
             return
 
-        # -------------------------------------------------
-        # Centro do objeto detectado
-        # -------------------------------------------------
-
         if detection is not None:
 
             center_x = (
@@ -474,10 +359,6 @@ class ActionManager:
 
             x, y = 0, 0
 
-        # -------------------------------------------------
-        # Um ponto de saída por comportamento
-        # -------------------------------------------------
-
         if kind == CLICK:
 
             self._click(name, x, y)
@@ -492,23 +373,19 @@ class ActionManager:
 
         elif kind == DISMISS:
 
-            x, y = self._from_reference(*DISMISS_POINT)
+            x, y = self._from_reference(*ponto_fixo(name))
 
             self._click(name, x, y)
 
         elif kind == HOLD:
 
-            x, y = self._from_reference(*DISMISS_POINT)
+            x, y = self._from_reference(*ponto_fixo(name))
 
             self._hold(name, x, y)
 
         elif kind == SCROLL:
 
             self._scroll_bottom(name)
-
-    # =====================================================
-    # COMPORTAMENTOS
-    # =====================================================
 
     def _click(self, name, x, y):
 
@@ -522,14 +399,7 @@ class ActionManager:
         self.android.click(x, y)
 
     def _repeat(self, name, x, y):
-        """
-        Os N cliques num único comando adb.
-
-        Antes: N processos adb com sleeps entre eles, o que
-        dava 0.9 a 1.8 s para evoluir um item. O tempo era
-        todo overhead de processo — nada disso é o jogo
-        precisando de pausa.
-        """
+        """N cliques num único comando adb (evita overhead de N processos)."""
 
         logger.info(
             "%s -> %d clicks (%d, %d)",
@@ -542,13 +412,7 @@ class ActionManager:
         self.android.tap_many(x, y, UPGRADE_ITEM_CLICKS)
 
     def _hold(self, name, x, y):
-        """
-        Toque mantido num ponto fixo, curto.
-
-        Diferente do _press, que segura por 4 s no centro de
-        uma detecção para evoluir comida. Aqui a intenção é só
-        garantir que o toque registre.
-        """
+        """Toque mantido curto em ponto fixo (diferente de _press, que segura no centro da detecção)."""
 
         logger.info(
             "%s -> hold (%d, %d) por %.2fs",
@@ -581,12 +445,7 @@ class ActionManager:
         )
 
     def _scroll_bottom(self, name):
-        """
-        Sequência de swipes até o fim da tela.
-
-        Roda na thread de ação, então segurar ~1.5 s aqui não
-        congela o loop principal.
-        """
+        """Sequência de swipes até o fim da tela. Roda na thread de ação, não bloqueia o loop principal."""
 
         logger.info(
             "%s -> %d swipes '%s' (rolar até o fim)",
@@ -595,9 +454,6 @@ class ActionManager:
             SCROLL_BOTTOM_DIRECTION,
         )
 
-        # Os N swipes num único comando adb: eram 6
-        # processos mais 5 pausas, ~5 s só para rolar a
-        # tela.
         if SCROLL_BOTTOM_DIRECTION == "up":
             end_y = SWIPE_Y - SWIPE_DISTANCE
 
@@ -619,10 +475,6 @@ class ActionManager:
             SCROLL_BOTTOM_SWIPES,
             SWIPE_DURATION_MS,
         )
-
-    # =====================================================
-    # SWIPE
-    # =====================================================
 
     def _swipe(self, direction):
 

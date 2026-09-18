@@ -1,47 +1,4 @@
-"""
-Roda o detector numa thread separada.
-
-Mudanças em relação à versão anterior:
-
-1. As detecções carregam o TIMESTAMP do frame que as
-   gerou. Antes o loop principal entregava um frame e lia
-   o resultado do frame anterior sem saber a defasagem —
-   e clicava em coordenada velha achando que era atual.
-
-2. O worker aceita um FILTRO DE CATEGORIAS. Dentro da tela
-   de upgrade só interessam 2 categorias, não 43.
-
-3. NADA MATA ESTA THREAD.
-   Duas falhas estavam derrubando o worker na PRIMEIRA volta,
-   e as duas tinham o mesmo sintoma: bot parado, HUD sem
-   detecção nenhuma, nenhum erro visível depois do start.
-
-     - `latest_raw_frame` só existia depois do primeiro
-       set_frame, e o _run lia esse atributo antes disso:
-       AttributeError na primeira volta, thread morta.
-
-     - o detect era chamado com um argumento `resampled=`
-       que o Detector nunca aceitou: TypeError em toda
-       passada.
-
-   Agora o corpo do laço é protegido por inteiro, o erro é
-   logado uma vez por tipo (e não 60x por segundo), e
-   is_alive() deixa o loop principal ver que a visão caiu.
-
-4. SAI O LETTERBOX.
-   Normalizar o FRAME para o espaço de referência custava um
-   canvas de 7.8 MB e um resize por passada, exigia inverter
-   as coordenadas depois, e numa tela deitada encolhia a
-   imagem a ~0.45 — o que derrubava toda confiança abaixo do
-   threshold. Quem se adapta à resolução agora é o Detector,
-   reescalando os TEMPLATES uma vez por resolução de frame.
-   As detecções já nascem no espaço do frame real.
-
-5. ESPERA BLOQUEANTE.
-   Era um sleep(0.005) em laço: 200 acordadas por segundo
-   para, na maioria, não achar frame novo. Agora dorme numa
-   Condition e acorda no frame.
-"""
+"""Worker thread: detector assíncrono com filtro de categorias, sem letterbox, espera bloqueante."""
 
 import threading
 import time
@@ -64,13 +21,7 @@ class VisionWorker:
         self.running = False
         self.thread = None
 
-        # O frame à espera de análise.
-        #
-        # INICIALIZADO AQUI. Não é detalhe: o _run lê este
-        # atributo na primeira volta, antes de qualquer
-        # set_frame, e sem esta linha o que acontecia era
-        # AttributeError — a thread da visão morria no start e
-        # o bot passava a sessão inteira sem uma detecção.
+        # Inicializando para evitar AttributeError na primeira volta de _run
         self.latest_raw_frame = None
         self.latest_frame_time = 0.0
 
@@ -83,9 +34,7 @@ class VisionWorker:
 
         self.categories = None
 
-        # Um frame novo acorda o worker. Substitui o
-        # sleep(0.005) em laço, que acordava 200 vezes por
-        # segundo para na maioria não achar nada.
+        # Frame novo acorda o worker (substitui busy-wait)
         self.frame_lock = threading.Condition()
 
         self.detection_lock = threading.Lock()
@@ -95,26 +44,7 @@ class VisionWorker:
         self.last_error = None
         self._error_kinds = set()
 
-        # -------------------------------------------------
-        # PISO DE FRESCOR
-        # -------------------------------------------------
-        #
-        # Instante de captura abaixo do qual um frame não serve
-        # para decidir: ele mostra a tela de ANTES do efeito da
-        # última ação. Quem calcula é a StateMachine
-        # (frame_floor), que é quem sabe quando a ação terminou
-        # e quanto de espera ela pede.
-        #
-        # Por que o worker se importa: sem isto ele pegava o
-        # frame que estava na mão logo depois de uma ação e
-        # gastava uma passada INTEIRA nele — resultado que o
-        # _can_act ia descartar de qualquer forma. Duas perdas:
-        # a passada em si, e o atraso até a primeira passada
-        # ÚTIL, porque a próxima só começava depois dessa.
-        #
-        # Pular custa quase nada: a captura entrega um frame
-        # novo a cada 16-33 ms, e a janela pulada é justamente
-        # aquela em que o bot não pode agir.
+        # Frames anteriores a este timestamp são rejeitados (estabilização pós-ação)
         self.frame_floor = 0.0
 
         # Frames descartados por serem velhos demais para
@@ -133,10 +63,6 @@ class VisionWorker:
         self.duration = DurationMeter()
 
         self.rate = RateMeter()
-
-    # =====================================================
-    # START / STOP
-    # =====================================================
 
     def start(self):
 
@@ -163,28 +89,8 @@ class VisionWorker:
 
             self.thread = None
 
-    # =====================================================
-    # FRAME
-    # =====================================================
-
     def set_frame(self, frame, timestamp=None):
-        """
-        Guarda o frame bruto. NADA de processamento aqui.
-
-        Esta função roda no loop principal, a cada quadro
-        capturado (30-60 por segundo). O worker consome ~3 por
-        segundo — o resto é descartado.
-
-        Antes a normalização (resize do frame inteiro + canvas
-        de 7.8 MB) era feita AQUI, ou seja: 30 a 60 letterboxes
-        por segundo para 3 serem usados. 90% a 95% do trabalho
-        ia para o lixo, e ia no thread que também precisa manter
-        o imshow respondendo e o ESC funcionando.
-
-        Agora nem o letterbox existe: quem se adapta à
-        resolução é o Detector, reescalando os templates uma
-        vez por resolução de frame.
-        """
+        """Frame bruto sem processamento. Detector reescala templates por resolução."""
 
         with self.frame_lock:
 
@@ -197,31 +103,14 @@ class VisionWorker:
             self.frame_lock.notify()
 
     def set_frame_floor(self, timestamp):
-        """
-        Instante de captura abaixo do qual um frame não serve
-        para decidir. Chamado pelo loop principal com o
-        frame_floor() da StateMachine.
-
-        0.0 = nada a descartar (nenhuma ação ainda).
-        """
+        """Rejeita frames anteriores a este timestamp (estabilização pós-ação)."""
 
         with self.frame_lock:
 
             self.frame_floor = timestamp or 0.0
 
-    # =====================================================
-    # CATEGORIAS
-    # =====================================================
-
     def set_categories(self, categories):
-        """
-        Restringe a busca. None = todas.
-
-        A ORDEM é preservada (tupla, não conjunto): ela é a
-        prioridade das regras do estado, e é o que deixa o
-        detector parar de procurar na primeira categoria que
-        encontrar. Um `set` aqui embaralhava isso em silêncio.
-        """
+        """Restringe busca por categoria. Tupla preserva prioridade (ordem importa)."""
 
         with self.detection_lock:
 
@@ -231,17 +120,8 @@ class VisionWorker:
                 else tuple(categories)
             )
 
-    # =====================================================
-    # DETECÇÕES
-    # =====================================================
-
     def get_input(self):
-        """
-        (frame, detecções, instante_do_frame) da última passada.
-
-        É o par imagem+rótulo consistente: get_detections()
-        devolve as detecções, mas não a imagem de onde vieram.
-        """
+        """Retorna (frame, detecções, timestamp) consistentes para dataset."""
 
         with self.detection_lock:
 
@@ -252,13 +132,7 @@ class VisionWorker:
             )
 
     def get_detections(self):
-        """
-        Devolve (detecções, idade em segundos).
-
-        A idade é a do frame que gerou as detecções, não a
-        do momento da consulta — é ela que diz se vale
-        clicar.
-        """
+        """Retorna (detecções, idade_em_segundos). Idade é do frame, não da consulta."""
 
         with self.detection_lock:
 
@@ -274,37 +148,14 @@ class VisionWorker:
             max(0.0, time.monotonic() - frame_time),
         )
 
-    # =====================================================
-    # ESTATÍSTICAS
-    # =====================================================
-
     def get_fps(self):
-        """
-        Passadas do detector por segundo.
-        """
-
         return self.rate.rate()
 
     def get_duration(self):
-        """
-        Custo médio de uma passada, em segundos.
-        """
-
         return self.duration.average()
 
-    # =====================================================
-    # SAÚDE
-    # =====================================================
-
     def is_alive(self):
-        """
-        A thread da visão está de pé?
-
-        Existe porque a falha silenciosa era exatamente esta:
-        a thread morria no start e o resto do programa
-        continuava rodando como se estivesse tudo bem — janela
-        aberta, captura a 60 fps, e nenhuma detecção nunca.
-        """
+        """Thread da visão está viva? (detecção de morte silenciosa do worker)."""
 
         return bool(
             self.running
@@ -313,13 +164,7 @@ class VisionWorker:
         )
 
     def _fail(self, error):
-        """
-        Loga a falha UMA vez por tipo.
-
-        O laço roda várias vezes por segundo: sem isto, um erro
-        de programação (um argumento errado, por exemplo) enche
-        o terminal de tracebacks idênticos e esconde o resto.
-        """
+        """Loga erro UMA vez por tipo (evita spam em laço rápido)."""
 
         self.last_error = f"{type(error).__name__}: {error}"
 
@@ -334,19 +179,8 @@ class VisionWorker:
             self.last_error,
         )
 
-    # =====================================================
-    # WORKER
-    # =====================================================
-
     def _run(self):
-        """
-        O corpo INTEIRO é protegido.
-
-        Qualquer exceção aqui deixava o bot parado sem sinal
-        nenhum: sem detecção não há ação, e o log do start já
-        tinha subido na tela. Errar e continuar é melhor do que
-        morrer em silêncio.
-        """
+        """Worker protegido: erros são capturados para evitar morte silenciosa."""
 
         while self.running:
 
@@ -363,17 +197,8 @@ class VisionWorker:
                 time.sleep(0.1)
 
     def _pass(self):
-        """
-        Uma passada: espera frame novo, detecta, publica.
-        """
-
-        # -------------------------------------------------
-        # Espera o frame mais recente
-        # -------------------------------------------------
-        #
-        # Só o mais novo interessa: os atrasados são
-        # descartados, senão a fila cresce e a detecção
-        # envelhece — e detecção velha não vira clique.
+        """Uma passada: aguarda frame novo, detecta, publica."""
+        # Descarta frames atrasados (só o mais novo interessa)
         with self.frame_lock:
 
             if self.latest_raw_frame is None:
@@ -393,20 +218,7 @@ class VisionWorker:
         if raw_frame is None:
             return
 
-        # -------------------------------------------------
-        # FRAME VELHO DEMAIS PARA DECIDIR
-        # -------------------------------------------------
-        #
-        # Capturado antes de a última ação assentar: mostra a
-        # tela de ANTES do efeito dela, e o _can_act ia
-        # descartar o resultado de qualquer maneira. Analisar
-        # seria gastar uma passada inteira para nada — e, pior,
-        # atrasar a primeira passada ÚTIL, que só começa depois
-        # desta terminar.
-        #
-        # As detecções anteriores NÃO são apagadas: o overlay
-        # continua mostrando a última leitura boa, e quem
-        # pergunta "posso agir?" já é barrado pelo settle.
+        # Pula frame velho demais (mostra tela ANTES do efeito da ação anterior)
         if floor and frame_time and frame_time <= floor:
 
             self.skipped_stale += 1
@@ -418,23 +230,9 @@ class VisionWorker:
         self.waiting_settle = False
 
         with self.detection_lock:
-
             categories = (
-                None
-                if self.categories is None
-                # Tupla: a ordem É a prioridade.
-                else self.categories
+                None if self.categories is None else self.categories
             )
-
-        # -------------------------------------------------
-        # Detector
-        # -------------------------------------------------
-        #
-        # No frame NATIVO: o Detector reescala os templates
-        # para a resolução do frame, então as detecções já
-        # saem no espaço em que o clique precisa delas. Não há
-        # mais transformação para inverter — era ali que
-        # imagem e rótulo do dataset saíam de sincronia.
 
         started = time.monotonic()
 
@@ -454,11 +252,7 @@ class VisionWorker:
             self.detections = detections
             self.detections_time = frame_time
 
-            # O frame que PRODUZIU estas detecções.
             self.detections_frame = raw_frame
 
-        # Só para não monopolizar a CPU quando a passada for
-        # muito rápida (poucas categorias).
         if self.interval:
-
             time.sleep(self.interval)

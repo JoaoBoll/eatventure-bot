@@ -1,19 +1,8 @@
 """
-Testes do treino e do bot de IA.
-
-    python tests/test_ia.py
-
-Ficam AQUI e não em IA/, porque IA/ é o código que roda treino e
-inferência — e nada ali deve rodar teste como efeito colateral.
-
-Nada aqui treina modelo nem toca em device. O que está sob teste
-é o que, errado, produz dano silencioso:
-
-  - features de treino e de inferência divergindo, que faz o
-    modelo receber entrada diferente da que aprendeu
-  - split com vazamento, que faz a acurácia mentir
-  - mapeamento de coordenada, que faz o clique cair no lugar
-    errado
+Testes do treino e do bot de IA. Ficam aqui e não em IA/, porque IA/ roda
+treino e inferência de verdade. Nada aqui treina modelo nem toca em
+device — o alvo é dano silencioso: features de treino/inferência
+divergindo, split com vazamento, ou mapeamento de coordenada errado.
 """
 
 import json
@@ -38,15 +27,8 @@ import features as feat                            # noqa: E402
 import dataset_io as dio                           # noqa: E402
 
 
-# =========================================================
-# HELPERS
-# =========================================================
-
 def frame_com_alvo(alvo=(300, 1500, 96, 88), cor=(40, 200, 255)):
-    """
-    Frame do tamanho do device, com um bloco colorido na posição
-    da caixa e fundo escuro em volta.
-    """
+    """Frame do tamanho do device, com um bloco colorido na posição da caixa."""
 
     imagem = np.full((2400, 1080, 3), 30, np.uint8)
 
@@ -101,17 +83,11 @@ def registro(
     }
 
 
-# =========================================================
-# FEATURES: A FONTE ÚNICA
-# =========================================================
-
 def test_recorte_pega_o_objeto_e_nao_a_tela():
     """
-    O defeito de fundo da versão anterior: reduzir 1080x2400
-    para 32x32 fazia o alvo de 95x94 px virar 2.8 x 1.3 px.
-
-    Aqui o recorte tem de conter o objeto de verdade — ele
-    precisa dominar o quadro, não ser 3 pixels.
+    Defeito da versão anterior: reduzir 1080x2400 para 32x32 fazia o
+    alvo de 95x94 px virar 2.8x1.3 px. O recorte tem de conter o objeto
+    de verdade, dominando o quadro.
     """
 
     alvo = (300, 1500, 96, 88)
@@ -141,11 +117,7 @@ def test_recorte_pega_o_objeto_e_nao_a_tela():
 
 
 def test_features_tem_tamanho_declarado():
-    """
-    O bot confere `n_features_in_` do modelo contra este
-    número. Se FEATURE_SIZE mentir, a checagem passa e o modelo
-    recebe entrada errada.
-    """
+    """Se FEATURE_SIZE mentir, a checagem contra `n_features_in_` passa e o modelo erra a entrada."""
 
     imagem = frame_com_alvo()
 
@@ -164,10 +136,7 @@ def test_features_tem_tamanho_declarado():
 
 
 def test_features_sao_deterministicas():
-    """
-    Duas chamadas com a mesma entrada têm de dar o mesmo vetor.
-    Sem isso o treino aprende uma coisa e a inferência vê outra.
-    """
+    """Sem isso o treino aprende uma coisa e a inferência vê outra."""
 
     imagem = frame_com_alvo()
 
@@ -180,11 +149,7 @@ def test_features_sao_deterministicas():
 
 
 def test_features_distinguem_cores():
-    """
-    O histograma HSV existe porque o jogo codifica por cor. Se
-    dois recortes de cores bem diferentes derem vetores
-    parecidos, ele não está fazendo nada.
-    """
+    """O histograma HSV existe porque o jogo codifica por cor."""
 
     caixa = {"x": 300, "y": 1500, "width": 96, "height": 88}
 
@@ -202,11 +167,7 @@ def test_features_distinguem_cores():
 
 
 def test_recorte_fora_da_imagem_nao_estoura():
-    """
-    Caixa parcialmente fora do frame acontece de verdade — o
-    detector acha objeto na borda. Índice negativo em numpy não
-    dá erro: recorta do outro lado da imagem.
-    """
+    """Caixa parcialmente fora do frame acontece de verdade (objeto na borda)."""
 
     imagem = frame_com_alvo()
 
@@ -233,15 +194,10 @@ def test_recorte_degenerado_devolve_none():
     }) is None
 
 
-# =========================================================
-# SPLIT SEM VAZAMENTO
-# =========================================================
-
 def test_split_nao_reparte_o_mesmo_grupo():
     """
-    O erro que invalidava a acurácia anterior: 56% das amostras
-    têm phash repetido, e o split aleatório colocava o mesmo
-    quadro em treino e teste.
+    Erro que invalidava a acurácia anterior: 56% das amostras têm phash
+    repetido, e o split aleatório colocava o mesmo quadro em treino e teste.
     """
 
     registros = [
@@ -268,9 +224,7 @@ def test_split_nao_reparte_o_mesmo_grupo():
 
 
 def test_split_por_sessao_separa_sessoes():
-    """
-    O teste mais duro: treinar numa partida e avaliar em outra.
-    """
+    """O teste mais duro: treinar numa partida e avaliar em outra."""
 
     registros = [
         registro(f"r{i}", sessao=f"s{i % 4}", phash=f"h{i}")
@@ -290,10 +244,7 @@ def test_split_por_sessao_separa_sessoes():
 
 
 def test_split_e_reproduzivel():
-    """
-    Mesma semente, mesmo split — senão comparar duas execuções
-    não quer dizer nada.
-    """
+    """Mesma semente, mesmo split — senão comparar duas execuções não quer dizer nada."""
 
     registros = [
         registro(f"r{i}", phash=f"h{i % 12}")
@@ -311,10 +262,7 @@ def test_split_e_reproduzivel():
 
 
 def test_split_nunca_deixa_teste_vazio():
-    """
-    Com poucos grupos, arredondar para cima levaria tudo para o
-    treino e a avaliação viraria divisão por zero.
-    """
+    """Com poucos grupos, arredondar para cima levaria tudo ao treino e zeraria o teste."""
 
     registros = [registro(f"r{i}", phash="unico") for i in range(5)]
     registros += [registro("outro", phash="segundo")]
@@ -326,10 +274,6 @@ def test_split_nunca_deixa_teste_vazio():
 
     assert treino and teste
 
-
-# =========================================================
-# REFERÊNCIAS
-# =========================================================
 
 def test_baseline_da_maioria():
 
@@ -343,11 +287,7 @@ def test_baseline_da_maioria():
 
 
 def test_baseline_do_estado():
-    """
-    A referência que expôs o problema: 46.2% no dataset real,
-    contra menos de 30% do modelo. Sem imprimir isto, ninguém
-    percebe que o modelo está atrás de uma regra de uma linha.
-    """
+    """A referência que expôs o problema: 46.2% no dataset real contra menos de 30% do modelo."""
 
     registros = (
         [registro(f"a{i}", acao="upgrade_item", estado="UPGRADE")
@@ -365,10 +305,9 @@ def test_baseline_do_estado():
 
 def test_teto_por_estado_e_categorias():
     """
-    O número que justifica a arquitetura: se saber estado +
-    categorias resolve quase toda a escolha de ação, então o
-    modelo precisa aprender a DETECTAR, e a ação sai da tabela
-    de prioridade que já existe.
+    Justifica a arquitetura: se estado + categorias resolve quase toda a
+    escolha de ação, o modelo só precisa aprender a DETECTAR — a ação
+    sai da tabela de prioridade que já existe.
     """
 
     def com_categorias(identificador, cats, acao, estado="NORMAL"):
@@ -404,16 +343,8 @@ def test_teto_por_estado_e_categorias():
     assert dio.ceiling_state_categories(registros) < 1.0
 
 
-# =========================================================
-# FILTRO POR RESULTADO
-# =========================================================
-
 def test_filtro_por_outcome():
-    """
-    Treinar só em `changed` deixa de fora as ações do professor
-    que não funcionaram — é o que impede o modelo de herdar os
-    erros do template matcher.
-    """
+    """Treinar só em `changed` impede o modelo de herdar os erros do template matcher."""
 
     registros = [
         registro("a", outcome="changed"),
@@ -437,15 +368,8 @@ def test_filtro_por_outcome():
     assert sorted(r["id"] for r in com_negativa) == ["a", "c"]
 
 
-# =========================================================
-# NEGATIVOS
-# =========================================================
-
 def test_negativos_nao_caem_sobre_as_caixas():
-    """
-    Negativo sobre um objeto ensina o contrário do pretendido:
-    o modelo aprende que aquele objeto é fundo.
-    """
+    """Negativo sobre um objeto ensina o contrário: que aquele objeto é fundo."""
 
     caixas = [
         {"category": "box", "x": 300, "y": 1500,
@@ -647,18 +571,11 @@ def test_caixa_degenerada_e_ignorada():
     assert dio.box_labels(registro("a", caixas=caixas)) == []
 
 
-# =========================================================
-# PROPONENTE
-# =========================================================
-
 def test_proponente_acha_bloco_colorido():
     """
-    O proponente é a parte EXPERIMENTAL: substitui os 184
-    templates por proposta de região. Aqui só se verifica o
-    contrato geométrico, com um bloco saturado sintético.
-
-    Em tela real ele precisa ser conferido com
-    `--debug-proposals` — nenhum teste sintético prova isso.
+    Proponente é EXPERIMENTAL: substitui os 184 templates por proposta
+    de região. Só verifica o contrato geométrico; em tela real precisa
+    de `--debug-proposals` — nenhum teste sintético prova isso.
     """
 
     import proposer
@@ -701,10 +618,7 @@ def test_proponente_respeita_limites_de_tamanho():
 
 
 def test_proponente_tem_teto_de_candidatos():
-    """
-    Cada candidato custa uma classificação. Sem teto, uma tela
-    cheia de cor derruba o FPS.
-    """
+    """Cada candidato custa uma classificação; sem teto, uma tela cheia de cor derruba o FPS."""
 
     import proposer
 
@@ -758,16 +672,8 @@ def test_supressao_remove_repetidos_da_mesma_categoria():
     assert ("box", 100) in caixas
 
 
-# =========================================================
-# CONTRATO COM A MÁQUINA DE ESTADOS
-# =========================================================
-
 def test_deteccao_do_modelo_tem_o_formato_que_a_maquina_le():
-    """
-    O bot alimenta a StateMachine com as detecções do modelo. Se
-    o formato divergir do que o vision/detector.py produz, a
-    máquina não sabe ler — e o sintoma é bot parado, não erro.
-    """
+    """Se o formato divergir do que vision/detector.py produz, o sintoma é bot parado, não erro."""
 
     import bot_ai
 
@@ -807,11 +713,9 @@ def test_deteccao_do_modelo_tem_o_formato_que_a_maquina_le():
 
 def test_maquina_de_estados_aceita_as_deteccoes_do_modelo():
     """
-    Fim a fim da decisão, sem device: detecção do modelo entra,
-    ação sai — e o alvo é a CAIXA, não o centro da tela.
-
-    É o conserto do defeito principal da versão anterior, que
-    tocava sempre em (largura/2, altura/2).
+    Fim a fim, sem device: detecção do modelo entra, ação sai, e o alvo
+    é a CAIXA — conserto do defeito anterior, que tocava sempre no
+    centro da tela.
     """
 
     import bot_ai
@@ -874,11 +778,7 @@ def test_maquina_de_estados_aceita_as_deteccoes_do_modelo():
 
 
 def test_background_nao_vira_deteccao():
-    """
-    A classe "background" existe para o modelo poder dizer "aqui
-    não tem nada". Se ela virasse detecção, a máquina agiria
-    sobre cenário.
-    """
+    """"background" existe para o modelo dizer "aqui não tem nada"; se virasse detecção, agiria sobre cenário."""
 
     import bot_ai
 
@@ -915,10 +815,7 @@ def test_confianca_baixa_e_descartada():
 
 
 def test_deteccoes_saem_ordenadas_por_confianca():
-    """
-    A StateMachine pega a PRIMEIRA detecção de cada categoria,
-    então a ordem decide qual alvo é tocado.
-    """
+    """A StateMachine pega a PRIMEIRA detecção de cada categoria: a ordem decide o alvo."""
 
     import bot_ai
 
@@ -948,10 +845,6 @@ def test_deteccoes_saem_ordenadas_por_confianca():
 
     assert confiancas == sorted(confiancas, reverse=True), confiancas
 
-
-# =========================================================
-# RUNNER
-# =========================================================
 
 def main():
 

@@ -1,9 +1,4 @@
-"""
-Log central.
-
-Substitui os prints espalhados. O timestamp com milissegundos
-é o que permite separar "detectou errado" de "detectou tarde".
-"""
+"""Log central; timestamp com milissegundos permite separar "detectou errado" de "detectou tarde"."""
 
 import logging
 import sys
@@ -37,16 +32,9 @@ def setup(level="INFO"):
 
 def set_console_level(level):
     """
-    Muda o nível do que APARECE no terminal, sem tocar no
-    nível do logger.
-
-    Existe para o painel de status: ele precisa que o INFO de
-    cada ação pare de rolar na tela, mas quem lê o log depois
-    (arquivo, handler futuro) continua recebendo tudo — o
-    logger segue em INFO, só este handler sobe.
-
-    Filtrar no logger em vez de no handler perderia o registro
-    de verdade, e aí a informação não estaria em lugar nenhum.
+    Muda o nível do que APARECE no terminal, sem tocar no nível do
+    logger — filtrar no logger perderia o registro para sempre, e o
+    painel de status precisa só que o INFO pare de rolar na tela.
     """
 
     root = logging.getLogger("eatventure")

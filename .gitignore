@@ -18,6 +18,16 @@ tests/capture/
 /dataset/images
 /dataset/samples.jsonl
 
+# Layout por resolução: dataset/data/<LARGURAxALTURA>/{images,samples.jsonl}
+/dataset/data/
+
+# dataset/cache/ (features já extraídas) É commitado de propósito: é a
+# memória acumulada do treino. Apagar o dataset bruto não pode apagar isso —
+# ver IA/feature_cache.py e IA/train_ai.py (category_dataset).
+
+# Modelo treinado: derivado do cache, regenerado a cada `train_ai.py` local.
+/IA/*.joblib
+
 
 /dataset_to_unify/images
 /dataset_to_unify/samples.jsonl
@@ -27,3 +37,6 @@ tests/capture/
 .aider*
 
 /tools/scrcpy/
+
+/src/vision/templates/*
+!/src/vision/templates/default/

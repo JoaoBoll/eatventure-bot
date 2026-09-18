@@ -1,10 +1,4 @@
-"""
-Medidores de taxa e de duração.
-
-Ficam num módulo só porque a captura e o detector precisam
-da mesma conta, e duplicar a conta é como as duas metades
-divergem.
-"""
+"""Medidores de taxa e duração, compartilhados entre captura e detector para não duplicar a conta."""
 
 import threading
 import time
@@ -12,13 +6,7 @@ from collections import deque
 
 
 class RateMeter:
-    """
-    Eventos por segundo, em janela deslizante.
-
-    Janela deslizante em vez de média desde o início: o que
-    interessa é a taxa AGORA. Uma média acumulada esconde o
-    momento em que o stream engasgou.
-    """
+    """Eventos por segundo em janela deslizante — média desde o início esconderia o momento em que o stream engasgou."""
 
     def __init__(self, window=2.0):
 
@@ -67,11 +55,7 @@ class RateMeter:
 
 
 class DurationMeter:
-    """
-    Média móvel exponencial de duração.
-
-    Barata (um float) e não precisa de histórico.
-    """
+    """Média móvel exponencial de duração — barata (um float), sem histórico."""
 
     def __init__(self, smoothing=0.2):
 
@@ -103,12 +87,7 @@ class DurationMeter:
 
 
 def formata_duracao(segundos):
-    """
-    Duração legível de relance: "42s", "3m07s", "1h04m".
-
-    Segundo cheio, nunca decimal: aqui a leitura é de canto de
-    olho, e "127.4s" obriga a fazer conta de cabeça.
-    """
+    """Duração legível de relance: "42s", "3m07s", "1h04m". Segundo cheio, nunca decimal — leitura é de canto de olho."""
 
     if segundos is None:
         return "--"

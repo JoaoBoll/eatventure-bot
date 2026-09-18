@@ -1,33 +1,8 @@
 """
-Regressão de detecção.
-
-Roda o detector nas telas de tests/images e compara com o
-esperado em tests/golden/expectations.json.
-
-    python tests/test_detection.py             # verifica
-    python tests/test_detection.py --update    # regrava o esperado
-    python tests/test_detection.py --bench     # mede o tempo
-
-Para que serve: ajustar 8 thresholds olhando o jogo ao vivo
-é tentativa e erro. Aqui cada mudança diz em 2 segundos o
-que passou a ser detectado e o que deixou de ser.
-
-Como crescer a base: salve novas telas em tests/images com
-o tests/android_screenshot.py, rode --update, e CONFIRA o
-diff antes de comitar — o arquivo golden vale o que valer
-essa conferência.
-
-Casos negativos importam tanto quanto positivos: uma tela
-onde nada deve ser detectado pega falso positivo, que é o
-erro que faz o bot clicar no lugar errado.
-
-Nomeie os fixtures pelo que eles cobrem (new_point.png,
-food_stations.png, up_food.png). NÃO use "screen.png": é o
-nome que o template_selector dá à captura de trabalho, e um
-fixture com esse nome vive sendo sobrescrito.
-
-Uma imagem em tests/images sem entrada no golden vira AVISO,
-não falha — então uma captura perdida ali não quebra o teste.
+Regressão de detecção: roda o detector em tests/images e compara com
+tests/golden/expectations.json (--update regrava; CONFIRA o diff antes de comitar).
+Imagem sem entrada no golden vira AVISO, não falha. Não use "screen.png" como
+fixture: é o nome que o template_selector sobrescreve.
 """
 
 import argparse
@@ -53,10 +28,6 @@ GOLDEN_PATH = ROOT / "tests" / "golden" / "expectations.json"
 POSITION_TOLERANCE = 10
 CONFIDENCE_TOLERANCE = 0.03
 
-
-# =========================================================
-# EXECUÇÃO
-# =========================================================
 
 def detect_all(detector):
 
@@ -90,10 +61,6 @@ def detect_all(detector):
     return results
 
 
-# =========================================================
-# COMPARAÇÃO
-# =========================================================
-
 def matches(expected, actual):
 
     return (
@@ -116,9 +83,6 @@ def describe(detection):
 
 
 def compare(expected_all, actual_all):
-    """
-    Devolve (falhas, avisos).
-    """
 
     failures = []
     warnings = []
@@ -142,10 +106,6 @@ def compare(expected_all, actual_all):
 
         remaining = list(actual)
 
-        # -------------------------------------------------
-        # PERDEU DETECÇÃO
-        # -------------------------------------------------
-
         for item in expected:
 
             found = None
@@ -168,10 +128,6 @@ def compare(expected_all, actual_all):
 
             remaining.remove(found)
 
-            # ---------------------------------------------
-            # CONFIANÇA MUDOU
-            # ---------------------------------------------
-
             drift = abs(
                 found["confidence"] - item["confidence"]
             )
@@ -184,10 +140,6 @@ def compare(expected_all, actual_all):
                     f"{found['confidence']:.3f}"
                 )
 
-        # -------------------------------------------------
-        # DETECÇÃO NOVA (possível falso positivo)
-        # -------------------------------------------------
-
         for extra in remaining:
 
             failures.append(
@@ -196,10 +148,6 @@ def compare(expected_all, actual_all):
 
     return failures, warnings
 
-
-# =========================================================
-# MAIN
-# =========================================================
 
 def main():
 
@@ -227,10 +175,6 @@ def main():
         f"Templates: {len(detector.templates)} | "
         f"escala grossa: {detector.coarse_scale}"
     )
-
-    # -----------------------------------------------------
-    # BENCH
-    # -----------------------------------------------------
 
     if args.bench:
 
@@ -266,10 +210,6 @@ def main():
 
     actual = detect_all(detector)
 
-    # -----------------------------------------------------
-    # UPDATE
-    # -----------------------------------------------------
-
     if args.update:
 
         GOLDEN_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -289,10 +229,6 @@ def main():
         print("CONFIRA o diff antes de comitar.")
 
         return 0
-
-    # -----------------------------------------------------
-    # VERIFICA
-    # -----------------------------------------------------
 
     if not GOLDEN_PATH.exists():
 

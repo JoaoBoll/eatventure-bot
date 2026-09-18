@@ -1,22 +1,9 @@
 """
-Mostra as prioridades da máquina de estados, e confere se elas
-fazem sentido.
+Mostra as prioridades da máquina de estados (derivadas da ordem das
+listas em core/state_machine.py) e confere regra sem template, ação
+inexistente e template sem regra — coisas que o runtime não avisa.
 
     python tools/regras.py
-
-A ordem das listas em core/state_machine.py É a prioridade —
-não existe número escrito em lugar nenhum, justamente para não
-haver dois lugares para manter em sincronia. Este script imprime
-a numeração derivada da ordem.
-
-Confere também três coisas que o runtime não avisa:
-
-  - regra apontando para categoria SEM template (regra morta,
-    nunca pode disparar)
-  - regra apontando para ação que não existe na ACTION_TABLE
-    (só apareceria como warning em produção)
-  - template de categoria que nenhuma regra usa (custo de
-    detecção sem uso)
 """
 
 import sys
@@ -65,10 +52,6 @@ def main():
 
     problemas = []
     usadas = set()
-
-    # =====================================================
-    # PRIORIDADES
-    # =====================================================
 
     for state in ORDEM:
 
@@ -150,10 +133,6 @@ def main():
         if not rules:
             print("  (nenhuma regra)")
 
-    # =====================================================
-    # TEMPLATES SEM REGRA
-    # =====================================================
-
     orfaos = sorted(com_template - usadas)
 
     if orfaos:
@@ -165,10 +144,6 @@ def main():
                 f"nenhuma regra a usa — custo de detecção "
                 f"sem uso"
             )
-
-    # =====================================================
-    # RESULTADO
-    # =====================================================
 
     print()
     linha()

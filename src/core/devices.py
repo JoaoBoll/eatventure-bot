@@ -1,23 +1,4 @@
-"""
-Escolha do device Android.
-
-Com o celular ligado por USB E por wifi, o `adb devices` lista
-DOIS entradas para o mesmo aparelho — e daí toda chamada adb sem
-`-s` é recusada com "more than one device". Este módulo resolve
-qual serial usar, e o serial atravessa o programa inteiro
-(captura e toques).
-
-Ordem de precedência:
-
-    1. --device na linha de comando
-    2. DEVICE_SERIAL no config
-    3. único device conectado
-    4. pergunta
-
-A separação entre "listar/descrever" (fala com o adb) e
-"escolher" (só decide) existe para a decisão ser testável sem
-device nenhum plugado.
-"""
+"""Escolha do device Android: USB+wifi do mesmo aparelho aparecem como duas entradas no `adb devices`, então resolve qual serial usar (--device > DEVICE_SERIAL > único conectado > pergunta)."""
 
 import subprocess
 import sys
@@ -28,17 +9,8 @@ logger = log.get("devices")
 ADB = config.ADB_PATH
 
 
-# =========================================================
-# ADB
-# =========================================================
-
 def listar():
-    """
-    Seriais em estado 'device', na ordem em que o adb devolve.
-
-    Estados como 'unauthorized' e 'offline' ficam de fora: não
-    aceitam comando, e oferecê-los só geraria erro na frente.
-    """
+    """Seriais em estado 'device' — 'unauthorized'/'offline' ficam de fora por não aceitarem comando."""
 
     resultado = subprocess.run(
         [ADB, "devices"],
@@ -66,10 +38,7 @@ def listar():
 
 
 def _propriedade(serial, nome):
-    """
-    getprop, ou None se falhar. Puramente informativo, então
-    falha não interrompe nada.
-    """
+    """getprop, ou None se falhar — puramente informativo, falha não interrompe nada."""
 
     try:
 
@@ -91,12 +60,7 @@ def _propriedade(serial, nome):
 
 
 def descrever(seriais):
-    """
-    [(serial, modelo, wifi, hardware)] para montar a pergunta.
-
-    `hardware` é o ro.serialno: é ele que revela que duas
-    entradas da lista são O MESMO aparelho.
-    """
+    """[(serial, modelo, wifi, hardware)]; `hardware` é o ro.serialno, que revela entradas duplicadas do mesmo aparelho."""
 
     fichas = []
 
@@ -114,18 +78,8 @@ def descrever(seriais):
     return fichas
 
 
-# =========================================================
-# ROTULAGEM
-# =========================================================
-
 def rotular(fichas):
-    """
-    Uma linha por device, pronta para imprimir.
-
-    Marca o duplicado porque a escolha entre USB e wifi do mesmo
-    celular NÃO é indiferente: a wifi cai sozinha e derruba a
-    captura no meio da sessão.
-    """
+    """Uma linha por device; marca o duplicado porque a wifi cai sozinha e derruba a captura no meio da sessão."""
 
     # hardware -> primeira posição (1-based) em que apareceu
     primeira = {}
@@ -161,24 +115,12 @@ def rotular(fichas):
 
 
 def padrao(fichas):
-    """
-    Índice (1-based) sugerido: o primeiro device por USB.
-
-    USB por cima de wifi de propósito — a conexão wifi do adb
-    cai sozinha, e quando cai a captura morre no meio da sessão.
-    """
+    """Índice (1-based) sugerido: primeiro device por USB — a wifi cai sozinha e derruba a captura."""
 
     for indice, (_, _, wifi, _) in enumerate(fichas, start=1):
 
         if not wifi:
             return indice
-
-    return 1
-
-
-# =========================================================
-# ESCOLHA
-# =========================================================
 
 def escolher(seriais, pedido=None, perguntar=None, fichas=None):
     """
@@ -189,9 +131,8 @@ def escolher(seriais, pedido=None, perguntar=None, fichas=None):
                 None = não pergunta (levanta erro em vez disso)
     `fichas`    resultado de descrever(); None = descreve aqui
 
-    Função pura em relação à decisão: tudo que fala com o mundo
-    entra por parâmetro, então o comportamento é testável sem
-    device plugado.
+    Tudo que fala com o mundo entra por parâmetro, para a decisão
+    ser testável sem device plugado.
     """
 
     if not seriais:
@@ -200,10 +141,6 @@ def escolher(seriais, pedido=None, perguntar=None, fichas=None):
             "Nenhum dispositivo Android encontrado.\n"
             "Confira o cabo, a depuração USB e 'adb devices'."
         )
-
-    # -----------------------------------------------------
-    # Serial fixado
-    # -----------------------------------------------------
 
     if pedido:
 
@@ -216,16 +153,8 @@ def escolher(seriais, pedido=None, perguntar=None, fichas=None):
             + "\n".join(f"  {s}" for s in seriais)
         )
 
-    # -----------------------------------------------------
-    # Um só
-    # -----------------------------------------------------
-
     if len(seriais) == 1:
         return seriais[0]
-
-    # -----------------------------------------------------
-    # Pergunta
-    # -----------------------------------------------------
 
     if fichas is None:
         fichas = descrever(seriais)
@@ -261,13 +190,8 @@ def escolher(seriais, pedido=None, perguntar=None, fichas=None):
 
     while True:
 
-        # EOF em vez de resposta: entrada redirecionada.
-        #
-        # O isatty() sozinho NÃO pega este caso no Windows — o
-        # NUL é um dispositivo de caractere, então
-        # `python main.py < NUL` passa pelo teste do isatty e
-        # só falharia aqui, com um EOFError que não explica
-        # nada.
+        # EOF = entrada redirecionada; isatty() sozinho não pega isso no
+        # Windows (`python main.py < NUL` passa o teste e só falha aqui).
         try:
 
             resposta = (perguntar(texto) or "").strip()
@@ -276,11 +200,9 @@ def escolher(seriais, pedido=None, perguntar=None, fichas=None):
 
             raise sem_resposta() from None
 
-        # ENTER aceita a sugestão.
         if not resposta:
             return fichas[sugerido - 1][0]
 
-        # Aceita o número da lista...
         if resposta.isdigit():
 
             escolha = int(resposta)
@@ -292,7 +214,6 @@ def escolher(seriais, pedido=None, perguntar=None, fichas=None):
 
             continue
 
-        # ...ou o serial digitado/colado.
         if resposta in seriais:
             return resposta
 
@@ -300,16 +221,11 @@ def escolher(seriais, pedido=None, perguntar=None, fichas=None):
 
 
 def resolver(pedido=None):
-    """
-    O caminho normal: lista, escolhe (perguntando no terminal se
-    precisar) e loga o que foi escolhido.
-    """
+    """Caminho normal: lista, escolhe (perguntando no terminal se precisar) e loga o escolhido."""
 
     seriais = listar()
 
-    # Sem terminal (rodando por cron, pipe, IDE sem console)
-    # não há como perguntar, e travar num input invisível é
-    # pior que um erro claro.
+    # Sem terminal, travar num input invisível é pior que um erro claro.
     perguntar = input if sys.stdin and sys.stdin.isatty() else None
 
     serial = escolher(seriais, pedido=pedido, perguntar=perguntar)

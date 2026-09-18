@@ -1,21 +1,4 @@
-"""
-EatVenture AI — ponto de entrada.
-
-Uso:
-
-    python src/main.py
-
-Mudanças em relação à versão anterior:
-
-1. Código dentro de main(), não no topo do módulo.
-   Antes importar main.py já ligava o scrcpy.
-
-2. Loop principal dorme esperando frame novo, em vez de
-   girar a 100% de CPU reprocessando o mesmo frame.
-
-3. Informa ao detector as categorias do estado atual, e ao
-   ActionManager a resolução em que as detecções estão.
-"""
+"""EatVenture AI — ponto de entrada (python src/main.py)."""
 
 import argparse
 import subprocess
@@ -57,10 +40,6 @@ from vision.worker import VisionWorker
 logger = log.get("main")
 
 
-# =========================================================
-# ARGUMENTOS
-# =========================================================
-
 def parse_args(argv=None):
 
     parser = argparse.ArgumentParser(
@@ -77,12 +56,25 @@ def parse_args(argv=None):
         ),
     )
 
+    parser.add_argument(
+        "--ai-collect",
+        action="store_true",
+        help="Ativa coleta de dados de IA para o dataset.",
+    )
+
+    parser.add_argument(
+        "--layout-only",
+        action="store_true",
+        help=(
+            "detect() busca só os overrides da resolução, sem os "
+            "templates default (mais rápido, mas cego onde ainda não há "
+            "override). Rode src/main_layouts.py em paralelo para manter "
+            "os overrides atualizados."
+        ),
+    )
+
     return parser.parse_args(argv)
 
-
-# =========================================================
-# SCRCPY
-# =========================================================
 
 def start_scrcpy(device_id):
 
@@ -104,10 +96,6 @@ def start_scrcpy(device_id):
     )
 
 
-# =========================================================
-# JANELA
-# =========================================================
-
 def setup_window():
 
     cv2.namedWindow(AI_WINDOW_NAME, cv2.WINDOW_NORMAL)
@@ -121,20 +109,12 @@ def setup_window():
     cv2.moveWindow(AI_WINDOW_NAME, *AI_WINDOW_POSITION)
 
 
-# =========================================================
-# DATASET
-# =========================================================
+def build_recorder(ai_collect=None):
+    """Gravador do dataset, ou None se desligado. O banco é opcional; sem ele o samples.jsonl continua completo."""
 
-def build_recorder():
-    """
-    Gravador do dataset, ou None se estiver desligado.
+    dataset_enabled = ai_collect if ai_collect is not None else DATASET_SAVE
 
-    O banco é opcional dentro do opcional: sem ele o dataset
-    continua completo em arquivo, e o samples.jsonl é a fonte
-    de verdade do treino.
-    """
-
-    if not DATASET_SAVE:
+    if not dataset_enabled:
         return None
 
     store = None
@@ -163,8 +143,7 @@ def build_recorder():
 
             except Exception as error:
 
-                # Banco fora não pode impedir a coleta: as
-                # imagens são o que não se recupera depois.
+                # Banco fora não pode impedir a coleta: imagens não se recuperam depois.
                 logger.error(
                     "Sem conexão com o banco (%s) — gravando "
                     "só em arquivo. Depois dá para importar "
@@ -177,18 +156,8 @@ def build_recorder():
     return DatasetRecorder(store=store)
 
 
-# =========================================================
-# LEITURA DAS DETECÇÕES
-# =========================================================
-
 def read_detections(vision):
-    """
-    (detecções, idade, frame, instante_do_frame).
-
-    O frame é o que GEROU essas detecções, não o mais recente:
-    é isso que mantém imagem e rótulo consistentes para o
-    dataset.
-    """
+    """(detecções, idade, frame, instante_do_frame). O frame é o que GEROU as detecções, não o mais recente — mantém imagem e rótulo consistentes no dataset."""
 
     frame, detections, frame_time = vision.get_input()
 
@@ -201,10 +170,6 @@ def read_detections(vision):
     return detections, lag, frame, frame_time
 
 
-# =========================================================
-# LOOP
-# =========================================================
-
 def run_loop(
     capture,
     vision,
@@ -215,23 +180,15 @@ def run_loop(
     panel=None,
 ):
 
-    # Começa igual à versão inicial do ScreenCapture, então
-    # a primeira espera é pelo primeiro frame de verdade.
     last_version = 0
 
-    # A visão já caiu alguma vez? Só para não repetir o aviso
-    # a cada quadro.
+    # Evita repetir o aviso de visão caída a cada quadro.
     vision_avisada = False
 
     while True:
 
-        # -------------------------------------------------
-        # Espera o frame mais recente
-        # -------------------------------------------------
-
-        # Timeout curto para a janela do OpenCV continuar
-        # respondendo (e o ESC funcionar) mesmo se o stream
-        # travar.
+        # Timeout curto para a janela do OpenCV continuar respondendo
+        # (e o ESC funcionar) mesmo se o stream travar.
         frame, version, timestamp = capture.get_frame(
             since_version=last_version,
             timeout=0.2,
@@ -248,34 +205,12 @@ def run_loop(
 
         last_version = version
 
-        # =================================================
-        # A RESOLUÇÃO REAL DO FRAME
-        # =================================================
-        #
-        # Antes aqui ia REFERENCE_WIDTH/HEIGHT, com a
-        # justificativa de que "o detector recebe frames
-        # normalizados". A premissa estava certa e a conclusão
-        # errada: o detector recebe normalizado, mas o
-        # VisionWorker agora devolve as detecções de volta no
-        # espaço do frame REAL — é lá que elas estão quando
-        # chegam aqui.
-        #
-        # Dizer "referência" para coordenada que está em
-        # "frame real" faz o ActionManager aplicar uma regra de
-        # três a mais. Num device 1080x2400 dava na mesma
-        # (escala 1); em qualquer outro, todo clique saía
-        # deslocado. Era esse o problema em dispositivos
-        # diferentes.
-        #
-        # Com a resolução real, a conversão frame->device é
-        # exata: o toque cai onde o objeto foi detectado.
+        # Resolução real do frame: o VisionWorker devolve as detecções
+        # nesse espaço, e é isso que faz a conversão frame->device ser
+        # exata em qualquer resolução de device (não só 1080x2400).
         altura_frame, largura_frame = frame.shape[:2]
 
         actions.set_frame_size(largura_frame, altura_frame)
-
-        # -------------------------------------------------
-        # Envia frame para a IA
-        # -------------------------------------------------
 
         if VISION_FILTER_BY_STATE:
 
@@ -283,36 +218,21 @@ def run_loop(
                 state_machine.wanted_categories()
             )
 
-        # Frame capturado antes de a última ação assentar não
-        # pode autorizar nada (o _can_act descarta), então o
-        # worker também não deve gastar uma passada nele. Sem
-        # isto, cada ação custava uma análise jogada fora MAIS o
-        # atraso até a primeira análise útil, que só começava
-        # depois dela.
+        # Frame anterior à última ação não pode gerar detecção válida
+        # (_can_act descarta), então o worker nem gasta uma passada nele.
         vision.set_frame_floor(state_machine.frame_floor())
 
         vision.set_frame(frame, timestamp)
 
-        # -------------------------------------------------
-        # Detecções (do frame que o worker terminou)
-        # -------------------------------------------------
-
-        # get_input em vez de get_detections: devolve também o
-        # frame que PRODUZIU as detecções. Sem isso, o dataset
-        # gravaria uma imagem de uma passada com os rótulos de
-        # outra.
+        # get_input (não get_detections): devolve também o frame que
+        # PRODUZIU as detecções, para dataset não gravar imagem/rótulo
+        # de passadas diferentes.
         detections, lag, detect_frame, detect_time = (
             read_detections(vision)
         )
 
-        # -------------------------------------------------
-        # A VISÃO ESTÁ VIVA?
-        # -------------------------------------------------
-        #
-        # A thread do detector morrer não parava o programa: a
-        # captura seguia a 60 fps, a janela seguia aberta e o
-        # bot simplesmente nunca mais agia. Era o sintoma
-        # relatado, e não havia uma linha no log dizendo isso.
+        # Thread do detector morta não para o programa sozinha (captura e
+        # janela seguem ativas, o bot só some de agir) — loga uma vez.
         if not vision.is_alive() and not vision_avisada:
 
             logger.error(
@@ -324,14 +244,8 @@ def run_loop(
 
             vision_avisada = True
 
-        # -------------------------------------------------
-        # STATE MACHINE
-        # -------------------------------------------------
-        #
-        # A cada frame, sem intervalo mínimo. Quem decide QUANDO
-        # agir é o cooldown da própria StateMachine, que já leva
-        # em conta a idade do frame — pôr um segundo relógio
-        # aqui só somava atraso à reação.
+        # Sem intervalo mínimo aqui: o cooldown de QUANDO agir já vive
+        # na StateMachine, que considera a idade do frame.
         state_machine.update(
             detections,
             lag,
@@ -339,23 +253,13 @@ def run_loop(
             detect_time,
         )
 
-        # -------------------------------------------------
-        # PAINEL
-        # -------------------------------------------------
-        #
-        # Depois do update: mostra o estado JÁ com o efeito
-        # desta volta. Antes, mostraria sempre um frame
-        # atrasado.
-        #
-        # Ele decide sozinho se é hora de redesenhar, então
-        # chamar a cada volta não custa.
+        # Depois do update, para mostrar o estado já com o efeito desta
+        # volta. O panel decide sozinho se redesenha, então chamar
+        # sempre não custa.
         if panel is not None:
 
-            # A bateria vem da leitura em memória do
-            # BatteryMonitor — `dumpsys` custa ~56 ms e não
-            # pode entrar no loop. Sessão que morre por bateria
-            # descarregada não deixa rastro no log: o bot só
-            # para de agir.
+            # Bateria via BatteryMonitor (memória): dumpsys custa ~56ms
+            # e não pode entrar no loop.
             panel.update(
                 state_machine.summary(),
                 extra=(
@@ -367,31 +271,13 @@ def run_loop(
                 misses=detector.miss_report(),
             )
 
-        # -------------------------------------------------
-        # AI VISION
-        # -------------------------------------------------
-
-        # Com a janela desligada não há cópia nem desenho:
-        # o overlay era o único lugar que copiava o frame.
+        # Sem janela, não há cópia nem desenho do frame.
         if not SHOW_AI_VISION:
             continue
 
-        # =================================================
-        # REDUZIR ANTES DE DESENHAR
-        # =================================================
-        #
-        # Mesma taxa de antes — um desenho por frame, sem
-        # intervalo mínimo. O que mudou é o custo de cada um.
-        #
-        # A janela tem 500x900 e o frame tem 1080x2400. O
-        # caminho antigo era: copiar 7.8 MB, rabiscar 2.6 Mpx e
-        # mandar o `imshow` reduzir — três trabalhos em
-        # resolução cheia para caber num quinto do tamanho.
-        #
-        # Reduzindo primeiro, o `resize` substitui a cópia (o
-        # resultado já é array novo) e o desenho toca 0.45 Mpx.
-        # As detecções são convertidas pelo mesmo fator dentro
-        # do `draw`.
+        # Reduz antes de desenhar: `resize` já substitui a cópia e o
+        # desenho toca só a resolução da janela (bem menor que o frame).
+        # As detecções são convertidas pelo mesmo fator dentro do `draw`.
         escala_janela = min(
             WINDOW_WIDTH / largura_frame,
             WINDOW_HEIGHT / altura_frame,
@@ -411,9 +297,8 @@ def run_loop(
 
         else:
 
-            # Frame já pequeno: aí a cópia é necessária, porque
-            # o `draw` escreve no array que recebe e este é o
-            # buffer compartilhado da captura.
+            # Frame já pequeno: cópia necessária porque `draw` escreve
+            # no array recebido, e este é o buffer da captura.
             ai_frame = frame.copy()
 
         ai_frame = detector.draw(
@@ -425,25 +310,23 @@ def run_loop(
                 "detect_ms": vision.get_duration() * 1000,
                 "lag": lag,
 
-                # Leitura em memória, feita por outra thread:
-                # dumpsys custa ~56 ms e não pode entrar aqui.
+                # Leitura em memória: dumpsys custa ~56 ms e não pode entrar aqui.
                 "battery": battery.get(),
 
                 "cycle": state_machine.cycle_stats(),
 
-                # O que o bot está procurando e o que achou:
-                # sem isto, overlay vazio não diz se o
-                # problema é o template, o threshold ou o
-                # estado errado.
+                # Sem isto, overlay vazio não diz se o problema é
+                # template, threshold ou estado errado.
                 "state": state_machine.state,
                 "searched": detector.last_searched,
+                "searchable": detector.last_total,
                 "detections": len(detections),
 
-                # Overlay parado logo depois de uma ação é
-                # ESPERADO, não defeito: o worker está pulando
-                # frames que mostram a tela de antes do efeito.
-                # Sem esta linha, a pausa parece detector
-                # travado.
+                # Cobertura da pasta da resolução sobre o default.
+                "coverage": detector.template_coverage(),
+
+                # Overlay parado após uma ação é ESPERADO (worker
+                # pulando frames de antes do efeito assentar), não defeito.
                 "waiting_settle": vision.waiting_settle,
                 "vision_error": (
                     None
@@ -459,15 +342,10 @@ def run_loop(
 
         cv2.imshow(AI_WINDOW_NAME, ai_frame)
 
-        # O ESC só chega aqui: é esta janela que recebe as
-        # teclas. Sem ela, o encerramento é por Ctrl+C.
+        # ESC só chega aqui, é esta janela que recebe teclas.
         if cv2.waitKey(1) & 0xFF == 27:
             break
 
-
-# =========================================================
-# MAIN
-# =========================================================
 
 def main(argv=None):
 
@@ -476,9 +354,7 @@ def main(argv=None):
     args = parse_args(argv)
 
     # --device manda no config, o config manda na pergunta.
-    #
-    # O Ctrl+C aqui é desistência do usuário na pergunta, não
-    # erro: um traceback de KeyboardInterrupt só polui a tela.
+    # Ctrl+C aqui é desistência do usuário, não erro.
     try:
 
         device_id = devices.resolver(args.device or DEVICE_SERIAL)
@@ -504,8 +380,7 @@ def main(argv=None):
         "ESC ou Ctrl+C" if SHOW_AI_VISION else "Ctrl+C",
     )
 
-    # O espelho do scrcpy é opcional: a captura do bot não
-    # passa por ele.
+    # Espelho do scrcpy é opcional: a captura do bot não passa por ele.
     scrcpy_process = (
         start_scrcpy(device_id)
         if SHOW_SCRCPY
@@ -514,25 +389,20 @@ def main(argv=None):
 
     capture = ScreenCapture(device_id)
 
-    detector = Detector()
+    detector = Detector(use_defaults=not args.layout_only)
 
     vision = VisionWorker(detector)
 
     actions = ActionManager(device_id)
 
-    recorder = build_recorder()
+    recorder = build_recorder(ai_collect=args.ai_collect)
 
     state_machine = StateMachine(actions, recorder)
 
     battery = BatteryMonitor(actions.android)
 
-    # -----------------------------------------------------
-    # PAINEL
-    # -----------------------------------------------------
-    #
-    # O nome do device vem resolvido do adb, então é o serial
-    # real que está sendo usado — inclusive quando veio da
-    # pergunta interativa e não do config.
+    # device_id já vem resolvido do adb: é o serial real em uso mesmo
+    # quando veio da pergunta interativa, não do config.
     panel = (
         StatusPanel(
             device_id,
@@ -544,9 +414,8 @@ def main(argv=None):
 
     if panel is not None:
 
-        # Sem isto, cada ação imprime uma linha de INFO e
-        # empurra o painel para cima — as duas coisas
-        # brigando pelo mesmo terminal.
+        # Sem isto, cada ação imprime uma linha de INFO e empurra o
+        # painel, os dois brigando pelo mesmo terminal.
         log.set_console_level("WARNING")
 
     try:
@@ -583,9 +452,8 @@ def main(argv=None):
 
     finally:
 
-        # Antes de qualquer log: devolve o cursor para baixo do
-        # bloco, senão as linhas de encerramento escrevem em
-        # cima do painel.
+        # Antes de qualquer log: devolve o cursor para baixo do painel,
+        # senão as linhas de encerramento escrevem em cima dele.
         if panel is not None:
 
             panel.close()
@@ -594,8 +462,7 @@ def main(argv=None):
 
         logger.info("Encerrando EatVenture AI...")
 
-        # Antes do resto: fecha a amostra pendente e grava o
-        # último lote no banco.
+        # Antes do resto: fecha a amostra pendente e grava o último lote no banco.
         if recorder:
 
             recorder.stop()
