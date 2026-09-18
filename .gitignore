@@ -38,5 +38,5 @@ tests/capture/
 
 /tools/scrcpy/
 
-#/src/vision/templates/*
+/src/vision/templates/*
 !/src/vision/templates/default/
