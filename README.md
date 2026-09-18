@@ -1,63 +1,65 @@
+[Leia em português/BR](README.pt-BR.md)
+
 # EatVenture AI
 
-Bot de visão para EatVenture: captura o vídeo do device pelo
-scrcpy, localiza os elementos por template matching e toca
-via adb.
+Vision bot for EatVenture: captures the device video through
+scrcpy, locates elements by template matching, and taps
+through adb.
 
-## Requisitos
+## Requirements
 
 - Python 3.12+
-- [scrcpy](https://github.com/Genymobile/scrcpy) em `C:\scrcpy`
-  (ajuste `SCRCPY_PATH` e `SCRCPY_SERVER_PATH` em
+- [scrcpy](https://github.com/Genymobile/scrcpy) at `C:\scrcpy`
+  (adjust `SCRCPY_PATH` and `SCRCPY_SERVER_PATH` in
   [config.py](src/core/config.py))
-- `adb` no PATH, com um único device conectado
+- `adb` on PATH, with a single device connected
 
 ```bash
 pip install -r requirements.txt
 ```
 
-## Executar
+## Run
 
 ```bash
-python src/main.py            # o bot
-python src/test_main.py       # só o stream, sem detecção
+python src/main.py            # the bot
+python src/test_main.py       # stream only, without detection
 ```
 
-### Qual device
+### Which device
 
-Com mais de um device conectado, os dois programas **perguntam**:
+With more than one device connected, both programs **ask**:
 
 ```
-Mais de um dispositivo conectado:
+More than one device connected:
 
   1 - e2615705               22101320G            USB
-  2 - 192.168.1.12:37889     22101320G            wifi (mesmo aparelho do 1)
+  2 - 192.168.1.12:37889     22101320G            wifi (same device as 1)
 
-Qual usar? [1]:
+Which one to use? [1]:
 ```
 
-ENTER aceita a sugestão; também dá para digitar o número ou colar
-o serial. A sugestão é sempre **USB** — a conexão wifi do adb cai
-sozinha, e quando cai a captura morre no meio da sessão.
+ENTER accepts the suggestion; you can also type the number or paste
+the serial. The suggestion is always **USB** — the adb wifi connection
+drops on its own, and when it does, capture dies in the middle of the session.
 
-`(mesmo aparelho do 1)` sai quando os dois têm o mesmo
-`ro.serialno`: é o caso comum de um celular ligado por USB **e**
-por wifi ao mesmo tempo.
+`(same device as 1)` appears when both have the same
+`ro.serialno`: this is the common case of a phone connected by USB **and**
+over wifi at the same time.
 
-Para não ver a pergunta toda vez:
+To avoid seeing the question every time:
 
 ```bash
 python src/main.py --device e2615705
 ```
 
-ou fixe `DEVICE_SERIAL` em [config.py](src/core/config.py).
+or set `DEVICE_SERIAL` in [config.py](src/core/config.py).
 
-O serial escolhido atravessa o programa inteiro (captura **e**
-toques). Isso não é detalhe: sem `-s`, com dois devices na lista
-o adb recusa toda chamada com `more than one device` — e o erro
-aparecia longe da causa, como "não conectou no stream".
+The selected serial is used throughout the entire program (capture **and**
+taps). This is not a detail: without `-s`, with two devices in the list,
+adb rejects every call with `more than one device` — and the error
+appeared far from the cause, as "did not connect to the stream".
 
-Vale para as ferramentas também, que dependem do mesmo
+The same applies to the tools, which depend on the same
 `screencap`:
 
 ```bash
@@ -65,656 +67,645 @@ python tests/template_selector.py --device e2615705
 python tests/android_screenshot.py --device e2615705
 ```
 
-Sem `--device` elas perguntam igual.
+Without `--device` they ask the same way.
 
-### Quais janelas aparecem
+### Which windows appear
 
-Em [config.py](src/core/config.py), uma opção por janela —
-as quatro combinações valem, inclusive as duas desligadas:
+In [config.py](src/core/config.py), one option per window —
+all four combinations are valid, including both disabled:
 
 ```python
-SHOW_AI_VISION = True    # janela da IA, com as caixas de detecção
-SHOW_SCRCPY    = False   # espelho do scrcpy
+SHOW_AI_VISION = True    # AI window, with detection boxes
+SHOW_SCRCPY    = False   # scrcpy mirror
 ```
 
-O `scrcpy.exe` é **apenas espelho** — a captura do bot não
-passa por ele. O `ScreenCapture` sobe o próprio
-`scrcpy-server` e lê o socket direto, e os toques vão por
-adb. Então `SHOW_SCRCPY = False` não afeta o bot, só poupa um
-decode H.264 e um render inteiros; nesse caso o `scrcpy.exe`
-nem é iniciado. Com as duas desligadas o frame também deixa
-de ser copiado, porque o overlay era o único lugar que
-copiava.
+`scrcpy.exe` is **only a mirror** — the bot's capture does not
+go through it. `ScreenCapture` starts its own
+`scrcpy-server` and reads the socket directly, while taps go through
+adb. So `SHOW_SCRCPY = False` does not affect the bot; it only saves an
+H.264 decode and a full render. In that case `scrcpy.exe` is not
+started at all. With both disabled, the frame also stops being copied,
+because the overlay was the only place that copied it.
 
-O espelho continua útil para intervir na mão: a janela da IA
-não aceita toque. Se ele for sua única janela,
-`SCRCPY_EXTRA_ARGS` aceita coisas como `"--stay-awake"` e
+The mirror is still useful for manual intervention: the AI window
+does not accept taps. If it is your only window,
+`SCRCPY_EXTRA_ARGS` accepts options such as `"--stay-awake"` and
 `"--always-on-top"`.
 
-**O `ESC` só funciona com a janela da IA aberta** — é ela que
-recebe as teclas. Sem ela, encerre com `Ctrl+C`.
+**`ESC` only works with the AI window open** — it is the one that
+receives keystrokes. Without it, exit with `Ctrl+C`.
 
-O que é desenhado dentro da janela da IA:
+What is drawn inside the AI window:
 
 ```python
-SHOW_DETECTION_LABELS = True  # texto "categoria F=.. C=.." nas caixas
-SHOW_FPS              = True  # os dois FPS, no canto
-SHOW_DETECTION_LAG    = True  # idade do frame, no canto
+SHOW_DETECTION_LABELS = True  # "category F=.. C=.." text in the boxes
+SHOW_FPS              = True  # both FPS values, in the corner
+SHOW_DETECTION_LAG    = True  # frame age, in the corner
 ```
 
-Vale desligar os rótulos quando a tela tiver muita detecção
-junta: agora que o detector acha várias instâncias por
-categoria, o texto empilhado atrapalha mais do que ajuda.
+It is worth disabling labels when the screen has many detections
+close together: now that the detector finds multiple instances per
+category, stacked text gets in the way more than it helps.
 
-### O HUD
+### The HUD
 
 ```
-captura   30.0 fps
+capture   30.0 fps
 detector   3.2 fps  304 ms
-atraso     535 ms
-bateria      46 %  carregando
-reforma      2  1m33s  (ult 2m23s)
+lag        535 ms
+battery      46 %  charging
+renovation   2  1m33s  (last 2m23s)
 ```
 
-- **captura** — frames por segundo chegando do device.
-- **detector** — passadas do detector por segundo, e o custo
-  médio de uma.
-- **atraso** — idade do frame que gerou as detecções na tela.
-- **bateria** — nível do device, com marca de carregando.
-- **reforma** — quantas o bot já fechou, o tempo corrido desde
-  a última, e quanto durou a anterior.
+- **capture** — frames per second arriving from the device.
+- **detector** — detector passes per second, and the average cost
+  of one.
+- **lag** — age of the frame that generated the detections on screen.
+- **battery** — device level, with a charging indicator.
+- **renovation** — how many the bot has completed, the elapsed time since
+  the last one, and how long the previous one took.
 
-Os dois FPS são números bem diferentes e é justamente a
-comparação que diagnostica: captura em 60 com detector em 3
-significa que o gargalo é a detecção, não a captura.
+The two FPS values are very different, and that comparison is exactly
+what diagnoses the issue: capture at 60 with the detector at 3
+means detection is the bottleneck, not capture.
 
-O detector fica **vermelho** abaixo de `1 / MAX_DETECTION_AGE`
-— nesse ponto as detecções nascem mais velhas que o limite e
-a máquina de estados para de clicar, em vez de acertar onde o
-objeto estava. É o mesmo limite da checagem de idade, não um
-número separado. O atraso fica vermelho na metade do limite.
+The detector turns **red** below `1 / MAX_DETECTION_AGE`
+— at that point detections are born older than the limit and
+the state machine stops clicking instead of hitting where the
+object was. It is the same limit used by the age check, not a
+separate number. Lag turns red at half the limit.
 
-A **bateria** fica vermelha abaixo de `BATTERY_WARNING_LEVEL`
-(20%) quando não está carregando. Vale mais do que parece: o bot
-roda por horas, e sessão que morre por bateria descarregada não
-deixa rastro no log — o bot só para de agir.
+The **battery** turns red below `BATTERY_WARNING_LEVEL`
+(20%) when it is not charging. This matters more than it seems: the bot
+runs for hours, and a session that dies from an empty battery leaves
+no trace in the log — the bot simply stops acting.
 
-`dumpsys battery` custa **~56 ms**, mais de 3x uma passada inteira
-do detector no estado `UPGRADE`. Por isso ele **nunca** é chamado
-do loop de render: roda numa thread própria
-([core/battery.py](src/core/battery.py)) a cada
-`BATTERY_POLL_INTERVAL` (30 s), e o HUD só lê o último valor da
-memória. Se a leitura passar do dobro do intervalo sem atualizar,
-o HUD mostra a idade dela junto — número parado parece atual, e
-isso é pior que número ausente.
+`dumpsys battery` costs **~56 ms**, more than 3x a full detector pass
+in the `UPGRADE` state. That is why it is **never** called from
+the render loop: it runs in its own thread
+([core/battery.py](src/core/battery.py)) every
+`BATTERY_POLL_INTERVAL` (30 s), and the HUD only reads the latest value from
+memory. If the reading goes more than twice the interval without updating,
+the HUD shows its age alongside it — a frozen number looks current, and
+that is worse than a missing number.
 
-O nível é calculado como `level / scale`, não `level` direto: a
-escala do `dumpsys` nem sempre é 100.
+The level is calculated as `level / scale`, not `level` directly:
+the `dumpsys` scale is not always 100.
 
-### Tempo corrido entre reformas
+### Elapsed time between renovations
 
-É o único número do HUD que mede **progresso**. Os FPS dizem que
-a visão está saudável; não dizem que o bot está andando — ele
-pode estar a 30 fps clicando em nada há vinte minutos.
+It is the only HUD number that measures **progress**. FPS values say
+that vision is healthy; they do not say that the bot is moving — it
+could be clicking nothing at 30 fps for twenty minutes.
 
-O cronômetro reinicia quando o bot age sobre `build` ou `plane`
-(`CYCLE_CATEGORIES`), que são as duas portas para `RENOVATE`, ou
-seja, as duas formas de passar de restaurante.
+The timer resets when the bot acts on `build` or `plane`
+(`CYCLE_CATEGORIES`), which are the two paths to `RENOVATE`, that is,
+the two ways to move on from a restaurant.
 
-A marcação acontece dentro de `_act`, não em `_apply_rules`:
-`_act` é o ponto em que a ação **saiu** de verdade. Marcar antes
-contaria ciclo em tentativa barrada por cooldown ou por worker
-ocupado — e aí o contador subiria a cada frame.
+The timestamp is recorded inside `_act`, not in `_apply_rules`:
+`_act` is the point where the action actually **went out**. Recording it earlier
+would count a cycle for an attempt blocked by cooldown or by a busy worker
+— and the counter would then increase every frame.
 
-Fica **vermelho** quando o tempo corrido passa de
-`CYCLE_STALL_FACTOR` (3x) o ciclo anterior. A referência é o
-ciclo anterior e não um número fixo, porque não existe "tempo
-normal": cada restaurante leva o que leva, e vai ficando mais
-lento. Sem ciclo anterior nunca fica vermelho — sem referência,
-"demorado" não quer dizer nada.
+It turns **red** when the elapsed time exceeds
+`CYCLE_STALL_FACTOR` (3x) the previous cycle. The reference is the
+previous cycle rather than a fixed number, because there is no "normal
+time": each restaurant takes as long as it takes, and they keep getting
+slower. Without a previous cycle it never turns red — without a reference,
+"slow" means nothing.
 
-Antes da primeira reforma o tempo corrido conta desde o start,
-que também é informação: "8 minutos e ainda não passou de
-restaurante".
+Before the first renovation, elapsed time counts from startup,
+which is also useful information: "8 minutes and it still has not moved
+on from the restaurant".
 
-## Estrutura
+## Structure
 
-| Módulo | Responsabilidade |
+| Module | Responsibility |
 |---|---|
-| [capture/screen.py](src/capture/screen.py) | stream H.264 do scrcpy-server, frame versionado |
-| [vision/detector.py](src/vision/detector.py) | template matching em dois estágios |
-| [vision/worker.py](src/vision/worker.py) | roda o detector fora do loop principal |
-| [core/state_machine.py](src/core/state_machine.py) | o que fazer com cada detecção |
-| [actions/manager.py](src/actions/manager.py) | ação → toque, em thread própria |
-| [actions/android.py](src/actions/android.py) | comandos adb |
-| [core/devices.py](src/core/devices.py) | lista e escolhe o device |
-| [core/battery.py](src/core/battery.py) | lê a bateria fora do caminho crítico |
-| [dataset/recorder.py](src/dataset/recorder.py) | grava frame + rótulos para treino |
-| [dataset/store.py](src/dataset/store.py) | índice do dataset no PostgreSQL |
-| [core/config.py](src/core/config.py) | **todo** valor ajustável |
-| [tools/regras.py](tools/regras.py) | imprime e valida as prioridades |
-| [tools/renumerar.py](tools/renumerar.py) | compacta a numeração dos templates |
-| [tools/selector_layout.py](tools/selector_layout.py) | escala e coordenadas do seletor |
+| [capture/screen.py](src/capture/screen.py) | H.264 stream from scrcpy-server, versioned frame |
+| [vision/detector.py](src/vision/detector.py) | two-stage template matching |
+| [vision/worker.py](src/vision/worker.py) | runs the detector outside the main loop |
+| [core/state_machine.py](src/core/state_machine.py) | what to do with each detection |
+| [actions/manager.py](src/actions/manager.py) | action → tap, in its own thread |
+| [actions/android.py](src/actions/android.py) | adb commands |
+| [core/devices.py](src/core/devices.py) | lists and chooses the device |
+| [core/battery.py](src/core/battery.py) | reads the battery outside the critical path |
+| [dataset/recorder.py](src/dataset/recorder.py) | records frame + labels for training |
+| [dataset/store.py](src/dataset/store.py) | dataset index in PostgreSQL |
+| [core/config.py](src/core/config.py) | **every** adjustable value |
+| [tools/regras.py](tools/regras.py) | prints and validates priorities |
+| [tools/renumerar.py](tools/renumerar.py) | compacts template numbering |
+| [tools/selector_layout.py](tools/selector_layout.py) | selector scale and coordinates |
 
-## Ajustar templates e thresholds
+## Adjusting templates and thresholds
 
-Recortar um template novo:
+To crop a new template:
 
 ```bash
 python tests/template_selector.py
 ```
 
-Com mais de um device conectado ele pergunta qual usar, igual ao
-`main.py` (ver [Qual device](#qual-device)).
+With more than one device connected it asks which one to use, like
+`main.py` (see [Which device](#which-device)).
 
-`R`/`F5` captura de novo, arrastar seleciona, `ENTER` salva
-na categoria escolhida. O retângulo mostra o tamanho do recorte
-em **pixels do device**, que é o que importa para o template.
+`R`/`F5` captures again, dragging selects, and `ENTER` saves
+in the selected category. The rectangle shows the crop size in
+**device pixels**, which is what matters for the template.
 
-### Tamanho da janela
+### Window size
 
-A janela era fixa em 500x900, o que numa tela de device
-1080x2400 dá escala 0.375 — 1 pixel na tela valia 2.7 pixels do
-device, e recortar ficava impreciso.
+The window used to be fixed at 500x900, which on a 1080x2400 device
+screen gives a scale of 0.375 — 1 pixel on screen was worth 2.7 device
+pixels, making cropping imprecise.
 
-Agora ela **acompanha a altura da sua tela** (80% dela por
-padrão) e mantém a proporção da imagem. A tela do device aparece
-inteira, de uma vez.
+Now it **follows the height of your screen** (80% of it by
+default) and maintains the image aspect ratio. The device screen appears
+in full, all at once.
 
-Medido num monitor 3440x1440:
+Measured on a 3440x1440 monitor:
 
-| `SELECTOR_HEIGHT_FRACTION` | Janela | Escala | 1 px na tela = |
+| `SELECTOR_HEIGHT_FRACTION` | Window | Scale | 1 px on screen = |
 |---|---|---|---|
-| antes (fixo 500x900) | 500x900 | 0.375 | 2.7 px |
+| before (fixed 500x900) | 500x900 | 0.375 | 2.7 px |
 | 0.70 | 453x1007 | 0.420 | 2.4 px |
-| **0.80 (padrão)** | **518x1152** | **0.480** | **2.1 px** |
+| **0.80 (default)** | **518x1152** | **0.480** | **2.1 px** |
 | 0.90 | 583x1296 | 0.540 | 1.9 px |
 | 1.00 | 648x1440 | 0.600 | 1.7 px |
 
-A escala nunca passa de 1.0: ampliar não cria detalhe, só deixa
-o recorte borrado e mais difícil de acertar.
+The scale never exceeds 1.0: enlarging does not create detail; it only
+makes the crop blurry and harder to get right.
 
-Ajustes em [config.py](src/core/config.py):
+Settings in [config.py](src/core/config.py):
 
 ```python
-SELECTOR_HEIGHT_FRACTION = 0.80   # fração da altura da tela
-SELECTOR_WIDTH_FRACTION = 0.95    # só protege monitor deitado
-SELECTOR_MAX_WIDTH = None         # None = detecta a tela
+SELECTOR_HEIGHT_FRACTION = 0.80   # fraction of screen height
+SELECTOR_WIDTH_FRACTION = 0.95    # only protects against a landscape monitor
+SELECTOR_MAX_WIDTH = None         # None = detects the screen
 SELECTOR_MAX_HEIGHT = None
 ```
 
-A matemática de escala e de coordenadas vive em
-[tools/selector_layout.py](tools/selector_layout.py), separada da
-GUI e coberta por [tests/test_selector_layout.py](tests/test_selector_layout.py)
-— um erro de mapeamento aqui salvaria o recorte errado em
-silêncio, e o template ruim só apareceria como "o bot clica no
-lugar errado" semanas depois.
+The scale and coordinate math lives in
+[tools/selector_layout.py](tools/selector_layout.py), separate from the
+GUI and covered by [tests/test_selector_layout.py](tests/test_selector_layout.py)
+— a mapping error here would silently save the wrong crop, and the bad
+template would only show up as "the bot clicks in the wrong place"
+weeks later.
 
-### Numeração automática
+### Automatic numbering
 
-Ao salvar, o seletor **compacta a sequência** antes de gravar:
-se falta o `item_005` entre 004 e 006, o 006 vira 005, o 007
-vira 006, e o template novo entra no último número.
+When saving, the selector **compacts the sequence** before writing:
+if `item_005` is missing between 004 and 006, 006 becomes 005, 007
+becomes 006, and the new template gets the last number.
 
-Assim "próximo número" volta a ser `len + 1`, sem ambiguidade —
-antes uma lacuna fazia o cálculo apontar para um arquivo que já
-existia, e o novo template **sobrescrevia** o antigo em silêncio.
+This makes "next number" equal to `len + 1` again, without ambiguity —
+previously a gap made the calculation point to a file that already
+existed, and the new template would silently **overwrite** the old one.
 
-Para compactar à mão (útil depois de apagar templates):
+To compact manually (useful after deleting templates):
 
 ```bash
-python tools/renumerar.py              # mostra o que mudaria
-python tools/renumerar.py --aplicar    # renomeia
+python tools/renumerar.py              # shows what would change
+python tools/renumerar.py --aplicar    # renames
 python tools/renumerar.py --aplicar --categoria food
 ```
 
-O padrão é só mostrar, porque renomear é irreversível. Ele
-processa em ordem crescente — o que torna colisão impossível,
-já que o alvo de cada arquivo é sempre menor ou igual ao número
-dele e quem ainda não foi processado tem número maior. Isso está
-verificado por força bruta em `tests/test_renumerar.py`, sobre
-todas as combinações de lacunas até 11 arquivos.
+The default is to only show changes, because renaming is irreversible. It
+processes in ascending order — which makes collisions impossible,
+since each file's target is always less than or equal to its number,
+and anything not yet processed has a higher number. This is verified
+by brute force in `tests/test_renumerar.py`, across all combinations of
+gaps up to 11 files.
 
-Renomear não invalida a regressão: o golden guarda categoria,
-posição e confiança — não o nome do arquivo.
+Renaming does not invalidate the regression: the golden stores category,
+position, and confidence — not the filename.
 
-Depois de recortar ou mexer em threshold, **rode a
-regressão**:
+After cropping or changing a threshold, **run the
+regression**:
 
 ```bash
-python tests/test_detection.py          # o que mudou?
-python tests/test_detection.py --bench  # quanto custa uma passada?
-python tests/test_detection.py --update # aceitar o novo esperado
+python tests/test_detection.py          # what changed?
+python tests/test_detection.py --bench  # how much does a pass cost?
+python tests/test_detection.py --update # accept the new expected result
 ```
 
-Ela compara o resultado com [tests/golden/expectations.json](tests/golden/expectations.json)
-e aponta o que deixou de ser detectado (`PERDEU`) e o que
-passou a ser detectado (`EXTRA`, candidato a falso positivo).
+It compares the result with [tests/golden/expectations.json](tests/golden/expectations.json)
+and points out what is no longer detected (`MISSED`) and what
+started being detected (`EXTRA`, a false-positive candidate).
 
-Para ampliar a base:
+To expand the set:
 
 ```bash
-python tests/android_screenshot.py --fixture nome.png
+python tests/android_screenshot.py --fixture name.png
 python tests/test_detection.py --update
 ```
 
-e **confira o diff antes de comitar** — o arquivo golden vale
-o que valer essa conferência. Telas onde nada deve ser
-detectado são tão úteis quanto as outras: pegam falso
-positivo.
+and **check the diff before committing** — the golden file is only
+as trustworthy as that review. Screens where nothing should be
+detected are just as useful as the others: they catch false
+positives.
 
-Duas pastas de imagem, e a distinção importa:
+There are two image folders, and the distinction matters:
 
-| Pasta | O quê | Git |
+| Folder | What | Git |
 |---|---|---|
-| `tests/images/` | fixtures da regressão | versionado |
-| `tests/capture/` | captura de trabalho do seletor | ignorado |
+| `tests/images/` | regression fixtures | tracked |
+| `tests/capture/` | selector working capture | ignored |
 
-O `template_selector.py` grava na segunda. Ele antes gravava
-sempre em `tests/images/screen.png`, então cada template
-recortado sobrescrevia o fixture da regressão e invalidava a
-linha de base sem avisar.
+`template_selector.py` writes to the second one. It used to always write
+to `tests/images/screen.png`, so every cropped template overwrote the
+regression fixture and invalidated the baseline without warning.
 
-Nomeie fixture pelo que ele cobre — `new_point.png`,
-`food_stations.png`, `up_food.png`. **Nunca `screen.png`**: é
-o nome da captura de trabalho do seletor. Uma imagem em
-`tests/images/` sem entrada no golden vira aviso, não falha,
-então uma captura perdida ali não quebra o teste.
+Name fixtures for what they cover — `new_point.png`,
+`food_stations.png`, `up_food.png`. **Never `screen.png`**: that is
+the name of the selector's working capture. An image in
+`tests/images/` without a golden entry becomes a warning, not a failure,
+so a stray capture there does not break the test.
 
-Enquanto estiver recortando templates, desligue
-`VISION_FILTER_BY_STATE` em [config.py](src/core/config.py):
-com o filtro ligado o overlay só mostra as categorias do
-estado atual, o que é fácil confundir com "o detector parou
-de achar".
+While cropping templates, disable
+`VISION_FILTER_BY_STATE` in [config.py](src/core/config.py):
+with the filter enabled, the overlay only shows categories from the
+current state, which is easy to mistake for "the detector stopped
+finding things".
 
-## Testes
+## Tests
 
 ```bash
-python tests/test_detection.py       # regressão de detecção
-python tests/test_state_machine.py   # prioridade, cooldown, timeout
-python tests/test_pipeline.py        # integração, com adb falso (inclui o modo headless)
-python tests/test_renumerar.py       # compactação da numeração
-python tests/test_selector_layout.py # coordenadas do seletor
-python tests/test_devices.py         # escolha de device
-python tests/test_ciclo.py           # tempo corrido entre reformas
-python tests/test_dataset.py         # gravação do dataset de treino
+python tests/test_detection.py       # detection regression
+python tests/test_state_machine.py   # priority, cooldown, timeout
+python tests/test_pipeline.py        # integration, with fake adb (includes headless mode)
+python tests/test_renumerar.py       # numbering compaction
+python tests/test_selector_layout.py # selector coordinates
+python tests/test_devices.py         # device selection
+python tests/test_ciclo.py           # elapsed time between renovations
+python tests/test_dataset.py         # training dataset recording
 ```
 
-Nenhum deles precisa de device.
+None of them needs a device.
 
-## Prioridades da máquina de estados
+## State machine priorities
 
-A ordem das regras em [state_machine.py](src/core/state_machine.py)
-**é** a prioridade. Em `NORMAL`:
+The order of the rules in [state_machine.py](src/core/state_machine.py)
+**is** the priority. In `NORMAL`:
 
-| # | Categoria | Ação | Vai para |
+| # | Category | Action | Goes to |
 |---|---|---|---|
-| 1 | `open_store` | clica | — |
-| 2 | `close` | clica no X | — |
-| 3 | `gray_max` | toca ponto neutro | — |
-| 4 | `up_food` | **long press** no botão, evoluindo a comida | — |
-| 5 | `plane` | clica | `RENOVATE` |
-| 6 | `build` | clica | `RENOVATE` |
-| 7 | `upgrade` | clica | `UPGRADE` |
-| 8 | `new_point` | clica | `NEW_POINT` |
-| 9 | `box` | clica | — |
-| 10 | `food` | clica | `FOOD` |
+| 1 | `open_store` | taps | — |
+| 2 | `close` | clicks the X | — |
+| 3 | `gray_max` | taps a neutral point | — |
+| 4 | `up_food` | **long press** on the button, upgrading food | — |
+| 5 | `plane` | clicks | `RENOVATE` |
+| 6 | `build` | clicks | `RENOVATE` |
+| 7 | `upgrade` | clicks | `UPGRADE` |
+| 8 | `new_point` | clicks | `NEW_POINT` |
+| 9 | `box` | clicks | — |
+| 10 | `food` | clicks | `FOOD` |
 
-As três primeiras fecham o que não deveria estar aberto, e por
-isso vêm antes de qualquer ação de jogo.
+The first three close things that should not be open, which is why
+they come before any game action.
 
-A quarta é diferente: `up_food` em `NORMAL` faz o **mesmo** que
-em `FOOD` — long press de `UPGRADE_FOOD_PRESS` segundos no botão,
-evoluindo a comida. É escolha deliberada, e vale saber o que
-custa: o painel de comida às vezes abre sem querer, e nesse caso
-o bot gasta moeda e fica travado o tempo do press. Também não
-entra na escada de fechamento (ver abaixo), porque
-`upgrade_food` não é uma `DISMISS_ACTION` — se o painel não
-fechar, o único sinal é o `REPEATED_ACTION_WARNING`.
+The fourth is different: `up_food` in `NORMAL` does the **same** as
+in `FOOD` — a long press of `UPGRADE_FOOD_PRESS` seconds on the button,
+upgrading food. This is deliberate, and it is worth knowing the cost:
+the food panel sometimes opens accidentally, in which case the bot
+spends currency and remains stuck for the duration of the press. It also
+does not enter the dismissal ladder (see below), because
+`upgrade_food` is not a `DISMISS_ACTION` — if the panel does not
+close, the only signal is `REPEATED_ACTION_WARNING`.
 
-**Não existe número de prioridade escrito em lugar nenhum** — a
-ordem da lista É a prioridade. Antes eram comentários
-`# PRIORIDADE 1 → PLANE` espalhados por 200 linhas de `if`, o que
-significava duas fontes de verdade: mudar a ordem sem mudar o
-comentário deixava o código mentindo. Para reordenar, mova a
-linha.
+**There is no priority number written anywhere** — the order of the
+list IS the priority. Previously there were comments such as
+`# PRIORITY 1 → PLANE` scattered across 200 lines of `if`, which
+meant two sources of truth: changing the order without changing the
+comment left the code lying. To reorder, move the line.
 
-### Como acompanhar
+### How to monitor
 
 ```bash
 python tools/regras.py
 ```
 
-Imprime a numeração derivada da ordem, em todos os estados, com
-timeout, comportamento de cada ação e destino. E confere três
-coisas que o runtime não avisa:
+Prints numbering derived from the order, in every state, with
+timeout, each action's behavior, and destination. It also checks three
+things that runtime does not report:
 
-- regra apontando para categoria **sem template** (regra morta,
-  nunca pode disparar)
-- regra apontando para **ação inexistente** na `ACTION_TABLE`
-- template de categoria que **nenhuma regra usa** (custo de
-  detecção sem uso)
+- rule pointing to a category **without a template** (dead rule,
+  can never trigger)
+- rule pointing to a **nonexistent action** in `ACTION_TABLE`
+- category template that **no rule uses** (detection cost with no use)
 
-Sai com código 1 se achar problema, então serve em hook de
-commit. Foi ele que pegou a regra apontando para
-`renovate_coin` depois da pasta ser renomeada para `renovate`.
+Exits with code 1 if it finds a problem, so it works in a commit
+hook. It was the tool that caught the rule pointing to
+`renovate_coin` after the folder was renamed to `renovate`.
 
-Para acompanhar as decisões **em tempo real**, ponha
-`LOG_LEVEL = "DEBUG"` em [config.py](src/core/config.py):
+To follow decisions **in real time**, set
+`LOG_LEVEL = "DEBUG"` in [config.py](src/core/config.py):
 
 ```
-D [state] NORMAL prio 7/10: upgrade -> upgrade | na tela: food(0.97) box(0.93) upgrade(1.00)
+D [state] NORMAL prio 7/10: upgrade -> upgrade | on screen: food(0.97) box(0.93) upgrade(1.00)
 I [state] NORMAL -> UPGRADE
 ```
 
-A linha diz qual prioridade venceu **e o que ela venceu** — é o
-que responde "por que clicou nisso e não naquilo".
+The line says which priority won **and what it beat** — answering
+"why did it click this and not that?".
 
-`up_food` faz coisas **opostas** conforme o estado, e é de
-propósito:
+`up_food` does **opposite** things depending on the state, deliberately:
 
-| Estado | O que faz | Onde | Duração | Gasta moeda? |
+| State | What it does | Where | Duration | Spends currency? |
 |---|---|---|---|---|
-| `NORMAL` | fecha o painel | `DISMISS_POINT` | 0.4 s | não |
-| `FOOD` | evolui a comida | centro da detecção | 4 s | **sim** |
+| `NORMAL` | closes the panel | `DISMISS_POINT` | 0.4 s | no |
+| `FOOD` | upgrades food | center of the detection | 4 s | **yes** |
 
-É o estado que decide o significado da mesma detecção. Os dois
-são toque mantido, e não tap: no ponto neutro um tap seco do adb
-às vezes não fecha o painel. As durações são separadas
-(`DISMISS_HOLD_DURATION` e `UPGRADE_FOOD_PRESS`) porque segurar
-4 s só para fechar um painel congelaria a ação por 4 s.
+The state decides the meaning of the same detection. Both are holds,
+not taps: at the neutral point, a quick adb tap sometimes does not close
+the panel. The durations are separate (`DISMISS_HOLD_DURATION` and
+`UPGRADE_FOOD_PRESS`) because holding for 4 s just to close a panel
+would freeze the action for 4 s.
 
-Como `NORMAL` não tem timeout (é o estado base), uma regra que
-dispara sem resolver nada repetiria para sempre — e achar algo
-reseta a exploração, então o swipe não entra para salvar. Daí
-o `REPEATED_ACTION_WARNING`: depois de N ações idênticas
-seguidas sai um aviso no log.
+Because `NORMAL` has no timeout (it is the base state), a rule that
+triggers without resolving anything would repeat forever — and finding
+something resets exploration, so the swipe does not come to the rescue.
+Hence `REPEATED_ACTION_WARNING`: after N identical consecutive actions,
+a warning appears in the log.
 
-### Por que o bot não age duas vezes sobre a mesma tela
+### Why the bot does not act twice on the same screen
 
-Sintoma: fechava o "MAX" e tocava **de novo** no mesmo ponto, o
-que **reabria** o painel — porque o `DISMISS_POINT` é também um
-ponto que abre coisa.
+Symptom: it closed "MAX" and tapped **again** at the same point, which
+**reopened** the panel — because `DISMISS_POINT` is also a point that
+opens something.
 
-Duas causas somadas:
+Two causes combined:
 
-1. O `ACTION_COOLDOWN` (0,5 s) liberava antes de existir frame
-   posterior à ação, porque o atraso do detector é ~0,535 s. A
-   máquina decidia sobre uma tela de **antes** do próprio toque.
-2. Mesmo um frame posterior ao toque ainda mostra o painel
-   enquanto a animação de fechar não terminou.
+1. `ACTION_COOLDOWN` (0.5 s) expired before there was a frame
+  after the action, because detector lag is ~0.535 s. The
+  machine was deciding based on a screen from **before** its own tap.
+2. Even a frame after the tap still shows the panel while the closing
+  animation has not finished.
 
-Por isso a condição em `_can_act` não é temporal, é **causal**:
-só age sobre frame **capturado** ao menos `ACTION_SETTLE` depois
-da última ação. Aumentar o cooldown não resolveria — um detector
-mais lento voltaria a estourar a margem.
+That is why the condition in `_can_act` is not temporal, but **causal**:
+it only acts on a frame **captured** at least `ACTION_SETTLE` after
+the last action. Increasing the cooldown would not solve it — a slower
+detector would exceed the margin again.
 
-Simulado no domínio do tempo, com o painel abrindo e fechando de
-verdade e a máquina vendo com atraso (toques no ponto, e quantos
-deles com o painel **já fechado**):
+Simulated in the time domain, with the panel genuinely opening and closing
+and the machine seeing with delay (taps at the point, and how many of them
+with the panel **already closed**):
 
-| `ACTION_SETTLE` | anim 0,10 s | anim 0,20 s | anim 0,30 s | anim 0,40 s |
+| `ACTION_SETTLE` | anim 0.10 s | anim 0.20 s | anim 0.30 s | anim 0.40 s |
 |---|---|---|---|---|
-| 0 (só a guarda causal) | 5t **2esp** | 5t **2esp** | 5t **2esp** | 5t **2esp** |
-| 0,20 | 1t 0esp | 1t 0esp | 5t **2esp** | 5t **2esp** |
-| **0,40 (config)** | 1t 0esp | 1t 0esp | 1t 0esp | 1t 0esp |
+| 0 (causal guard only) | 5t **2miss** | 5t **2miss** | 5t **2miss** | 5t **2miss** |
+| 0.20 | 1t 0miss | 1t 0miss | 5t **2miss** | 5t **2miss** |
+| **0.40 (config)** | 1t 0miss | 1t 0miss | 1t 0miss | 1t 0miss |
 
-A regra é `ACTION_SETTLE >= animação do jogo`. Baixar para 0,1
-faz o duplo toque voltar, e há teste dizendo isso.
+The rule is `ACTION_SETTLE >= game animation`. Lowering it to 0.1
+brings the double tap back, and there is a test for it.
 
-**O custo**: o intervalo entre ações passa a ser
-`settle + atraso do detector`. Com o atraso em 0,535 s, o teto
-cai de ~1,9 para ~1,1 ação por segundo. É troca deliberada — uma
-ação errada que desfaz a anterior custa mais que meia ação por
-segundo.
+**The cost**: the interval between actions becomes
+`settle + detector lag`. With lag at 0.535 s, the ceiling
+drops from ~1.9 to ~1.1 actions per second. This is deliberate — an
+incorrect action that undoes the previous one costs more than half an
+action per second.
 
-### Fechar painel: por que existe uma escada
+### Closing the panel: why a ladder exists
 
-**Nenhum ponto fixo é seguro numa posição de rolagem qualquer.**
-O `DISMISS_POINT`, hoje (10, 2200), fica encostado na barra de
-botões de baixo, então ele mesmo pode ABRIR um painel. Se esse
-painel mostra "max", a regra do `gray_max` toca o mesmo ponto,
-que reabre: ciclo infinito, em que o ponto que causou o problema
-é o usado para resolvê-lo.
+**No fixed point is safe at an arbitrary scroll position.**
+`DISMISS_POINT`, currently (10, 2200), is next to the bottom button
+bar, so it can itself OPEN a panel. If that panel shows "max", the
+`gray_max` rule taps the same point, reopening it: an infinite cycle
+where the point that caused the problem is used to solve it.
 
-Medindo os 4 fixtures, os únicos blocos realmente inertes ficam
-na faixa de status do Android — onde tocar é pior. E o interior
-muda por completo entre restaurantes.
+Across the 4 fixtures, the only truly inert areas are in the Android
+status bar — where tapping is worse. And the interior changes completely
+between restaurants.
 
-**Mas existe uma posição de rolagem em que o canto de baixo fica
-vazio: com a tela descida até o fim.** Daí a escada:
+**But there is a scroll position where the bottom corner is empty:
+with the screen scrolled all the way down.** Hence the ladder:
 
 ```
 gray_max → gray_max → gray_max → scroll_bottom → gray_max → ...
 ```
 
-| Config | O quê |
+| Config | What |
 |---|---|
-| `DISMISS_ACTIONS` | quais ações escalam (`dismiss`, `gray_max`) |
+| `DISMISS_ACTIONS` | which actions escalate (`dismiss`, `gray_max`) |
 
-| `DISMISS_ATTEMPTS_BEFORE_SCROLL` | tentativas no ponto antes de rolar (3) |
-| `SCROLL_BOTTOM_DIRECTION` | `"up"` — dedo para cima, **vista desce** |
-| `SCROLL_BOTTOM_SWIPES` | 6, o bastante para chegar ao fim |
+| `DISMISS_ATTEMPTS_BEFORE_SCROLL` | attempts at the point before scrolling (3) |
+| `SCROLL_BOTTOM_DIRECTION` | `"up"` — finger up, **view moves down** |
+| `SCROLL_BOTTOM_SWIPES` | 6, enough to reach the end |
 
-O ciclo **se repete** em vez de desistir: sai um aviso por
-rodada, e a contagem zera quando alguma ação normal acontece (o
-bot saiu do buraco) ou quando troca de estado.
+The cycle **repeats** instead of giving up: one warning is emitted per
+round, and the count resets when a normal action occurs (the bot escaped
+the hole) or when the state changes.
 
-> **Não use o BACK do Android aqui: neste jogo ele SAI DO JOGO.**
-> O `android.back()` continua implementado, mas está fora da
-> `ACTION_TABLE` de propósito, e dois testes falham se alguém o
-> reintroduzir.
+> **Do not use Android BACK here: in this game it EXITS THE GAME.**
+> `android.back()` remains implemented, but is deliberately outside
+> `ACTION_TABLE`, and two tests fail if someone reintroduces it.
 
-Swipe sozinho não resolve — swipe não fecha painel, só deixa o
-loop mais lento. Ele serve para *chegar* na posição de rolagem
-onde o ponto funciona.
+Swipe alone does not solve it — swiping does not close a panel, it only
+makes the loop slower. It is used to *reach* the scroll position where
+the point works.
 
-Hoje **só `gray_max` escala**: nenhuma regra usa a ação
-`dismiss`, porque `up_food` em `NORMAL` faz `upgrade_food`. A
-ação `dismiss` (toque mantido de `DISMISS_HOLD_DURATION` no
-`DISMISS_POINT`, convertido para a resolução do device) segue
-implementada e coberta por
+Today **only `gray_max` escalates**: no rule uses the action
+`dismiss`, because `up_food` in `NORMAL` performs `upgrade_food`. The
+`dismiss` action (a `DISMISS_HOLD_DURATION` hold at `DISMISS_POINT`,
+converted to the device resolution) remains implemented and covered by
 `tests/test_pipeline.py::test_dismiss_toca_no_ponto_neutro`,
-pronta para voltar às regras — código que ninguém exercita
-apodrece sem ninguém notar.
+ready to return to the rules — code that nobody exercises decays
+without anyone noticing.
 
-## Quando não abre
+## When it does not open
 
-Foram **três** causas empilhadas, e uma escondia a outra.
+There were **three** stacked causes, and one hid the other.
 
-### 1. Socket sem `scid` (a causa de fundo)
+### 1. Socket without `scid` (the underlying cause)
 
-No scrcpy 4.1 o socket abstrato do servidor é **sempre**
-`scrcpy_<8 hex>` — não existe um `scrcpy` puro. O código
-encaminhava para `localabstract:scrcpy`, que nunca existe:
+In scrcpy 4.1 the server's abstract socket is **always**
+`scrcpy_<8 hex>` — a plain `scrcpy` does not exist. The code
+forwarded to `localabstract:scrcpy`, which never exists:
 
 ```
 $ adb shell cat /proc/net/unix | grep scrcpy
 @scrcpy_7d7c122f
-@scrcpy_6edc9dfd     ← o que o servidor cria
+@scrcpy_6edc9dfd     ← what the server creates
 $ adb forward --list
-tcp:27283 localabstract:scrcpy    ← para onde apontávamos
+tcp:27283 localabstract:scrcpy    ← where we pointed
 ```
 
-O adb aceita a conexão TCP e **só depois** tenta abrir o socket
-no device. Se não existe, você recebe 0 bytes. Por isso o log
-dizia "Socket conectado" e morria em seguida.
+adb accepts the TCP connection and **only then** tries to open the socket
+on the device. If it does not exist, you receive 0 bytes. That is why the
+log said "Socket connected" and then died.
 
-Corrigido: `scid` aleatório por execução, passado ao servidor e
-usado no forward.
+Fixed: a random `scid` per run, passed to the server and used in the
+forward.
 
-### 2. Porta compartilhada com o espelho
+### 2. Port shared with the mirror
 
-`scrcpy.exe` usa 27183-27199 por padrão, e a captura usava
-27183. O sintoma no log do scrcpy era:
+`scrcpy.exe` uses 27183-27199 by default, and capture used
+27183. The symptom in the scrcpy log was:
 
 ```
 WARN: Could not listen on port 27183, retrying on 27184
 ```
 
-**É isso que fazia "às vezes funcionar":** quando o espelho
-ganhava a porta 27183, o forward dele apontava para um socket
-`scrcpy_<scid>` válido — e a gente conectava no túnel *dele*,
-recebendo o stream do espelho por acidente. Corrigir a porta
-tirou essa muleta e expôs a causa nº 1.
+**This is what made it "sometimes work":** when the mirror
+got port 27183, its forward pointed to a valid
+`scrcpy_<scid>` socket — and we connected to *its* tunnel,
+accidentally receiving the mirror's stream. Fixing the port removed
+this crutch and exposed cause no. 1.
 
-Corrigido: `SCRCPY_PORT = 27283` e `SCRCPY_DEVICE_JAR` próprio
-(os dois davam `adb push` no mesmo arquivo ao mesmo tempo, e o
-nosso `stop()` apagava ele).
+Fixed: `SCRCPY_PORT = 27283` and a dedicated `SCRCPY_DEVICE_JAR`
+(both used to `adb push` to the same file at the same time, and our
+`stop()` deleted it).
 
-### 3. Conectar cedo demais, e desistir rápido demais
+### 3. Connecting too early and giving up too quickly
 
-O servidor leva **~1,4 s** entre subir e servir o primeiro byte,
-e passa disso com o espelho rodando. O código dormia 0,5 s e
-tratava EOF como fatal.
+The server takes **~1.4 s** between starting and serving the first byte,
+and takes longer with the mirror running. The code slept 0.5 s and
+treated EOF as fatal.
 
-A correção distingue dois casos que parecem iguais:
+The fix distinguishes two cases that look the same:
 
-| Resultado do `recv` | Significa | O que fazer |
+| `recv` result | Meaning | What to do |
 |---|---|---|
-| **0 bytes** | socket abstrato não existe ainda | fechar e reconectar |
-| **timeout** | servidor aceitou, só não mandou nada | **esperar no mesmo socket** |
+| **0 bytes** | abstract socket does not exist yet | close and reconnect |
+| **timeout** | server accepted, but sent nothing yet | **wait on the same socket** |
 
-Fechar no timeout derruba uma conexão boa — e o servidor aceita
-**um cliente só**, então a segunda tentativa encontra servidor
-morto.
+Closing on timeout drops a good connection — and the server accepts
+**only one client**, so the second attempt finds a dead server.
 
-### Verificado no device
+### Verified on the device
 
-| Cenário | Resultado |
+| Scenario | Result |
 |---|---|
-| Captura sozinha | start em 1,49 s, 71 fps |
-| Captura + espelho juntos | start em 1,98 s, 31 fps |
-| Espelho sobrevive ao nosso `stop()` | sim |
+| Capture alone | start in 1.49 s, 71 fps |
+| Capture + mirror together | start in 1.98 s, 31 fps |
+| Mirror survives our `stop()` | yes |
 
-### Outras causas
+### Other causes
 
-| Sintoma | Causa provável |
+| Symptom | Likely cause |
 |---|---|
-| Nenhum frame, tela do device apagada | o encoder captura o display; acorde a tela |
-| `Erro ao enviar scrcpy-server` | `SCRCPY_SERVER_PATH` errado no config |
-| Frames chegam mas nada é detectado | `VISION_FILTER_BY_STATE` ligado; desligue para ver todas as categorias |
-| Bot vê mas não clica | veja o `atraso` no HUD — acima de `MAX_DETECTION_AGE` ele deixa de clicar de propósito |
+| No frames, device screen off | the encoder captures the display; wake the screen |
+| `Error sending scrcpy-server` | incorrect `SCRCPY_SERVER_PATH` in config |
+| Frames arrive but nothing is detected | `VISION_FILTER_BY_STATE` enabled; disable it to see all categories |
+| Bot sees but does not click | check `lag` in the HUD — above `MAX_DETECTION_AGE` it deliberately stops clicking |
 
-Para investigar à mão:
+To investigate manually:
 
 ```bash
-adb shell cat /proc/net/unix | grep scrcpy   # o socket existe?
-adb forward --list                            # para onde aponta?
+adb shell cat /proc/net/unix | grep scrcpy   # does the socket exist?
+adb forward --list                            # where does it point?
 ```
 
-Atalho de emergência: `SHOW_SCRCPY = False`. O espelho não é
-usado pelo bot.
+Emergency shortcut: `SHOW_SCRCPY = False`. The mirror is not
+used by the bot.
 
-## Gravar dataset de treino
+## Recording a training dataset
 
-**Ligado.** Em [config.py](src/core/config.py):
+**Enabled.** In [config.py](src/core/config.py):
 
 ```python
 DATASET_SAVE = True
 DATASET_DIR = PROJECT_ROOT / "dataset"
-DATASET_IMAGE_FORMAT = "jpg"    # 4.3x menor que png
+DATASET_IMAGE_FORMAT = "jpg"    # 4.3x smaller than png
 ```
 
-Grava **todas as 16 ações** do bot, mais os dois swipes de
-exploração.
+It records **all 16 actions** of the bot, plus the two exploration
+swipes.
 
-Grava, para cada ação, o frame que motivou a decisão e os rótulos
-que o template matcher produziu: **todas as caixas** do frame com
-categoria, qual delas virou ação, o ponto tocado em pixel do
-frame, e o **resultado** (o alvo saiu da tela?).
+For each action, it records the frame that motivated the decision and the
+labels produced by template matching: **all boxes** in the frame with
+their category, which one became the action, the tap point in frame
+pixels, and the **result** (did the target leave the screen?).
 
-As caixas e não só o ponto do clique porque um ponto por imagem é
-ambíguo quando há vários alvos e não ensina quantos existem — com
-as caixas a tarefa é detecção de objetos, a mesma do matcher, com
-muito mais rótulo por imagem. E o resultado porque é ele que
-permite treinar só nas ações que **funcionaram**, em vez de herdar
-todo erro do professor.
+Boxes rather than only the click point because one point per image is
+ambiguous when there are multiple targets and does not teach how many
+exist — with boxes, the task is object detection, the same as the matcher,
+with much more labeling per image. And the result because it allows
+training only on actions that **worked**, instead of inheriting every
+mistake from the teacher.
 
-MEDIDO no device: **nenhum impacto** no bot (atraso 58 → 50 ms,
-captura 30 fps nos dois casos) — a gravação roda em thread com
-fila que descarta quando enche.
+MEASURED on the device: **no impact** on the bot (lag 58 → 50 ms,
+capture 30 fps in both cases) — recording runs in a thread with a
+queue that discards items when full.
 
-Espaço: **2,10 MB** por frame em PNG, **0,49 MB** em JPG q92. Com
-o bot agindo ~1x/s, 7,6 GB/hora contra 1,8 GB/hora. Há teto em
+Space: **2.10 MB** per frame in PNG, **0.49 MB** in JPG q92. With
+the bot acting ~1x/s, 7.6 GB/hour versus 1.8 GB/hour. There is a cap in
 `DATASET_MAX_DISK_MB`.
 
-O **`samples.jsonl` é o que treina** — tem caminho da imagem,
-todas as caixas com categoria, o ponto do clique e o resultado.
-Banco é opcional e guarda só **metadado**: imagem fica em
-arquivo, porque treinar puxando BLOB por época é lento e o
-dataset deixaria de ser copiável com `rsync`.
+**`samples.jsonl` is what trains** — it contains the image path,
+all boxes with their category, the click point, and the result.
+The database is optional and stores only **metadata**: the image stays in
+a file, because training by fetching BLOBs every epoch is slow and the
+dataset would no longer be copyable with `rsync`.
 
 ```bash
 psql -h host -U usuario -d eatventure -f docs/schema.sql
-python tools/dataset_import.py            # carrega o samples.jsonl
+python tools/dataset_import.py            # loads samples.jsonl
 ```
 
-Formato, DDL das tabelas, índices e consultas úteis:
+Format, table DDL, indexes, and useful queries:
 **[docs/dataset.md](docs/dataset.md)**.
 
-## Planos futuros
+## Future plans
 
-- [docs/detector-ia.md](docs/detector-ia.md) — trocar o template
-  matching por um detector treinado: o que dá para aproveitar, o
-  que morre, e o passo a passo.
+- [docs/detector-ia.md](docs/detector-ia.md) — replace template
+  matching with a trained detector: what can be reused, what goes away,
+  and the step-by-step process.
 
-## Custo do detector
+## Detector cost
 
-O custo é **linear no número de templates** — cada um é uma
-varredura da tela inteira. Hoje são **106**, e **75 deles são
+The cost is **linear in the number of templates** — each one is a
+full-screen scan. There are **106** today, and **75 of them are
 `food`**.
 
-### O gargalo: escala global travada pelo menor template
+### The bottleneck: global scale constrained by the smallest template
 
-O estágio grosso procura numa cópia reduzida do frame. Abaixo de
-`MIN_COARSE_SIDE` (12 px) o template não sobrevive à redução, o
-estágio grosso é abandonado e a busca cai em resolução cheia —
-que é justamente a lenta.
+The coarse stage searches a reduced copy of the frame. Below
+`MIN_COARSE_SIDE` (12 px), the template does not survive the reduction,
+the coarse stage is abandoned, and the search falls back to full
+resolution — which is precisely the slow one.
 
-Com uma escala **global**, ela fica travada pelo MENOR template
-de todos (`up_upgrade`, 32 px → 0.40) e os grandes pagam a conta.
-`food` tem mediana 80x93: aguenta 0.15–0.20.
+With a **global** scale, it is constrained by the SMALLEST template
+of all (`up_upgrade`, 32 px → 0.40), and the large ones pay the cost.
+`food` has a median size of 80x93: it can handle 0.15–0.20.
 
-A escala agora é **derivada por template**, de
-`MIN_COARSE_SIDE / menor_lado`, arredondada para cima na grade de
-`COARSE_SCALE_STEP`. Não existe tabela por categoria para manter
-na mão, porque o padrão é exato: o custo explode *precisamente*
-quando a escala cai abaixo desse piso.
+The scale is now **derived per template**, as
+`MIN_COARSE_SIDE / smallest_side`, rounded up to the
+`COARSE_SCALE_STEP` grid. There is no category table to maintain
+by hand, because the rule is exact: the cost explodes *precisely*
+when the scale falls below this floor.
 
-Medido no device (1080x2400, 106 templates, 30 fps de captura):
+Measured on the device (1080x2400, 106 templates, 30 fps capture):
 
-| | detect | lag médio | p95 | pior |
+| | detect | average lag | p95 | worst |
 |---|---|---|---|---|
-| `NORMAL` antes (escala global) | 916 ms | 1360 ms | 2163 ms | 2251 ms |
-| **`NORMAL` agora** | **156 ms** | **255 ms** | **342 ms** | **372 ms** |
-| `UPGRADE` antes | 33 ms | 73 ms | 102 ms | 112 ms |
-| **`UPGRADE` agora** | **16 ms** | **34 ms** | **45 ms** | **65 ms** |
+| `NORMAL` before (global scale) | 916 ms | 1360 ms | 2163 ms | 2251 ms |
+| **`NORMAL` now** | **156 ms** | **255 ms** | **342 ms** | **372 ms** |
+| `UPGRADE` before | 33 ms | 73 ms | 102 ms | 112 ms |
+| **`UPGRADE` now** | **16 ms** | **34 ms** | **45 ms** | **65 ms** |
 
-**5,9x** em `NORMAL`. As detecções ficam iguais — mesmas
-coordenadas, mesmo conjunto, confiança diferindo na 6ª casa
-decimal (ruído do refino). O custo não estava comprando precisão
-nenhuma.
+**5.9x** in `NORMAL`. Detections remain identical — same coordinates,
+same set, confidence differing at the 6th decimal place (refinement
+noise). The cost was buying no precision at all.
 
-Isso também tirou o lag da zona de perigo: o p95 era 2163 ms
-contra um `MAX_DETECTION_AGE` de 2000 ms — metade das detecções
-lentas estava sendo descartada por velhice antes de virar ação.
+This also removed lag from the danger zone: p95 was 2163 ms against a
+`MAX_DETECTION_AGE` of 2000 ms — half of the slow detections were being
+discarded as too old before becoming actions.
 
-O frame reduzido é construído **sob demanda**, um por escala
-usada: em `UPGRADE`, com 4 templates, sai 1 resize e não 7. Os 7
-resizes custam 7.9 ms juntos, contra ~700 ms de busca.
+The reduced frame is built **on demand**, one per scale used: in
+`UPGRADE`, with 4 templates, there is 1 resize rather than 7. The 7
+resizes cost 7.9 ms together, versus ~700 ms for searching.
 
-### O que sobrou na mesa
+### What remains
 
-- **`CATEGORY_ROIS`** em [config.py](src/core/config.py), ainda
-  vazio. Restringir cada categoria à parte da tela onde ela pode
-  aparecer corta custo e falso positivo junto. ROI errada
-  esconde detecção boa, então precisa ser conferida no jogo.
-- **Cascata de prioridade**: `food` é a última regra de `NORMAL`,
-  então buscá-la foi desperdício sempre que algo de prioridade
-  maior está na tela. Ajuda menos do que parece — amostrando 12
-  telas reais, nenhuma tinha detecção alguma, que é o pior caso
-  da cascata.
-- **Cortar templates não resolve**: cruzando os 75 `food` entre
-  si, só 3 pares se cobrem (~25 ms de 876). Os pratos são de
-  fato distintos.
+- **`CATEGORY_ROIS`** in [config.py](src/core/config.py), still
+  empty. Restricting each category to the part of the screen where it
+  can appear reduces cost and false positives together. A wrong ROI
+  hides good detections, so it must be checked in the game.
+- **Priority cascade**: `food` is the last `NORMAL` rule, so searching
+  for it was always wasteful when something with higher priority was on
+  screen. It helps less than it seems — sampling 12 real screens, none
+  had any detection, which is the cascade's worst case.
+- **Cropping templates does not solve it**: cross-comparing the 75
+  `food` templates, only 3 pairs overlap (~25 ms out of 876). The dishes
+  are genuinely distinct.
