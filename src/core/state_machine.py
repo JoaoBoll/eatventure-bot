@@ -335,11 +335,15 @@ class StateMachine:
 
             # Só NORMAL explora: nos outros estados estamos
             # dentro de um painel, e swipe atrapalharia.
-            if self.state == NORMAL and (
-                not SWIPE_WAIT_FOR_NO_ACTION or not acted
-            ):
+            if self.state == NORMAL:
+                should_explore = not SWIPE_WAIT_FOR_NO_ACTION or not acted
+                # Se detector está muito lento (lag > 1.5s), força
+                # exploração mesmo que acted=True — detecção muito velha
+                if not should_explore and lag > 1.5:
+                    should_explore = True
 
-                self._explore_screen()
+                if should_explore:
+                    self._explore_screen()
 
     def _apply_rules(self, detections, rules):
         """Executa a 1ª regra cuja categoria apareça; devolve True se achou algo (mesmo que a ação seja barrada por cooldown), pois achar já significa que não estamos perdidos."""
