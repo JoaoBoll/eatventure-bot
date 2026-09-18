@@ -77,6 +77,7 @@ class GPUAccelerator:
 
     def __init__(self):
         self.cuda_available = False
+        self._gpu_mat = None
         if DETECTOR_USE_GPU:
             self._detect_cuda()
         else:
@@ -84,38 +85,49 @@ class GPUAccelerator:
 
     def _detect_cuda(self):
         try:
-            if cv2.cuda.getCudaEnabledDeviceCount() > 0:
-                self.cuda_available = True
-                logger.info(f"CUDA detectado: {cv2.cuda.getDevice()}")
-            else:
+            if cv2.cuda.getCudaEnabledDeviceCount() <= 0:
                 logger.info("CUDA não disponível, usando CPU")
+                return
+
+            # A classe de matriz GPU mudou de nome entre builds (oficial vs.
+            # wheels de terceiros) — sem isto, um binário "quase" compatível
+            # cairia direto no except silenciosamente a cada frame.
+            self._gpu_mat = getattr(cv2.cuda, "GpuMat", None) or getattr(
+                cv2, "cuda_GpuMat", None
+            )
+
+            if self._gpu_mat is None:
+                logger.info(
+                    "cv2.cuda sem GpuMat utilizável, usando CPU"
+                )
+                return
+
+            self.cuda_available = True
+            logger.info(f"CUDA detectado: device {cv2.cuda.getDevice()}")
         except (AttributeError, cv2.error):
             logger.info("OpenCV sem suporte CUDA, usando CPU")
 
     def match_template(self, image, template, method=cv2.TM_CCOEFF_NORMED, mask=None):
         """matchTemplate com fallback automático GPU→CPU."""
 
-        if not self.cuda_available or image.size < 100000:
-            # CPU: imagens pequenas não valem overhead de GPU
+        # cv2.cuda.matchTemplate não aceita máscara — usar GPU aqui
+        # devolveria resultado errado (mask ignorada em silêncio).
+        if not self.cuda_available or mask is not None or image.size < 100000:
             if mask is not None:
                 return cv2.matchTemplate(image, template, method, mask=mask)
             return cv2.matchTemplate(image, template, method)
 
         try:
-            # GPU: transfere, processa, traz resultado
-            gpu_image = cv2.cuda_GpuMat()
-            gpu_template = cv2.cuda_GpuMat()
+            gpu_image = self._gpu_mat()
+            gpu_template = self._gpu_mat()
             gpu_image.upload(image)
             gpu_template.upload(template)
 
             result = cv2.cuda.matchTemplate(gpu_image, gpu_template, method)
-            result_cpu = result.download()
 
-            return result_cpu
+            return result.download()
         except cv2.error as e:
             logger.warning(f"Erro CUDA, fallback pra CPU: {e}")
-            if mask is not None:
-                return cv2.matchTemplate(image, template, method, mask=mask)
             return cv2.matchTemplate(image, template, method)
 
 
