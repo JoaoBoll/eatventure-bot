@@ -18,38 +18,6 @@ through adb.
 pip install -r requirements.txt
 ```
 
-### GPU acceleration (optional)
-
-Template matching can be accelerated with **CUDA** if OpenCV is compiled with GPU support:
-
-```bash
-# OpenCV with CUDA pre-compiled (easiest):
-pip install opencv-contrib-python-headless
-
-# OR compile locally with NVIDIA CUDA Toolkit:
-# - Install CUDA Toolkit: https://developer.nvidia.com/cuda-downloads
-# - Build OpenCV from source with `-D WITH_CUDA=ON`
-```
-
-Check if GPU is available:
-```python
-import cv2
-print(cv2.cuda.getCudaEnabledDeviceCount())  # >0 means GPU ready
-```
-
-The bot will use GPU automatically if available, with **automatic fallback to CPU** if:
-- OpenCV lacks CUDA support
-- GPU processing fails at runtime
-- Image is too small (overhead not worth it)
-
-To disable GPU even when available:
-```python
-# In src/core/config.py
-DETECTOR_USE_GPU = False
-```
-
-Expected speedup: **5-10x faster** template matching on GPU.
-
 ## Run
 
 ```bash

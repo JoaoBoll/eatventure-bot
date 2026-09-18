@@ -280,9 +280,6 @@ REFINE_SLACK = 8
 MAX_MATCHES_PER_TEMPLATE = 12
 NMS_IOU = 0.35
 
-# GPU (CUDA): se True e disponível, acelera matchTemplate. Fallback automático pra CPU.
-DETECTOR_USE_GPU = True
-
 
 # ==== ACTIONS ====
 

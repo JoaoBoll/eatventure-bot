@@ -2,6 +2,9 @@
 __pycache__/
 *.py[cod]
 
+# Instruções locais do agente.
+CLAUDE.md
+
 # Ambiente virtual
 .venv/
 venv/

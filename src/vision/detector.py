@@ -24,7 +24,6 @@ from core.config import (
     COLOR_THRESHOLD,
     DETECTOR_DEBUG_INTERVAL,
     DETECTOR_DEBUG_MISSES,
-    DETECTOR_USE_GPU,
     ESCALA_LIBERA_SECAS,
     ESCALA_UNICA_POR_TEMPLATE,
     LEARN_RESOLUTION_TEMPLATES,
@@ -70,56 +69,6 @@ FALLBACK_SELECTOR_DIR = TEMPLATES_DIR / "default_selector"
 
 # Abaixo deste tamanho a redução destrói o template.
 MIN_COARSE_SIDE = 12
-
-
-class GPUAccelerator:
-    """Detecta e gerencia aceleração CUDA. Fallback automático pra CPU se indisponível."""
-
-    def __init__(self):
-        self.cuda_available = False
-        if DETECTOR_USE_GPU:
-            self._detect_cuda()
-        else:
-            logger.info("GPU desabilitada via config, usando CPU")
-
-    def _detect_cuda(self):
-        try:
-            if cv2.cuda.getCudaEnabledDeviceCount() > 0:
-                self.cuda_available = True
-                logger.info(f"CUDA detectado: {cv2.cuda.getDevice()}")
-            else:
-                logger.info("CUDA não disponível, usando CPU")
-        except (AttributeError, cv2.error):
-            logger.info("OpenCV sem suporte CUDA, usando CPU")
-
-    def match_template(self, image, template, method=cv2.TM_CCOEFF_NORMED, mask=None):
-        """matchTemplate com fallback automático GPU→CPU."""
-
-        if not self.cuda_available or image.size < 100000:
-            # CPU: imagens pequenas não valem overhead de GPU
-            if mask is not None:
-                return cv2.matchTemplate(image, template, method, mask=mask)
-            return cv2.matchTemplate(image, template, method)
-
-        try:
-            # GPU: transfere, processa, traz resultado
-            gpu_image = cv2.cuda_GpuMat()
-            gpu_template = cv2.cuda_GpuMat()
-            gpu_image.upload(image)
-            gpu_template.upload(template)
-
-            result = cv2.cuda.matchTemplate(gpu_image, gpu_template, method)
-            result_cpu = result.download()
-
-            return result_cpu
-        except cv2.error as e:
-            logger.warning(f"Erro CUDA, fallback pra CPU: {e}")
-            if mask is not None:
-                return cv2.matchTemplate(image, template, method, mask=mask)
-            return cv2.matchTemplate(image, template, method)
-
-
-_gpu = GPUAccelerator()
 
 
 class Detector:
@@ -2096,7 +2045,7 @@ class Detector:
         # mantemos TM_CCOEFF_NORMED para não mudar a escala dos thresholds.
         if mask is not None:
 
-            result = _gpu.match_template(
+            result = cv2.matchTemplate(
                 region,
                 template_image,
                 cv2.TM_CCORR_NORMED,
@@ -2105,7 +2054,7 @@ class Detector:
 
         else:
 
-            result = _gpu.match_template(
+            result = cv2.matchTemplate(
                 region,
                 template_image,
                 cv2.TM_CCOEFF_NORMED,
