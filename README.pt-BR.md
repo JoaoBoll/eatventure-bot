@@ -1,5 +1,17 @@
 # EatVenture AI
 
+> ## OBSERVAÇÃO IMPORTANTE
+>
+> A IA ainda está em desenvolvimento. O bot, porém, já deve conseguir
+> executar o fluxo principal normalmente usando o detector e os templates.
+>
+> Se algum item não for detectado, for detectado no lugar errado ou gerar uma
+> ação incorreta, use `tools/template_selector.py` para registrar o item
+> quando possível. Se isso não for suficiente, grave um vídeo curto mostrando
+> o item claramente na tela, incluindo a resolução da tela do dispositivo.
+> Essas informações são necessárias para ajustar templates, escala, região de
+> busca e thresholds.
+
 Bot de visão para EatVenture: captura o vídeo do device pelo
 scrcpy, localiza os elementos por template matching e toca
 via adb.
@@ -123,6 +135,42 @@ reforma      2  1m33s  (ult 2m23s)
 - **bateria** — nível do device, com marca de carregando.
 - **reforma** — quantas o bot já fechou, o tempo corrido desde
   a última, e quanto durou a anterior.
+
+O painel fixo do terminal também mostra:
+
+- **Dispositivo conectado** — serial do device Android em uso.
+- **Voou** — quantidade de ações de voo realizadas.
+- **Renovou** — quantidade de reformas concluídas.
+- **Ação** — última ação executada; `(Ns atrás)` mostra há quanto tempo.
+- **estado** — estado atual, como `NORMAL`, `RENOVATE`, `FOOD`, `NEW_POINT`
+  ou `UPGRADE`.
+- **ações** — total de ações executadas na sessão.
+- **rodando** — tempo decorrido desde o início da sessão.
+- **fps** — taxa de detecção informada pelo worker de visão.
+- **Sem deteccao** — categorias não encontradas e o melhor resultado observado,
+  quando `DETECTOR_DEBUG_MISSES` está ligado.
+
+O overlay da janela da IA também mostra:
+
+- **templates** — templates pesquisados sobre o total disponível naquela
+  passada; uma busca parcial pode ser intencional por prioridade e orçamento.
+- **template N/M da resolucao** — templates padrão com override aprendido sobre
+  o total da resolução atual.
+- **deteccoes** — detecções aprovadas na última passada; zero pode ser normal
+  enquanto a tela estabiliza após uma ação.
+- **aguardando a tela parar** — o worker está esperando o efeito da ação
+  terminar antes de aceitar outra detecção.
+- **VISAO** — erro da thread de visão; a detecção parou e o bot não deve agir
+  até o problema ser corrigido.
+
+Cada caixa detectada pode mostrar a origem do template (`default <resolução>`
+ou override da resolução), a categoria ou nome do alimento, `F` para a
+confiança de forma/template e `C` para a similaridade de cor.
+
+Ao investigar uma falha de detecção, registre a resolução exata do frame, o
+texto do HUD e um vídeo curto em que o item permaneça claramente visível por
+tempo suficiente para observar a tentativa de detecção. Não recorte o item nem
+esconda o contexto da tela.
 
 Os dois FPS são números bem diferentes e é justamente a
 comparação que diagnostica: captura em 60 com detector em 3

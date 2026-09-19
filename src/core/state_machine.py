@@ -111,12 +111,13 @@ class StateMachine:
     NEW_POINT = NEW_POINT
     UPGRADE = UPGRADE
 
-    def __init__(self, action_manager, recorder=None):
+    def __init__(self, action_manager, recorder=None, detector=None):
 
         self.action_manager = action_manager
 
         # Gravador do dataset de treino. None = não grava.
         self.recorder = recorder
+        self.detector = detector
 
         self.state = NORMAL
         self.state_entered = time.monotonic()
@@ -445,6 +446,9 @@ class StateMachine:
             self._mark_cycle(detection["category"])
 
         self._count_repeat(action)
+
+        if self.detector is not None and detection is not None:
+            self.detector.learn_action(self._frame, detection)
 
         self._record(action, detection)
 

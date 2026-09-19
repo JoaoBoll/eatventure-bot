@@ -82,12 +82,14 @@ class Detector:
         coarse_scale=COARSE_SCALE,
         coarse_margin=COARSE_MARGIN,
         use_defaults=True,
+        learn_only_actions=False,
     ):
 
         # False: busca só os overrides da resolução (rápido, mas cego onde
         # ainda não há override) — para o bot rodar enquanto outro processo
         # (main_layouts.py) escaneia os defaults e atualiza os overrides.
         self.use_defaults = use_defaults
+        self.learn_only_actions = learn_only_actions
 
         # Similaridade do formato/padrão
         self.threshold = threshold
@@ -1113,6 +1115,27 @@ class Detector:
         except queue.Full:
             pass
 
+    def learn_action(self, frame, detection):
+        """Aprende somente a detecção que originou uma ação executada."""
+
+        if not LEARN_RESOLUTION_TEMPLATES or frame is None:
+            return
+
+        template = detection.get("_template") if detection else None
+
+        if template is None:
+            return
+
+        self._queue_learn_candidate(
+            frame,
+            template,
+            detection["x"],
+            detection["y"],
+            frame.shape[1],
+            frame.shape[0],
+            detection.get("confidence", 0.0),
+        )
+
     def _learn_worker(self):
         """Roda numa thread própria: grava em disco e atualiza os overrides
         em uso sem bloquear o detect() da thread de visão."""
@@ -1820,6 +1843,7 @@ class Detector:
                             "template_path": template_path,
                             "origin": template["origin"],
                             "source": template["source"],
+                            "_template": template,
 
                             "confidence": float(confidence),
                             "color_similarity": float(
@@ -1837,7 +1861,10 @@ class Detector:
                         }
                     )
 
-                    if LEARN_RESOLUTION_TEMPLATES:
+                    if (
+                        LEARN_RESOLUTION_TEMPLATES
+                        and not self.learn_only_actions
+                    ):
 
                         self._queue_learn_candidate(
                             frame_color,

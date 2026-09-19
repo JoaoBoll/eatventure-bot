@@ -389,7 +389,10 @@ def main(argv=None):
 
     capture = ScreenCapture(device_id)
 
-    detector = Detector(use_defaults=not args.layout_only)
+    detector = Detector(
+        use_defaults=not args.layout_only,
+        learn_only_actions=not args.layout_only,
+    )
 
     vision = VisionWorker(detector)
 
@@ -397,7 +400,7 @@ def main(argv=None):
 
     recorder = build_recorder(ai_collect=args.ai_collect)
 
-    state_machine = StateMachine(actions, recorder)
+    state_machine = StateMachine(actions, recorder, detector)
 
     battery = BatteryMonitor(actions.android)
 

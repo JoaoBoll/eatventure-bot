@@ -2,6 +2,17 @@
 
 # EatVenture AI
 
+> ## Important observation
+>
+> The AI is still under development. The bot itself should already execute
+> the main flow normally using the detector and templates.
+>
+> If an item is not detected, is detected in the wrong place, or causes an
+> incorrect action, use `tools/template_selector.py` to register it whenever
+> possible. If that is not enough, record a short video with the item clearly
+> visible, including the device screen resolution. This information is needed
+> to adjust templates, scale, search regions, and thresholds.
+
 Vision bot for EatVenture: captures the device video through
 scrcpy, locates elements by template matching, and taps
 through adb.
@@ -124,6 +135,42 @@ renovation   2  1m33s  (last 2m23s)
 - **battery** — device level, with a charging indicator.
 - **renovation** — how many the bot has completed, the elapsed time since
   the last one, and how long the previous one took.
+
+The terminal also shows a fixed status panel:
+
+- **Dispositivo conectado** — serial of the Android device in use.
+- **Voou** — number of completed flight actions.
+- **Renovou** — number of completed renovations.
+- **Ação** — last executed action; `(Ns atrás)` shows its age.
+- **estado** — current state, such as `NORMAL`, `RENOVATE`, `FOOD`,
+  `NEW_POINT`, or `UPGRADE`.
+- **ações** — total actions executed in the session.
+- **rodando** — elapsed session time.
+- **fps** — detector rate reported by the vision worker.
+- **Sem deteccao** — categories not found and their best observed result,
+  when `DETECTOR_DEBUG_MISSES` is enabled.
+
+The AI window overlay also shows:
+
+- **templates** — searched templates over the total available for that pass;
+  a partial search can be intentional because of state priority and budgets.
+- **template N/M da resolucao** — learned resolution overrides over total
+  default templates.
+- **deteccoes** — approved detections in the latest pass; zero can be normal
+  while the screen settles after an action.
+- **aguardando a tela parar** — vision worker is waiting for the action effect
+  to settle before accepting another detection.
+- **VISAO** — vision thread error; detection has stopped and the bot should not
+  act until the problem is fixed.
+
+Each detection box can show the template origin (`default <resolution>` or a
+resolution override), category or food name, `F` for shape/template
+confidence, and `C` for color similarity.
+
+When investigating a detection failure, record the exact frame resolution, the
+HUD text, and a short video in which the item remains clearly visible long
+enough to observe the attempted detection. Do not crop the item out or hide
+the surrounding screen context.
 
 The two FPS values are very different, and that comparison is exactly
 what diagnoses the issue: capture at 60 with the detector at 3
