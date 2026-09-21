@@ -18,21 +18,75 @@ via adb.
 
 ## Requisitos
 
-- Python 3.12+
-- [scrcpy](https://github.com/Genymobile/scrcpy) no `PATH` ou extraído em
-  `tools/scrcpy/`; o projeto encontra automaticamente o `scrcpy` e o
-  servidor (veja [config.py](src/core/config.py))
-- `adb` no PATH, com um único device conectado
+Antes de executar o bot, instale e prepare o seguinte:
+
+1. Instale o Python 3.12 ou mais recente.
+2. Na pasta do projeto, crie e ative a virtualenv. No Windows PowerShell:
+
+   ```powershell
+   py -3.12 -m venv .venv
+   .\.venv\Scripts\Activate.ps1
+   ```
+
+   No Linux ou macOS:
+
+   ```bash
+   python3 -m venv .venv
+   source .venv/bin/activate
+   ```
+
+   Ative a `.venv` novamente sempre que abrir um terminal novo.
+3. Com a `.venv` ativa, instale as dependências:
+
+  ```bash
+  python -m pip install -r requirements.txt
+  ```
+
+4. Instale o [scrcpy](https://github.com/Genymobile/scrcpy) e deixe
+  `scrcpy` e `adb` disponíveis no `PATH`. No Windows, também é possível
+  extrair o scrcpy em `tools/scrcpy/`; o projeto encontra tudo automaticamente.
+5. No Android, ative as **Opções do desenvolvedor** e a **Depuração USB**.
+6. Conecte o aparelho por USB, aceite a autorização de depuração e verifique:
+
+  ```bash
+  adb devices
+  ```
+
+  O aparelho deve aparecer como `device`, e não como `unauthorized` ou `offline`.
+
+Sempre que possível, mantenha apenas um device conectado. Com vários devices,
+informe o serial usando `--device` (veja [config.py](src/core/config.py)).
 
 ```bash
-pip install -r requirements.txt
+adb devices
 ```
 
 ## Executar
 
+Execute todos os comandos na raiz do projeto, a pasta que contém o `README.md`.
+Depois de concluir os requisitos acima, inicie o bot:
+
 ```bash
-python src/main.py            # o bot
-python src/test_main.py       # só o stream, sem detecção
+python src/main.py
+```
+
+Deixe o jogo aberto e visível no aparelho conectado. Para verificar apenas o
+stream da tela, sem executar a detecção:
+
+```bash
+python src/test_main.py
+```
+
+Se o Windows não reconhecer `python`, use `py`:
+
+```bash
+py src/main.py
+```
+
+Para parar o bot, use `Ctrl+C`. Com mais de um device conectado, especifique-o:
+
+```bash
+python src/main.py --device SERIAL_DO_DEVICE
 ```
 
 ### Qual device

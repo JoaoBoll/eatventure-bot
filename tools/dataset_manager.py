@@ -20,6 +20,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from core.config import DATASET_DIR, LOG_LEVEL  # noqa: E402
 from core import log  # noqa: E402
+from dataset.layout import shard_roots  # noqa: E402
 
 log.setup(LOG_LEVEL)
 logger = log.get("tools.dataset_manager")
@@ -68,6 +69,44 @@ def find_orphans(jsonl_path: Path, images_root: Path):
             if rel not in referenced:
                 orphans.append(rel)
     return orphans
+
+
+def prune_missing_images(jsonl_path: Path, images_root: Path):
+    lines_to_drop = set()
+    dataset_root = images_root.parent.resolve()
+
+    for lineno, sample in load_samples(jsonl_path):
+        image_rel = sample.get("image")
+        if not image_rel:
+            lines_to_drop.add(lineno)
+            continue
+
+        image_path = (dataset_root / Path(image_rel)).resolve()
+        if dataset_root not in image_path.parents or not image_path.is_file():
+            lines_to_drop.add(lineno)
+
+    if not lines_to_drop:
+        return 0
+
+    backup = jsonl_path.with_suffix(jsonl_path.suffix + ".bak")
+    if backup.exists():
+        backup.unlink()
+    jsonl_path.rename(backup)
+    try:
+        with backup.open("r", encoding="utf-8") as source, jsonl_path.open("w", encoding="utf-8") as target:
+            for lineno, line in enumerate(source, start=1):
+                if lineno not in lines_to_drop:
+                    target.write(line)
+    except Exception:
+        logger.exception("Erro reescrevendo índice; restaurando backup")
+        if jsonl_path.exists():
+            jsonl_path.unlink()
+        backup.rename(jsonl_path)
+        raise
+
+    print(f"Índice limpo: {len(lines_to_drop)} registro(s) removido(s) de {jsonl_path}")
+    print(f"Backup do índice em: {backup}")
+    return len(lines_to_drop)
 
 
 def delete_session_images(jsonl_path: Path, session_id: str, yes=False, prune_index=False, dry_run=False):
@@ -276,9 +315,10 @@ def move_orphans(images_root: Path, orphan_list, yes=False):
     return 0
 
 
-def delete_orphans(images_root: Path, orphan_list, backup_before=False, yes=False):
+def delete_orphans(jsonl_path: Path, images_root: Path, orphan_list, backup_before=False, yes=False):
     if not orphan_list:
         print("Nenhuma imagem órfã encontrada.")
+        prune_missing_images(jsonl_path, images_root)
         return 0
 
     if backup_before:
@@ -311,6 +351,7 @@ def delete_orphans(images_root: Path, orphan_list, backup_before=False, yes=Fals
         else:
             missing += 1
     print(f"Deletados: {deleted}; faltantes: {missing}.")
+    prune_missing_images(jsonl_path, images_root)
     return 0
 
 
@@ -349,7 +390,6 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     jsonl_path = Path(args.jsonl) if getattr(args, "jsonl", None) else (DATASET_DIR / "samples.jsonl")
-    images_root = DATASET_DIR / "images"
 
     if args.cmd == "list-sessions":
         if not jsonl_path.exists():
@@ -371,19 +411,43 @@ def main(argv=None):
         return remove_session(jsonl_path, args.session, yes=args.yes, dry_run=args.dry_run, backup_images=getattr(args, "backup_images", False))
 
     if args.cmd in ("list-orphans", "move-orphans", "delete-orphans"):
-        if not jsonl_path.exists():
-            print(f"Índice não encontrado: {jsonl_path}")
+        if getattr(args, "jsonl", None):
+            dataset_locations = [(jsonl_path, jsonl_path.parent / "images")]
+        else:
+            dataset_locations = [
+                (shard / "samples.jsonl", shard / "images")
+                for shard in shard_roots(DATASET_DIR)
+            ]
+
+        if not dataset_locations:
+            print(f"Nenhum índice encontrado em {DATASET_DIR / 'data'}")
             return 1
-        orphan_list = find_orphans(jsonl_path, images_root)
+
         if args.cmd == "list-orphans":
-            print(f"{len(orphan_list)} orphan images not referenced in {jsonl_path}")
-            for o in orphan_list:
-                print(o)
+            total = 0
+            for current_jsonl, images_root in dataset_locations:
+                orphan_list = find_orphans(current_jsonl, images_root)
+                total += len(orphan_list)
+                print(f"{len(orphan_list)} orphan images not referenced in {current_jsonl}")
+                for orphan in orphan_list:
+                    print(orphan)
+            print(f"Total: {total} orphan images")
             return 0
-        if args.cmd == "move-orphans":
-            return move_orphans(images_root, orphan_list, yes=getattr(args, "yes", False))
-        if args.cmd == "delete-orphans":
-            return delete_orphans(images_root, orphan_list, backup_before=getattr(args, "backup", False), yes=getattr(args, "yes", False))
+
+        result = 0
+        for current_jsonl, images_root in dataset_locations:
+            orphan_list = find_orphans(current_jsonl, images_root)
+            if args.cmd == "move-orphans":
+                result |= move_orphans(images_root, orphan_list, yes=args.yes)
+            else:
+                result |= delete_orphans(
+                    current_jsonl,
+                    images_root,
+                    orphan_list,
+                    backup_before=args.backup,
+                    yes=args.yes,
+                )
+        return result
 
     parser.print_help()
     return 1

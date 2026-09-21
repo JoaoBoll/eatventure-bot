@@ -19,21 +19,77 @@ through adb.
 
 ## Requirements
 
-- Python 3.12+
-- [scrcpy](https://github.com/Genymobile/scrcpy) on `PATH`, or extracted
-  under `tools/scrcpy/`; the project discovers `scrcpy` and its server
-  automatically (see [config.py](src/core/config.py))
-- `adb` on PATH, with a single device connected
+Before running the bot, install and prepare the following:
+
+1. Install Python 3.12 or newer.
+2. From the project folder, create and activate the virtual environment.
+   On Windows PowerShell:
+
+   ```powershell
+   py -3.12 -m venv .venv
+   .\.venv\Scripts\Activate.ps1
+   ```
+
+   On Linux or macOS:
+
+   ```bash
+   python3 -m venv .venv
+   source .venv/bin/activate
+   ```
+
+   Activate `.venv` again whenever you open a new terminal.
+3. Install the Python dependencies while `.venv` is active:
+
+  ```bash
+  python -m pip install -r requirements.txt
+  ```
+
+4. Install [scrcpy](https://github.com/Genymobile/scrcpy) and make sure
+  `scrcpy` and `adb` are available on `PATH`. On Windows, you can also
+  extract scrcpy under `tools/scrcpy/`; the project finds it automatically.
+5. On the Android device, enable **Developer options** and **USB debugging**.
+6. Connect the device by USB, accept the debugging authorization prompt, and
+  verify the connection:
+
+  ```bash
+  adb devices
+  ```
+
+  The device must appear as `device`, not `unauthorized` or `offline`.
+
+Use one device whenever possible. If multiple devices are connected, pass the
+desired serial with `--device` (see [config.py](src/core/config.py)).
 
 ```bash
-pip install -r requirements.txt
+adb devices
 ```
 
 ## Run
 
+Run every command from the project root, the folder containing `README.md`.
+After completing the requirements above, start the bot with:
+
 ```bash
-python src/main.py            # the bot
-python src/test_main.py       # stream only, without detection
+python src/main.py
+```
+
+Keep the Android game open and visible to the connected device. To check the
+screen stream without running detection, use:
+
+```bash
+python src/test_main.py
+```
+
+If Windows does not recognize `python`, use `py` instead:
+
+```bash
+py src/main.py
+```
+
+Stop the bot with `Ctrl+C`. If more than one device is connected, specify it:
+
+```bash
+python src/main.py --device DEVICE_SERIAL
 ```
 
 ### Which device
