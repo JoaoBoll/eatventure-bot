@@ -1,6 +1,6 @@
 [Leia em português/BR](README.pt-BR.md)
 
-# EatVenture AI
+# EatVenture AI/BOT
 
 > ## Important observation
 >
