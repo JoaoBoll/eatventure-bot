@@ -1,4 +1,4 @@
-# EatVenture AI
+# EatVenture AI/BOT
 
 > ## OBSERVAÇÃO IMPORTANTE
 >
