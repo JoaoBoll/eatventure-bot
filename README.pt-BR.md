@@ -45,8 +45,36 @@ Antes de executar o bot, instale e prepare o seguinte:
 4. Instale o [scrcpy](https://github.com/Genymobile/scrcpy) e deixe
   `scrcpy` e `adb` disponíveis no `PATH`. No Windows, também é possível
   extrair o scrcpy em `tools/scrcpy/`; o projeto encontra tudo automaticamente.
-5. No Android, ative as **Opções do desenvolvedor** e a **Depuração USB**.
-6. Conecte o aparelho por USB, aceite a autorização de depuração e verifique:
+5. No Android, ative as **Opções do desenvolvedor** (normalmente tocando sete
+  vezes em **Número da versão** nas informações do aparelho). Para conexão por
+  cabo, ative **Depuração USB**; para conexão sem cabo no Android 11 ou mais
+  recente, ative **Depuração sem fio** nas Opções do desenvolvedor.
+6. Conecte o aparelho por um destes métodos:
+
+  - **USB:** conecte o cabo e aceite a autorização de depuração no aparelho.
+  - **Wi-Fi (Android 11+):** conecte o computador e o aparelho à mesma rede.
+    Em **Depuração sem fio**, escolha **Parear dispositivo com código de
+    pareamento**. Use o endereço IP e a porta mostrados nessa tela e digite o
+    código quando o `adb` pedir:
+
+    ```bash
+    adb pair IP:PORTA_DE_PAREAMENTO
+    ```
+
+    Depois, use o endereço IP e a **porta de conexão** exibidos na tela
+    principal de **Depuração sem fio** (a porta pode ser diferente):
+
+    ```bash
+    adb connect IP:PORTA_DE_CONEXAO
+    ```
+
+    Se o aparelho já aparecer em `adb devices` após o pareamento, não é
+    necessário executar `adb connect`.
+  - **Wi-Fi (Android 10 ou anterior):** primeiro conecte e autorize o aparelho
+    por USB. Com ambos na mesma rede Wi-Fi, execute `adb tcpip 5555`, retire
+    o cabo e execute `adb connect IP_DO_APARELHO:5555`.
+
+  Verifique a conexão:
 
   ```bash
   adb devices
@@ -56,10 +84,6 @@ Antes de executar o bot, instale e prepare o seguinte:
 
 Sempre que possível, mantenha apenas um device conectado. Com vários devices,
 informe o serial usando `--device` (veja [config.py](src/core/config.py)).
-
-```bash
-adb devices
-```
 
 ## Executar
 

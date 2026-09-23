@@ -47,9 +47,37 @@ Before running the bot, install and prepare the following:
 4. Install [scrcpy](https://github.com/Genymobile/scrcpy) and make sure
   `scrcpy` and `adb` are available on `PATH`. On Windows, you can also
   extract scrcpy under `tools/scrcpy/`; the project finds it automatically.
-5. On the Android device, enable **Developer options** and **USB debugging**.
-6. Connect the device by USB, accept the debugging authorization prompt, and
-  verify the connection:
+5. On the Android device, enable **Developer options** (usually by tapping
+  **Build number** seven times in the device information). For a cable
+  connection, enable **USB debugging**; for a cable-free connection on
+  Android 11 or newer, enable **Wireless debugging** in Developer options.
+6. Connect the device using one of these methods:
+
+  - **USB:** connect the cable and accept the debugging authorization prompt
+    on the device.
+  - **Wi-Fi (Android 11+):** connect the computer and device to the same
+    network. Under **Wireless debugging**, choose **Pair device with pairing
+    code**. Use the IP address and port shown on that screen, then enter the
+    code when `adb` prompts you:
+
+    ```bash
+    adb pair IP:PAIRING_PORT
+    ```
+
+    Next, use the IP address and **connection port** shown on the main
+    **Wireless debugging** screen (the port may differ):
+
+    ```bash
+    adb connect IP:CONNECTION_PORT
+    ```
+
+    If the device already appears in `adb devices` after pairing, you do not
+    need to run `adb connect`.
+  - **Wi-Fi (Android 10 or older):** first connect and authorize the device
+    over USB. With both devices on the same Wi-Fi network, run `adb tcpip 5555`,
+    unplug the cable, and run `adb connect DEVICE_IP:5555`.
+
+  Verify the connection:
 
   ```bash
   adb devices
@@ -59,10 +87,6 @@ Before running the bot, install and prepare the following:
 
 Use one device whenever possible. If multiple devices are connected, pass the
 desired serial with `--device` (see [config.py](src/core/config.py)).
-
-```bash
-adb devices
-```
 
 ## Run
 
