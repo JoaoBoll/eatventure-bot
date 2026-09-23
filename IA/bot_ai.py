@@ -4,6 +4,7 @@
 import argparse
 import json
 import sys
+import threading
 import time
 from collections import Counter
 from pathlib import Path
@@ -447,6 +448,85 @@ def show(saida):
     return cv2.waitKey(1) & 0xFF
 
 
+class ModelVisionWorker:
+    """Processa o frame mais recente fora da thread da janela/StateMachine."""
+
+    def __init__(self, model, fonte, min_confidence, proposer=None):
+        self.model = model
+        self.fonte = fonte
+        self.min_confidence = min_confidence
+        self.proposer = proposer
+        self.condition = threading.Condition()
+        self.running = False
+        self.thread = None
+        self.pending = None
+        self.result = None
+        self.last_error = None
+
+    def start(self):
+        with self.condition:
+            self.running = True
+        self.thread = threading.Thread(
+            target=self._run, name="model-vision", daemon=True,
+        )
+        self.thread.start()
+
+    def stop(self):
+        with self.condition:
+            self.running = False
+            self.condition.notify_all()
+        if self.thread is not None:
+            self.thread.join(timeout=5)
+            self.thread = None
+
+    def is_alive(self):
+        return self.thread is not None and self.thread.is_alive()
+
+    def submit(self, frame, version, timestamp, categories=None):
+        # Uma única vaga: durante uma inferência, frames antigos são substituídos.
+        with self.condition:
+            self.pending = (frame, version, timestamp, categories)
+            self.condition.notify()
+
+    def latest(self):
+        with self.condition:
+            return self.result
+
+    def _run(self):
+        while True:
+            with self.condition:
+                self.condition.wait_for(
+                    lambda: self.pending is not None or not self.running
+                )
+                if not self.running:
+                    return
+                frame, version, timestamp, categories = self.pending
+                self.pending = None
+
+            try:
+                inicio = time.monotonic()
+                candidatos = self.fonte.boxes(frame, categories)
+                deteccoes = detect_with_model(
+                    self.model, frame, candidatos, self.min_confidence,
+                )
+                if self.proposer is not None:
+                    deteccoes = self.proposer.suppress(deteccoes)
+
+                # TemplateSource guarda a verdade da mesma passada; copie-a
+                # junto com o resultado para não misturar frames.
+                referencia = tuple(getattr(self.fonte, "deteccoes", ()))
+                resultado = (frame, version, timestamp, candidatos,
+                             deteccoes, referencia,
+                             (time.monotonic() - inicio) * 1000)
+                with self.condition:
+                    self.result = resultado
+                    self.last_error = None
+            except Exception as error:
+                with self.condition:
+                    self.last_error = error
+                return
+
+
 def demo(model, args):
     """Roda sobre imagens do dataset e compara com os rótulos, sem device — forma
     barata de saber se o modelo presta antes de apontá-lo para o jogo."""
@@ -553,191 +633,130 @@ def demo(model, args):
 
 
 def live(model, args):
-
     from actions.manager import ActionManager
     from capture.screen import ScreenCapture
     from core import devices, log
-    from core.config import (
-        LOG_LEVEL,
-        VISION_FILTER_BY_STATE,
-    )
+    from core.config import LOG_LEVEL, VISION_FILTER_BY_STATE
     from core.state_machine import StateMachine
 
     log.setup(LOG_LEVEL)
-
     serial = devices.resolver(args.device)
-
-    fonte = (
-        TemplateSource()
-        if args.source == "templates"
-        else ProposerSource()
-    )
-
+    fonte = TemplateSource() if args.source == "templates" else ProposerSource()
     captura = ScreenCapture(serial)
-
     acoes = ActionManager(serial)
-
-    # StateMachine escolhe ação/alvo/momento; o modelo só entra como detecção
     maquina = StateMachine(acoes)
 
-    # importado uma vez, fora do loop: import por quadro paga lookup ~30x/s sem motivo
     modulo_proposer = None
-
     if args.source == "proposer":
-
         import proposer as modulo_proposer
 
     if not args.auto:
-
-        # garante --auto substituindo a execução, não confiando num if espalhado pelo loop
         acoes.execute = lambda action, detection=None: True
         acoes.swipe = lambda direction: True
+        print("MODO SEGURO: nenhuma ação é enviada ao device. Use --auto para deixar agir.")
 
-        print(
-            "MODO SEGURO: nenhuma ação é enviada ao device. "
-            "Use --auto para deixar agir."
-        )
-
-    captura.start()
-
-    acoes.start()
-
-    versao = 0
-
+    visao = ModelVisionWorker(model, fonte, args.min_confidence, modulo_proposer)
     contagem = Counter()
-
     concordancia = [0, 0]
+    versao = 0
+    versao_analisada = 0
+    resultado_atual = None
 
     try:
+        captura.start()
+        acoes.start()
+        visao.start()
 
         while True:
-
-            frame, versao, capturado_em = captura.get_frame(
-                since_version=versao,
-                timeout=0.2,
+            # A janela fica na thread principal, mesmo com inferência demorada.
+            frame, nova_versao, capturado_em = captura.get_frame(
+                since_version=versao, timeout=0.05,
             )
-
             if not captura.is_running():
-
                 print("Stream encerrado.")
-
                 break
+            if not visao.is_alive():
+                raise RuntimeError(f"Thread da visão encerrada: {visao.last_error!r}")
 
-            if frame is None:
-                continue
+            if frame is not None and nova_versao != versao:
+                versao = nova_versao
+                categorias = (
+                    maquina.wanted_categories()
+                    if VISION_FILTER_BY_STATE and args.source == "templates"
+                    else None
+                )
+                visao.submit(frame, versao, capturado_em, categorias)
 
-            altura, largura = frame.shape[:2]
+            resultado = visao.latest()
+            if resultado is not None and resultado[1] != versao_analisada:
+                (frame_analisado, versao_analisada, tempo_analisado,
+                 candidatos, deteccoes, referencia, custo) = resultado
+                resultado_atual = resultado
+                altura, largura = frame_analisado.shape[:2]
+                acoes.set_frame_size(largura, altura)
 
-            # resolução real do frame, não a de referência: stream pode vir reduzido
-            acoes.set_frame_size(largura, altura)
+                if args.compare and referencia:
+                    verdade = {
+                        (d["x"], d["y"]): d["category"] for d in referencia
+                    }
+                    for deteccao in deteccoes:
+                        esperado = verdade.get((deteccao["x"], deteccao["y"]))
+                        if esperado is not None:
+                            concordancia[1] += 1
+                            if esperado == deteccao["category"]:
+                                concordancia[0] += 1
 
-            categorias = (
-                maquina.wanted_categories()
-                if VISION_FILTER_BY_STATE
-                and args.source == "templates"
-                else None
-            )
-
-            inicio = time.monotonic()
-
-            candidatos = fonte.boxes(frame, categorias)
-
-            deteccoes = detect_with_model(
-                model,
-                frame,
-                candidatos,
-                args.min_confidence,
-            )
-
-            if modulo_proposer is not None:
-                deteccoes = modulo_proposer.suppress(deteccoes)
-
-            custo = (time.monotonic() - inicio) * 1000
-
-            if args.compare and getattr(fonte, "deteccoes", None):
-
-                verdade = {
-                    (d["x"], d["y"]): d["category"]
-                    for d in fonte.deteccoes
-                }
-
+                antes = maquina.state
+                lag = (
+                    max(0.0, time.monotonic() - tempo_analisado)
+                    if tempo_analisado else 0.0
+                )
+                maquina.update(deteccoes, lag)
+                if maquina.state != antes:
+                    contagem[f"{antes}->{maquina.state}"] += 1
                 for deteccao in deteccoes:
-
-                    esperado = verdade.get(
-                        (deteccao["x"], deteccao["y"])
-                    )
-
-                    if esperado is None:
-                        continue
-
-                    concordancia[1] += 1
-
-                    if esperado == deteccao["category"]:
-                        concordancia[0] += 1
-
-            antes = maquina.state
-
-            # lag real, não 0.0: sem ele, _can_act acha que a tela em mão já
-            # reflete a última ação (duplo toque) e MAX_DETECTION_AGE nunca
-            # dispara para denunciar um detector lento
-            lag = (
-                max(0.0, time.monotonic() - capturado_em)
-                if capturado_em
-                else 0.0
-            )
-
-            maquina.update(deteccoes, lag)
-
-            if maquina.state != antes:
-
-                contagem[f"{antes}->{maquina.state}"] += 1
-
-            for deteccao in deteccoes:
-                contagem[deteccao["category"]] += 1
+                    contagem[deteccao["category"]] += 1
 
             if args.headless:
                 continue
 
+            if resultado_atual is None:
+                # A janela aceita ESC/q antes da primeira inferência terminar.
+                if frame is not None and show(frame) in (27, ord("q")):
+                    break
+                continue
+
+            (frame_analisado, _, tempo_analisado, candidatos,
+             deteccoes, _, custo) = resultado_atual
+            lag = (
+                max(0.0, time.monotonic() - tempo_analisado)
+                if tempo_analisado else 0.0
+            )
             stats = {
                 "fonte": fonte.nome,
                 "cand": len(candidatos),
                 "det": len(deteccoes),
                 "ms": f"{custo:.0f}",
-
-                # lag + tempo no estado: diz se "travou" é detector lento ou estado sem saída
                 "lag": f"{lag * 1000:.0f}",
                 "no est": f"{time.monotonic() - maquina.state_entered:.0f}s",
                 "auto": "SIM" if args.auto else "nao",
             }
-
             if args.compare and concordancia[1]:
-
-                stats["vs prof"] = (
-                    f"{concordancia[0] / concordancia[1]:.0%}"
-                )
-
+                stats["vs prof"] = f"{concordancia[0] / concordancia[1]:.0%}"
             saida = draw(
-                frame,
-                deteccoes,
-                maquina.state,
-                stats,
+                frame_analisado, deteccoes, maquina.state, stats,
                 candidatos if args.debug_proposals else None,
             )
-
             if show(saida) in (27, ord("q")):
                 break
 
     except KeyboardInterrupt:
-
         print("Interrompido.")
-
     finally:
-
         if not args.headless:
             cv2.destroyAllWindows()
-
+        visao.stop()
         acoes.stop()
-
         captura.stop()
 
     print()

@@ -9,6 +9,8 @@ import json
 import shutil
 import sys
 import tempfile
+import threading
+import time
 from pathlib import Path
 
 import numpy as np
@@ -844,6 +846,46 @@ def test_deteccoes_saem_ordenadas_por_confianca():
     confiancas = [d["confidence"] for d in deteccoes]
 
     assert confiancas == sorted(confiancas, reverse=True), confiancas
+
+
+def test_visao_assincrona_descarta_frames_intermediarios():
+    import bot_ai
+
+    entrou = threading.Event()
+    continuar = threading.Event()
+
+    class Fonte:
+        def __init__(self):
+            self.versoes = []
+
+        def boxes(self, frame, categories):
+            versao = int(frame[0, 0, 0])
+            self.versoes.append((versao, categories))
+            if versao == 1:
+                entrou.set()
+                assert continuar.wait(2), "worker bloqueado no teste"
+            return []
+
+    fonte = Fonte()
+    worker = bot_ai.ModelVisionWorker(None, fonte, 0.6)
+    worker.start()
+    try:
+        worker.submit(np.full((2, 2, 3), 1, np.uint8), 1, 10.0, ("box",))
+        assert entrou.wait(2), "primeiro frame não começou"
+        worker.submit(np.full((2, 2, 3), 2, np.uint8), 2, 20.0)
+        worker.submit(np.full((2, 2, 3), 3, np.uint8), 3, 30.0)
+        continuar.set()
+
+        limite = time.monotonic() + 2
+        while (worker.latest() is None or worker.latest()[1] != 3) and time.monotonic() < limite:
+            time.sleep(0.01)
+
+        assert worker.latest() is not None
+        assert worker.latest()[1:3] == (3, 30.0)
+        assert fonte.versoes == [(1, ("box",)), (3, None)]
+    finally:
+        continuar.set()
+        worker.stop()
 
 
 def main():
