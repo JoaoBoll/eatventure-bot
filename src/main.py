@@ -391,7 +391,10 @@ def main(argv=None):
 
     detector = Detector(
         use_defaults=not args.layout_only,
-        learn_only_actions=not args.layout_only,
+        # O aprendizado de override por resolução não depende da coleta
+        # do dataset: ele deve continuar sempre que uma detecção válida
+        # aparecer, mesmo sem o modo de IA-collect ligado.
+        learn_only_actions=False,
     )
 
     vision = VisionWorker(detector)
