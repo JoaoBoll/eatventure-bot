@@ -10,7 +10,6 @@ from collections import Counter
 from pathlib import Path
 
 import cv2
-import joblib
 import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -124,6 +123,8 @@ class Model:
 
     @classmethod
     def load(cls, path):
+
+        import joblib
 
         caminho = Path(path).expanduser().resolve()
 
@@ -661,6 +662,7 @@ def live(model, args):
     versao = 0
     versao_analisada = 0
     resultado_atual = None
+    ultimo_desenho = 0.0
 
     try:
         captura.start()
@@ -720,9 +722,19 @@ def live(model, args):
             if args.headless:
                 continue
 
+            # Desenhar o frame inteiro a cada captura concorreria com o modelo.
+            # O waitKey continua atendendo ESC/q entre desenhos.
+            if time.monotonic() - ultimo_desenho < 0.1:
+                if cv2.waitKey(1) & 0xFF in (27, ord("q")):
+                    break
+                continue
+            ultimo_desenho = time.monotonic()
+
             if resultado_atual is None:
                 # A janela aceita ESC/q antes da primeira inferência terminar.
                 if frame is not None and show(frame) in (27, ord("q")):
+                    break
+                if frame is None and cv2.waitKey(1) & 0xFF in (27, ord("q")):
                     break
                 continue
 
@@ -743,8 +755,11 @@ def live(model, args):
             }
             if args.compare and concordancia[1]:
                 stats["vs prof"] = f"{concordancia[0] / concordancia[1]:.0%}"
+            # A imagem exibida acompanha a captura; o lag informa a idade
+            # das caixas. A decisão sempre usa o frame analisado acima.
             saida = draw(
-                frame_analisado, deteccoes, maquina.state, stats,
+                frame if frame is not None else frame_analisado,
+                deteccoes, maquina.state, stats,
                 candidatos if args.debug_proposals else None,
             )
             if show(saida) in (27, ord("q")):

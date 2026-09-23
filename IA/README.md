@@ -169,6 +169,14 @@ python IA/bot_ai.py --auto --min-confidence 0.80
 Sem `--auto` **nada é enviado ao device** — a execução é
 substituída na origem, não com um `if` espalhado pelo loop.
 
+Na execução ao vivo, a captura e as ações usam suas próprias threads.
+Propostas de caixas e inferência do modelo rodam em outra thread; a
+janela OpenCV e a máquina de estados ficam na thread principal. Se a
+inferência atrasar, o worker substitui frames pendentes pelo mais recente.
+O `lag` continua sendo calculado a partir do frame que gerou as
+detecções, para impedir ações sobre uma imagem antiga. A janela é
+redesenhada no máximo 10 vezes por segundo para poupar CPU.
+
 ### As duas fontes de candidatos
 
 `--source templates` (padrão): o detector atual diz **onde**
