@@ -36,6 +36,8 @@ RENOVATE = "RENOVATE"
 FOOD = "FOOD"
 NEW_POINT = "NEW_POINT"
 UPGRADE = "UPGRADE"
+DELIVERY = "DELIVERY"
+HELPER = "HELPER"
 
 
 # Regras: (categoria, ação, próximo estado). Ordem = prioridade
@@ -63,6 +65,8 @@ NORMAL_RULES = [
 
     ("plane", "plane", RENOVATE),
     ("build", "click", RENOVATE),
+    ("delivery", "delivery", DELIVERY),
+    ("helper", "helper", HELPER),
     ("upgrade", "upgrade", UPGRADE),
     ("new_point", "new_point", NEW_POINT),
     ("box", "open_box", None),
@@ -72,6 +76,16 @@ NORMAL_RULES = [
 RENOVATE_RULES = [
     ("renovate", "renovate_click", NORMAL),
     ("fly", "renovate_click", NORMAL),
+]
+
+DELIVERY_RULES = [
+    ("accept_delivery", "accept_delivery", NORMAL),
+    ("close", "close", NORMAL),
+]
+
+HELPER_RULES = [
+    ("invite_helper", "invite_helper", NORMAL),
+    ("close", "close", NORMAL),
 ]
 
 # up_upgrade permanece em UPGRADE de propósito: no próximo
@@ -85,6 +99,8 @@ UPGRADE_RULES = [
 STATE_RULES = {
     NORMAL: NORMAL_RULES,
     RENOVATE: RENOVATE_RULES,
+    DELIVERY: DELIVERY_RULES,
+    HELPER: HELPER_RULES,
     UPGRADE: UPGRADE_RULES,
 
     # FOOD e NEW_POINT têm espera própria depois do press,
@@ -110,6 +126,8 @@ class StateMachine:
     FOOD = FOOD
     NEW_POINT = NEW_POINT
     UPGRADE = UPGRADE
+    DELIVERY = DELIVERY
+    HELPER = HELPER
 
     def __init__(self, action_manager, recorder=None, detector=None):
 

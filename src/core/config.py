@@ -247,7 +247,14 @@ CATEGORY_THRESHOLDS = {
     "close": 0.85,
     "plane": 0.98,
     "box": 0.95,
+    "delivery": 0.95,
+    "helper": 0.95,
 }
+
+CATEGORY_COLOR_THRESHOLDS = {
+    "delivery": 0.99
+}
+
 
 CATEGORY_ROIS = {}
 
@@ -343,12 +350,16 @@ REPEATED_ACTION_WARNING = 8
 
 STATE_ENTRY_SETTLE = {
     "UPGRADE": 1,
+    "DELIVERY": 1,
+    "HELPER": 1,
     "GRAY_MAX": 1,
 }
 
 STATE_TIMEOUTS = {
-    "RENOVATE": 12.0,
-    "UPGRADE": 15.0,
-    "NEW_POINT": 10.0,
+    "RENOVATE": 15.0,
+    "UPGRADE": 5.0,
+    "DELIVERY": 5.0,
+    "HELPER": 5.0,
+    "NEW_POINT": 5.0,
     "FOOD": 5.0,
 }

@@ -21,7 +21,9 @@ from core.config import (                         # noqa: E402
     STATE_TIMEOUTS,
 )
 from core.state_machine import (                  # noqa: E402
+    DELIVERY,
     FOOD,
+    HELPER,
     NEW_POINT,
     NORMAL,
     RENOVATE,
@@ -30,7 +32,7 @@ from core.state_machine import (                  # noqa: E402
 )
 from vision.detector import Detector              # noqa: E402
 
-ORDEM = [NORMAL, UPGRADE, RENOVATE, FOOD, NEW_POINT]
+ORDEM = [NORMAL, UPGRADE, RENOVATE, DELIVERY, HELPER, FOOD, NEW_POINT]
 
 # Estados cujas regras NÃO são aplicadas pela tabela: têm
 # handler próprio por causa da espera depois do press.
