@@ -15,6 +15,7 @@ import numpy as np
 from core import log
 from core.metrics import formata_duracao
 from core.config import (
+    CATEGORY_COLOR_THRESHOLDS,
     CATEGORY_MATCH_BUDGET,
     CATEGORY_ROIS,
     CATEGORY_SCAN_QUOTA,
@@ -1701,6 +1702,10 @@ class Detector:
                 category,
                 self.threshold,
             )
+            min_color_threshold = CATEGORY_COLOR_THRESHOLDS.get(
+                category,
+                self.color_threshold,
+            )
 
             roi = self._resolve_roi(
                 category,
@@ -1805,10 +1810,7 @@ class Detector:
                             color_similarity,
                         )
 
-                    if (
-                        color_similarity
-                        < self.color_threshold
-                    ):
+                    if color_similarity < min_color_threshold:
                         continue
 
                     nome_base = template.get("nome_base")
@@ -2206,9 +2208,13 @@ class Detector:
             # comparação de cor nem aconteceu, e um "C:-"
             # pareceria falha.
             if cor is not None:
+                limite_cor = CATEGORY_COLOR_THRESHOLDS.get(
+                    categoria,
+                    self.color_threshold,
+                )
                 texto += (
                     f" C:{cor:.3f}"
-                    f"/{self.color_threshold:.2f}"
+                    f"/{limite_cor:.2f}"
                 )
 
             # Sem escala promovida, o pico acima é de UMA escala das cinco:
@@ -2318,15 +2324,19 @@ class Detector:
         "box": (255, 0, 220),
         "close": (0, 0, 255),
         "plane": (255, 255, 0),
-        "build": (180, 180, 255),
-        "fly": (200, 255, 255),
+        "build": (100, 0, 220),
+        "fly": (0, 150, 255),
+        "delivery": (255, 0, 0),
+        "accept_delivery": (0, 100, 255),
+        "helper": (180, 0, 255),
+        "invite_helper": (0, 180, 80),
         "gray_max": (128, 128, 128),
         "gray_coin": (90, 160, 200),
         "open_store": (255, 180, 0),
         "renovate_coin": (0, 255, 255),
     }
 
-    DEFAULT_COLOR = (255, 255, 255)
+    DEFAULT_COLOR = (160, 0, 200)
 
     # Cores do HUD
     HUD_OK = (0, 255, 0)

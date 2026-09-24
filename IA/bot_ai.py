@@ -45,9 +45,13 @@ CORES = {
     "renovate": (90, 255, 255),
     "fly": (200, 255, 90),
     "open_store": (255, 90, 160),
+    "delivery": (255, 0, 0),
+    "accept_delivery": (0, 100, 255),
+    "helper": (180, 0, 255),
+    "invite_helper": (0, 180, 80),
 }
 
-COR_PADRAO = (200, 200, 200)
+COR_PADRAO = (160, 0, 200)
 
 # sem `renovate` ou `fly` a StateMachine nunca sai de RENOVATE (ver
 # RENOVATE_RULES); `fly` é rara e larga (414x141 vs 95x94 mediano), então sai

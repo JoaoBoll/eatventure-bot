@@ -16,14 +16,14 @@ ROOT = Path(__file__).resolve().parent.parent
 
 sys.path.insert(0, str(ROOT / "src"))
 
-from core import log                              # noqa: E402
-from core.config import (                         # noqa: E402
+from core import log
+from core.config import (
     DATASET_DB_DSN,
     DATASET_DB_SCHEMA,
     DATASET_DIR,
     LOG_LEVEL,
 )
-from dataset.store import importar_jsonl          # noqa: E402
+from dataset.store import importar_jsonl
 
 
 def main(argv=None):

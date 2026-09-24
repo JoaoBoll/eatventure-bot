@@ -90,15 +90,35 @@ vêm do código que já funciona.
 
 ## Treinar
 
+Para treinar novamente com o cache, basta rodar `python IA/train_ai.py`, sem
+parâmetro extra.
+
+No modo padrão (`category`), o script guarda as features em `dataset/cache/`.
+Na próxima execução, extrai as amostras novas e treina com elas **e com todas
+as amostras já guardadas no cache**, mesmo que as imagens antigas tenham sido
+apagadas. Ele cria um modelo novo a cada treino e sobrescreve
+`IA/model.joblib`: o que se acumula são os dados de treino, não o estado do
+modelo anterior. A saída mostra quantas amostras foram extraídas e quantas
+foram reaproveitadas.
+
+Use `--no-cache` para extrair apenas as amostras disponíveis no dataset atual,
+sem ler nem gravar o cache. `--kind action` também não usa esse cache. Mudanças
+nas configurações das features ou em `--negatives` invalidam o cache antigo;
+nesse caso, amostras cujas imagens já foram apagadas não podem ser reconstruídas.
+
+**Atenção aos filtros:** com o cache ligado, `--limit` e `--outcome` restringem
+as amostras novas lidas do dataset, mas não removem as que já estão no cache.
+Para um treino estritamente filtrado, use `--no-cache` junto com esses filtros.
+
 ```bash
 # recomendado
 python IA/train_ai.py
 
 # ensaio rápido, para ver se o encanamento funciona
-python IA/train_ai.py --limit 2000 --trees 60
+python IA/train_ai.py --limit 2000 --trees 60 --no-cache
 
 # só ações que funcionaram: não herda os erros do professor
-python IA/train_ai.py --outcome changed negative
+python IA/train_ai.py --outcome changed negative --no-cache
 
 # teste mais duro: treina numa partida, avalia em outra
 python IA/train_ai.py --split session
@@ -122,23 +142,25 @@ Uma linha, um exemplo, o que ela muda de verdade.
 | `--kind` | `--kind category` | `category` (padrão): recorte de caixa → categoria, e a ação sai da tabela de prioridade. `--kind action`: tela inteira → ação, existe só para comparar. **O bot só usa `category`.** |
 | `--split` | `--split session` | Define o **grupo** do split. `phash` (padrão): quadros iguais não cruzam treino/teste. `session`: a partida inteira vai para um lado — mede generalizar para outra partida. A queda entre os dois é o quanto o modelo decorou o restaurante. |
 | `--test-ratio` | `--test-ratio 0.3` | Fração de **grupos** (não de amostras) para teste. Reduza se o teste sair vazio com `--split session`. A contagem final de amostras não bate exato com a fração, e isso é esperado. |
-| `--outcome` | `--outcome changed negative` | Só amostras com esses resultados: `changed`, `unchanged`, `unknown`, `negative`. `changed negative` deixa de fora as ações do professor que **não funcionaram** — o modelo não herda os erros dele. |
+| `--outcome` | `--outcome changed negative` | Filtra os registros lidos do dataset por resultado: `changed`, `unchanged`, `unknown`, `negative`. Para excluir também os registros já presentes no cache, combine com `--no-cache`. |
 | `--negatives` | `--negatives 4` | Recortes de fundo sorteados por frame, rotulados `background`. Sem eles todo pedaço de cenário viraria detecção. `--negatives 0` desliga. |
 | `--trees` | `--trees 60` | Árvores da floresta (padrão 200). Menos = treino rápido para ensaio; mais = ganho pequeno e custo linear. |
 | `--jobs` | `--jobs 4` | Núcleos. Padrão `-1` (todos). Baixe se a máquina ficar inutilizável durante o treino. |
-| `--limit` | `--limit 2000` | Usa só as N primeiras amostras. É para testar o encanamento, **não** para medir: com poucas amostras as classes raras (`plane`, `fly`) desaparecem do treino. |
+| `--limit` | `--limit 2000` | Lê só as N primeiras amostras do dataset; com cache ligado, amostras antigas ainda entram no treino. Para ensaio com apenas N amostras, combine com `--no-cache`. |
 | `--seed` | `--seed 7` | Semente do split e da floresta. Trocar dá outra divisão — útil para ver se um resultado bom foi sorte. |
 | `--dataset-root` | `--dataset-root dataset2` | Outra pasta de dataset. |
+| `--cache-root` | `--cache-root dataset/outro-cache` | Outra pasta para o cache de features; o padrão é `<dataset-root>/cache`. |
+| `--no-cache` | `--no-cache` | Não lê nem grava o cache; extrai as amostras do dataset atual. |
 | `--model-out` | `--model-out IA/teste.joblib` | Grava em outro lugar, sem sobrescrever o modelo bom. Use sempre que estiver experimentando. |
 
 Exemplos combinando:
 
 ```bash
 # ensaio: rápido, descartável, sem tocar no modelo bom
-python IA/train_ai.py --limit 2000 --trees 60 --model-out IA/ensaio.joblib
+python IA/train_ai.py --limit 2000 --trees 60 --no-cache --model-out IA/ensaio.joblib
 
 # o treino "de verdade", medido do jeito mais honesto
-python IA/train_ai.py --split session --outcome changed negative
+python IA/train_ai.py --split session --outcome changed negative --no-cache
 
 # o mesmo split com outra semente: o resultado se mantém?
 python IA/train_ai.py --split session --seed 7
@@ -229,7 +251,7 @@ python IA/bot_ai.py --auto --min-confidence 0.80
 ## Ordem sugerida
 
 1. `python tests/test_ia.py` — o encanamento está de pé?
-2. `python IA/train_ai.py --limit 2000 --trees 60` — ensaio rápido
+2. `python IA/train_ai.py --limit 2000 --trees 60 --no-cache` — ensaio rápido
 3. `python IA/train_ai.py` — treino de verdade
 4. `python IA/bot_ai.py --demo --demo-limit 30` — acerto de
    categoria contra os rótulos, sem device

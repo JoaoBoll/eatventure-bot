@@ -193,6 +193,39 @@ def test_timeout_do_estado_volta_para_normal():
     assert machine.state == sm.NORMAL, machine.state
 
 
+def test_delivery_e_helper_abrem_painel_e_usam_botao_interno():
+    for entrada, estado, botao in (
+        ("delivery", sm.DELIVERY, "accept_delivery"),
+        ("helper", sm.HELPER, "invite_helper"),
+    ):
+        machine, actions, clock = build()
+
+        assert entrada in machine.wanted_categories()
+        machine.update([detection(entrada)])
+
+        assert actions.actions == [entrada]
+        assert machine.state == estado
+        assert botao in machine.wanted_categories()
+        assert entrada not in machine.wanted_categories()
+
+        clock.advance(STATE_ENTRY_SETTLE[estado] + 0.01)
+        machine.update([detection(botao), detection("close")])
+
+        assert actions.actions == [entrada, botao]
+        assert machine.state == sm.NORMAL
+
+
+def test_delivery_e_helper_saem_por_timeout_sem_botao():
+    for estado in (sm.DELIVERY, sm.HELPER):
+        machine, actions, clock = build()
+        machine._enter(estado)
+        clock.advance(STATE_TIMEOUTS[estado] + 0.01)
+        machine.update([])
+
+        assert machine.state == sm.NORMAL
+        assert actions.actions == []
+
+
 def test_deteccao_velha_nao_clica():
 
     machine, actions, _ = build()
