@@ -518,7 +518,8 @@ def main(argv=None):
 
         capture.stop()
 
-        cv2.destroyAllWindows()
+        if SHOW_AI_VISION:
+            cv2.destroyAllWindows()
 
         if scrcpy_process:
 

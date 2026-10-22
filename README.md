@@ -38,6 +38,10 @@ Installs the dependencies needed to run the bot.
 
 Installs scrcpy and ADB on Windows and adds them to `PATH`. On other systems, install them through the available package manager.
 
+On Ubuntu, install `scrcpy`, `scrcpy-server` and `adb` through apt. The bot finds the server beside the executable or in the installation's `share/scrcpy` or `lib/scrcpy` directory, without copying the JAR into the project. The version is detected automatically, supporting scrcpy 1.23 or later; standalone files under `tools/scrcpy` still use the version configured in `SCRCPY_SERVER_VERSION`.
+
+On Linux without `DISPLAY` or `WAYLAND_DISPLAY`, windows are disabled automatically for server use.
+
 ## Connect Android
 
 Enable **USB debugging** in **Developer options**, connect the cable, and accept the authorization prompt on the phone.
