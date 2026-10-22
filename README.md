@@ -2,213 +2,144 @@
 
 [Leia em português](README.pt-BR.md)
 
-Vision bot for EatVenture. It receives the Android video stream through scrcpy-server, finds elements by template matching, and sends taps through ADB.
-
-> Template detection is the stable mode. Data collection and the model in `IA/` are experimental.
+Bot that automates EatVenture actions on an Android device. The default mode recognizes elements using templates (reference images); the AI model is still experimental.
 
 ## Requirements
 
-- Python 3.12 or later;
-- [scrcpy](https://github.com/Genymobile/scrcpy) and `adb` on `PATH` — on Windows, scrcpy may also be placed under `tools/scrcpy/`;
-- An Android device with USB debugging or Wireless debugging enabled.
+- Python 3.12 or later.
+- [scrcpy](https://github.com/Genymobile/scrcpy) and ADB installed.
+- Android with USB or Wireless debugging enabled.
 
 ## Setup
 
-From the project root, create a virtual environment and install dependencies:
+Run these commands from the project root in PowerShell:
 
 ```powershell
-py -m venv .venv
+py -3.12 -m venv .venv
+```
+
+Creates the project's Python environment.
+
+```powershell
 .\.venv\Scripts\Activate.ps1
+```
+
+Activates the environment. Repeat when opening a new terminal. On Linux or macOS, create the environment with `python3 -m venv .venv` and activate it with `source .venv/bin/activate`.
+
+```powershell
 python -m pip install -r requirements.txt
 ```
 
-On Linux or macOS, activate the environment with:
-
-```bash
-source .venv/bin/activate
-```
-
-### scrcpy and ADB
-
-On Windows, the project includes a scrcpy installer:
+Installs the dependencies needed to run the bot.
 
 ```powershell
 .\tools\install_scrcpy.ps1
 ```
 
-It installs to `tools/scrcpy/`, which the project detects automatically. On other systems, install scrcpy using your distribution's recommended method and confirm that `scrcpy` and `adb` are on `PATH`:
+Installs scrcpy and ADB on Windows and adds them to `PATH`. On other systems, install them through the available package manager.
 
-```bash
-scrcpy --version
-adb version
-```
+## Connect Android
 
-### Prepare the Android device
-
-1. Open **Settings > About phone** and tap **Build number** seven times. On some devices, this is under **Software information**.
-2. Return to Settings and open **Developer options**.
-3. Enable **USB debugging**. For Wi-Fi on Android 11 or later, also enable **Wireless debugging**.
-
-## Connect the device
-
-### USB
-
-Connect the device by cable and accept the debugging prompt on Android. Confirm the connection:
+Enable **USB debugging** in **Developer options**, connect the cable, and accept the authorization prompt on the phone.
 
 ```bash
 adb devices
 ```
 
-The device must have the `device` status, not `unauthorized` or `offline`.
+Lists connected devices. The phone should appear with the `device` status.
 
-### Wi-Fi: Android 11 or later
-
-The computer and device must be on the same network. Under **Developer options > Wireless debugging**, select **Pair device with pairing code** and run:
+For Wi-Fi on Android 11 or later, keep the computer and phone on the same network. Enable **Wireless debugging** and open **Pair device with pairing code**.
 
 ```bash
 adb pair IP:PAIRING_PORT
 ```
 
-Enter the code shown on Android. Then, on the main **Wireless debugging** screen, use the IP and connection port (it may differ from the pairing port):
+Pairs the phone with the computer. Enter the code shown on Android.
 
 ```bash
 adb connect IP:CONNECTION_PORT
-adb devices
 ```
 
-### Wi-Fi: Android 10 or earlier
+Connects to the paired phone. Use the address on the main **Wireless debugging** screen; its port may differ from the pairing port.
 
-First connect and authorize the device over USB. With both devices on the same Wi-Fi network, run:
+For Android 10 or earlier, connect and authorize over USB first:
 
 ```bash
 adb tcpip 5555
-adb connect DEVICE_IP:5555
-adb devices
+adb connect PHONE_IP:5555
 ```
 
-The device IP is available in its Wi-Fi network details. After confirming the `device` status, you can disconnect the cable. Restarting Android usually requires connecting over USB and running `adb tcpip 5555` again.
+Enables a connection over the same Wi-Fi network. Confirm with `adb devices` before removing the cable.
 
-## Usage
+## Run commands
 
-Keep the game open, unlocked, and with its screen on. Before allowing taps, check the capture:
-
-```bash
-python src/test_main.py
-```
-
-Close the window with `Esc`, then start the bot:
+Keep EatVenture open, with the screen on and unlocked.
 
 ```bash
 python src/main.py
 ```
 
-When more than one device is connected, the program asks which one to use. To select one explicitly:
+Starts the bot with automatic taps. It also learns and updates templates for the device resolution during use.
+
+By default, messages appear only in the terminal. To save the complete log to a file:
+
+```bash
+py src/main.py --log
+```
+
+With `--log`, each run saves a UTF-8 file under `logs/eatventure_<date>_<time>_<microseconds>_<pid>.log` without overwriting earlier runs. The file includes logs from `DEBUG` upward, Python text output and errors, plus scrcpy and automatic training output. `LOG_LEVEL` controls only the console; `LOG_DIR` in `src/core/config.py` sets the log directory.
+
+```bash
+python src/test_main.py
+```
+
+Shows the phone capture without tapping. Use it to check the image before starting the bot.
 
 ```bash
 python src/main.py --device DEVICE_SERIAL
 ```
 
-You may also set `DEVICE_SERIAL` in [src/core/config.py](src/core/config.py). The same `--device` option works in Android-related utilities.
-
-`Esc` stops the bot only while `SHOW_AI_VISION` is enabled; `Ctrl+C` always stops it from the terminal.
-
-## Configuration
-
-Bot settings are in [src/core/config.py](src/core/config.py). The most useful options are:
-
-| Option | Purpose |
-|---|---|
-| `SHOW_AI_VISION` | Shows the detection and status window. |
-| `SHOW_SCRCPY` | Opens the interactive scrcpy mirror. It is not required by the bot. |
-| `VISION_FILTER_BY_STATE` | Searches only categories relevant to the current state. |
-| `SHOW_DETECTION_LABELS`, `SHOW_FPS`, `SHOW_DETECTION_LAG` | Control details in the vision window. |
-| `DEVICE_SERIAL` | Defines the default ADB device. |
-
-The bot uses the direct scrcpy-server stream; the scrcpy window is only a mirror for monitoring or manual interaction.
-
-To interact with the game manually, enable `SHOW_SCRCPY`. The vision window (`SHOW_AI_VISION`) is informational only and does not receive taps.
-
-### Resolution-specific templates
-
-By default, the detector learns templates specific to the device resolution while using default templates. To run the bot using only those resolution-specific templates, keep the updater open in one terminal:
+Selects a device using the serial shown by `adb devices`. If neither the option nor the configuration specifies a device, the program asks when more than one is connected. The remaining commands below and the capture viewer also accept `--device`.
 
 ```bash
-python src/main_layouts.py --device DEVICE_SERIAL
+python src/main_layouts.py
 ```
 
-Then run the bot in another terminal:
+Learns and updates templates for the current resolution without tapping. Elements must be visible in the game to be recognized.
 
 ```bash
-python src/main.py --layout-only --device DEVICE_SERIAL
+python src/main.py --layout-only
 ```
 
-Use `--layout-only` only after templates have been learned for that resolution; categories without them will not be detected.
-
-## Templates
-
-When an element is not detected correctly, register a new template:
-
-```bash
-python tools/template_selector.py
-```
-
-Drag to select the area and press `Enter` to save it. Use `R` or `F5` to capture the screen again.
-
-To inspect and compact template numbering:
-
-```bash
-python tools/renumerar.py
-python tools/renumerar.py --aplicar
-```
-
-The first command only previews changes; `--aplicar` renames files.
-
-## Dataset and AI
-
-To record data during a session:
+Runs the bot using only templates already learned for the current resolution. Categories without these templates will not be detected.
 
 ```bash
 python src/main.py --ai-collect
 ```
 
-Alternatively, enable `DATASET_SAVE` in the configuration. PostgreSQL is optional; dataset format and importing are documented in [docs/dataset.md](docs/dataset.md).
+Runs the template bot and collects images and records under `dataset/data/<resolution>/`. Every 10,000 new records across resolutions trigger AI training and a separate JSON report. During training, processes and windows stay open while bot actions and collection pause; both resume automatically when training finishes or fails. After success, consumed records and images are removed while the training cache is preserved. See the [AI commands](IA/README.md) for manual training and using the updated model.
 
-Collection writes images under `dataset/`. Check available storage before enabling it; the default limit is 20 GB (`DATASET_MAX_DISK_MB`).
-
-The training and model execution workflow is documented in [IA/README.md](IA/README.md). The plan to replace templates with a trained detector is in [docs/detector-ia.md](docs/detector-ia.md).
-
-## Tests
-
-Tests are Python scripts and do not require a device:
+To keep playing and collecting during automatic training, set `AI_PAUSE_BOT_WHILE_TRAINING = False` in [src/core/config.py](src/core/config.py).
 
 ```bash
-python tests/test_detection.py
-python tests/test_state_machine.py
-python tests/test_pipeline.py
-python tests/test_renumerar.py
-python tests/test_selector_layout.py
-python tests/test_devices.py
-python tests/test_ciclo.py
-python tests/test_dataset.py
-python tests/test_ia.py
+python tools/template_selector.py
 ```
 
-After changing templates or thresholds, validate the detection regression:
+Registers a template manually. Drag to select an area and press `Enter` to choose a category and save. Use `r` or `F5` to refresh the capture and `Esc` to exit.
 
-```bash
-python tests/test_detection.py
-```
+Use `Ctrl+C` to stop from the terminal. In the capture viewer, use `Esc`. In the bot and updater, `Esc` also stops execution when the vision window is enabled.
 
-`python tests/test_detection.py --update` changes the expected results. Use it only to accept an intentional change and review the diff before saving it.
+Display settings are in [src/core/config.py](src/core/config.py): `SHOW_AI_VISION` shows detections; `SHOW_SCRCPY` opens the mirror for manual interaction with the game.
 
-## Structure
+## Future plans
 
-| Path | Responsibility |
+Expand data collection and validate operation at the resolutions below. Values are in **short side × long side**, in pixels, and represent coverage targets that still require validation.
+
+| Devices | Planned resolutions |
 |---|---|
-| [src/capture/screen.py](src/capture/screen.py) | scrcpy-server video stream. |
-| [src/vision/detector.py](src/vision/detector.py) | Template-based detection. |
-| [src/vision/worker.py](src/vision/worker.py) | Background vision processing. |
-| [src/core/state_machine.py](src/core/state_machine.py) | State priorities and transitions. |
-| [src/actions/](src/actions) | Taps and ADB commands. |
-| [src/core/config.py](src/core/config.py) | Central configuration. |
-| [tools/](tools) | Template, dataset, and maintenance utilities. |
+| Phones | 720 × 1600, 1080 × 2340, 1080 × 2400, 1220 × 2712, 1440 × 3120 |
+| Tablets | 800 × 1340, 1200 × 1920, 1600 × 2560, 2136 × 3200 |
+
+- Later validate 1080 × 1920 and the inner screens of foldable phones.
+- Implement continued training from the previous model while maintaining performance on previously learned resolutions.
+- Improve and validate the experimental AI detector to reduce dependence on templates.

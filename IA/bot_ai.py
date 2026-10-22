@@ -9,7 +9,6 @@ from collections import Counter
 from pathlib import Path
 
 import cv2
-import joblib
 import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -20,9 +19,13 @@ for candidato in (str(ROOT), str(ROOT / "src"), str(ROOT / "IA")):
 
 from features import (                                # noqa: E402
     FEATURE_SIZE,
+    HSV_BINS,
+    PATCH_MARGIN,
+    PATCH_SIZE,
     box_features,
     screen_features,
 )
+from model_updates import ModelWatcher, resolve_publication  # noqa: E402
 
 DEFAULT_MODEL = ROOT / "IA" / "model.joblib"
 DATASET_ROOT = ROOT / "dataset"
@@ -77,20 +80,33 @@ def min_confidence_for(categoria, global_min):
 
 
 def known_categories():
-    # tiradas das tabelas de regras, não de lista copiada: categoria nova
-    # em core/state_machine.py passa a valer sozinha
+    categories = set(CORES)
     try:
         from core.state_machine import STATE_RULES
 
     except Exception:
-        # core não importável (nem device, nem config): sobra a lista do overlay
-        return set(CORES)
+        pass
+    else:
+        categories.update(
+            categoria
+            for regras in STATE_RULES.values()
+            for categoria, _acao, _proximo in regras
+        )
 
-    return {
-        categoria
-        for regras in STATE_RULES.values()
-        for categoria, _acao, _proximo in regras
-    }
+    try:
+        from core.config import (
+            CATEGORY_COLOR_THRESHOLDS,
+            CATEGORY_ROIS,
+            CATEGORY_THRESHOLDS,
+        )
+    except Exception:
+        pass
+    else:
+        categories.update(CATEGORY_COLOR_THRESHOLDS)
+        categories.update(CATEGORY_ROIS)
+        categories.update(CATEGORY_THRESHOLDS)
+
+    return categories
 
 
 class Model:
@@ -127,8 +143,12 @@ class Model:
 
     @classmethod
     def load(cls, path):
+        return cls.load_publication(resolve_publication(path))
 
-        caminho = Path(path).expanduser().resolve()
+    @classmethod
+    def load_publication(cls, publication):
+
+        caminho = publication.model_path
 
         if not caminho.exists():
 
@@ -137,8 +157,6 @@ class Model:
                 "Treine primeiro:\n"
                 "  python IA/train_ai.py\n"
             )
-
-        clf = joblib.load(caminho)
 
         meta_path = caminho.with_suffix(".meta.json")
 
@@ -153,16 +171,53 @@ class Model:
 
             except json.JSONDecodeError:
 
+                if publication.run_id is not None:
+                    raise ValueError(f"Metadados ilegíveis: {meta_path}") from None
+
                 print(
                     f"[aviso] {meta_path.name} ilegível — "
                     "assumindo modelo de categoria."
                 )
+
+        if not isinstance(meta, dict):
+            raise ValueError(f"Metadados inválidos: {meta_path}")
+
+        if publication.run_id is not None:
+            if meta.get("run_id") != publication.run_id:
+                raise ValueError(f"Versão dos metadados difere de {publication.run_id}")
+            if meta.get("kind") != "category":
+                raise ValueError("A publicação deve conter um modelo de categoria")
+            feature_metadata = meta.get("features")
+            expected_features = {
+                "patch_size": PATCH_SIZE,
+                "patch_margin": PATCH_MARGIN,
+                "hsv_bins": HSV_BINS,
+                "n_features": FEATURE_SIZE,
+            }
+            if not isinstance(feature_metadata, dict) or any(
+                feature_metadata.get(name) != expected
+                for name, expected in expected_features.items()
+            ):
+                raise ValueError("Features publicadas incompatíveis com IA/features.py")
+
+        import joblib
+
+        clf = joblib.load(caminho)
+
+        if publication.run_id is not None and getattr(clf, "n_features_in_", None) is None:
+            raise ValueError("Modelo publicado sem informação das features de entrada")
 
         modelo = cls(clf, meta, caminho)
 
         modelo._check_features()
 
         modelo._check_labels()
+
+        if publication.run_id is not None:
+            categories = known_categories()
+            labels = set(modelo.labels)
+            if not labels.intersection(categories):
+                raise ValueError("Modelo publicado sem categorias de visão reconhecidas")
 
         return modelo
 
@@ -568,6 +623,7 @@ def live(model, args):
     from core.state_machine import StateMachine
 
     log.setup(LOG_LEVEL)
+    logger = log.get("bot_ai")
 
     serial = devices.resolver(args.device)
 
@@ -602,17 +658,24 @@ def live(model, args):
             "Use --auto para deixar agir."
         )
 
-    captura.start()
-
-    acoes.start()
-
     versao = 0
 
     contagem = Counter()
 
     concordancia = [0, 0]
 
+    watcher = ModelWatcher(
+        args.model,
+        model,
+        Model.load_publication,
+        logger=logger,
+    )
+
     try:
+
+        captura.start()
+        acoes.start()
+        watcher.start()
 
         while True:
 
@@ -629,6 +692,11 @@ def live(model, args):
 
             if frame is None:
                 continue
+
+            updated_model = watcher.take_pending()
+            if updated_model is not None:
+                model = updated_model
+                logger.info("Modelo atualizado para %s", model.meta["run_id"])
 
             altura, largura = frame.shape[:2]
 
@@ -712,6 +780,7 @@ def live(model, args):
                 "lag": f"{lag * 1000:.0f}",
                 "no est": f"{time.monotonic() - maquina.state_entered:.0f}s",
                 "auto": "SIM" if args.auto else "nao",
+                "modelo": model.meta.get("run_id") or model.path.name,
             }
 
             if args.compare and concordancia[1]:
@@ -736,6 +805,8 @@ def live(model, args):
         print("Interrompido.")
 
     finally:
+
+        watcher.stop()
 
         if not args.headless:
             cv2.destroyAllWindows()

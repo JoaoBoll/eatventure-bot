@@ -98,23 +98,27 @@ class PostgresStore:
         tabela_amostra = f"{self.schema}.dataset_sample"
         tabela_caixa = f"{self.schema}.dataset_box"
 
+        novas_sessoes = {}
+
+        for registro in lote:
+
+            sessao = registro["session"]
+
+            if sessao not in self.session_registered:
+                novas_sessoes.setdefault(sessao, registro["created_at"])
+
         try:
 
             with self.connection.cursor() as cursor:
 
-                for sessao in {r["session"] for r in lote}:
-
-                    if sessao in self.session_registered:
-                        continue
+                for sessao, inicio in novas_sessoes.items():
 
                     cursor.execute(
                         f"INSERT INTO {tabela_sessao} "
                         "(id, started_at) VALUES (%s, %s) "
                         "ON CONFLICT (id) DO NOTHING",
-                        (sessao, lote[0]["created_at"]),
+                        (sessao, inicio),
                     )
-
-                    self.session_registered.add(sessao)
 
                 cursor.executemany(
                     f"""
@@ -206,6 +210,8 @@ class PostgresStore:
                     )
 
             self.connection.commit()
+
+            self.session_registered.update(novas_sessoes)
 
         except Exception:
 

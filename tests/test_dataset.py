@@ -26,6 +26,7 @@ from core.config import (                         # noqa: E402
     REFERENCE_HEIGHT,
     REFERENCE_WIDTH,
 )
+from dataset import layout                        # noqa: E402
 from dataset.recorder import (                    # noqa: E402
     CHANGED,
     UNCHANGED,
@@ -104,31 +105,25 @@ class Gravador:
     def registros(self, espera=5.0):
         """Lê o índice, esperando a thread drenar a fila."""
 
-        indice = self.dir / "samples.jsonl"
-
         limite = time.monotonic() + espera
 
-        while time.monotonic() < limite:
-
-            if self.rec.queue.empty() and indice.exists():
-
-                # Uma folga para a escrita terminar.
-                time.sleep(0.05)
-
-                break
-
+        while self.rec.queue.unfinished_tasks and time.monotonic() < limite:
             time.sleep(0.02)
-
-        if not indice.exists():
-            return []
 
         return [
             json.loads(linha)
-            for linha in indice.read_text(
+            for shard in layout.shard_roots(self.dir)
+            for linha in layout.index_path(shard).read_text(
                 encoding="utf-8"
             ).splitlines()
             if linha.strip()
         ]
+
+
+def caminho_imagem(raiz, registro):
+    return layout.shard_root(
+        raiz, registro["frame_width"], registro["frame_height"]
+    ) / registro["image"]
 
 
 def test_grava_imagem_e_rotulo():
@@ -174,7 +169,7 @@ def test_grava_imagem_e_rotulo():
         assert r["detect_lag_ms"] == 400
 
         # A imagem existe de verdade, no caminho anotado.
-        caminho = g.dir / r["image"]
+        caminho = caminho_imagem(g.dir, r)
 
         assert caminho.exists(), r["image"]
 
@@ -402,7 +397,7 @@ def test_acao_sem_veredito_e_gravada_no_stop():
 
         rec.stop()
 
-        linhas = (d / "samples.jsonl").read_text(
+        linhas = layout.index_path(layout.shard_root(d, 1080, 2400)).read_text(
             encoding="utf-8"
         ).splitlines()
 
@@ -413,6 +408,183 @@ def test_acao_sem_veredito_e_gravada_no_stop():
     finally:
 
         shutil.rmtree(d, ignore_errors=True)
+
+
+def test_stop_drena_a_fila_antes_de_fechar_o_banco():
+
+    import threading
+
+    iniciou = threading.Event()
+    liberar = threading.Event()
+    gravadas = []
+    ao_fechar = []
+
+    class GravadorLento(DatasetRecorder):
+
+        def _write(self, sample):
+            iniciou.set()
+            assert liberar.wait(5.0)
+            gravadas.append(sample)
+
+    class BancoFalso:
+
+        def close(self):
+            ao_fechar.append(list(gravadas))
+
+    with tempfile.TemporaryDirectory() as pasta:
+
+        rec = GravadorLento(directory=pasta, store=BancoFalso())
+        rec.start()
+
+        try:
+
+            rec._submit("primeira")
+            assert iniciou.wait(2.0)
+            rec._submit("segunda")
+
+            parada = threading.Thread(target=rec.stop)
+            parada.start()
+
+            limite = time.monotonic() + 2.0
+
+            while rec.running and time.monotonic() < limite:
+                time.sleep(0.001)
+
+            assert not rec.running
+
+        finally:
+
+            liberar.set()
+
+            if "parada" in locals():
+                parada.join(timeout=5.0)
+
+            rec.stop()
+
+        assert gravadas == ["primeira", "segunda"]
+        assert ao_fechar == [["primeira", "segunda"]]
+        assert rec.queue.unfinished_tasks == 0
+
+
+def test_stop_sem_start_fecha_o_banco_uma_unica_vez():
+
+    class BancoFalso:
+
+        def __init__(self):
+            self.fechamentos = 0
+
+        def close(self):
+            self.fechamentos += 1
+
+    banco = BancoFalso()
+    rec = DatasetRecorder(store=banco)
+
+    rec.stop()
+    rec.stop()
+
+    assert banco.fechamentos == 1
+
+
+def test_stop_aguarda_thread_encerrar_para_fechar_o_banco():
+
+    class BancoFalso:
+
+        def __init__(self):
+            self.fechamentos = 0
+
+        def close(self):
+            self.fechamentos += 1
+
+    class ThreadFalsa:
+
+        viva = True
+
+        def is_alive(self):
+            return self.viva
+
+    banco = BancoFalso()
+    rec = DatasetRecorder(store=banco)
+    thread = ThreadFalsa()
+    rec.thread = thread
+
+    rec.stop()
+
+    assert banco.fechamentos == 0
+    assert rec.thread is thread
+
+    thread.viva = False
+    rec.stop()
+    rec.stop()
+
+    assert banco.fechamentos == 1
+    assert rec.thread is None
+
+
+def test_limite_de_amostras_inclui_as_que_ja_estao_na_fila():
+
+    from unittest.mock import patch
+
+    with tempfile.TemporaryDirectory() as pasta, patch(
+        "dataset.recorder.DATASET_MAX_SAMPLES", 2
+    ):
+
+        rec = DatasetRecorder(directory=pasta)
+        rec.running = True
+        imagem = np.full((64, 64, 3), 40, np.uint8)
+        alvo = deteccao("box", x=10, y=10, w=20, h=20)
+
+        for _ in range(5):
+
+            rec.on_action(
+                "open_box", "click", alvo, (20, 20), "NORMAL",
+                imagem, [alvo], 0.0,
+            )
+            rec._flush_pending(CHANGED, 0.1)
+
+        assert rec.queue.qsize() == 5
+
+        rec.running = False
+        rec._run()
+
+        assert rec.saved == 2
+        indice = layout.index_path(layout.shard_root(pasta, 64, 64))
+        assert len(indice.read_text(encoding="utf-8").splitlines()) == 2
+
+
+def test_troca_de_resolucao_preserva_indices_e_coordenadas():
+
+    with Gravador() as g:
+
+        resolucoes = [(320, 720), (480, 960)]
+
+        for largura, altura in resolucoes:
+
+            imagem = np.full((altura, largura, 3), 40, np.uint8)
+            alvo = deteccao("box", x=largura // 2, y=altura // 2)
+
+            g.rec.on_action(
+                "open_box", "click", alvo, (alvo["x"], alvo["y"]),
+                "NORMAL", imagem, [alvo], 0.0,
+            )
+            g.rec._flush_pending(CHANGED, 0.1)
+
+        registros = g.registros()
+
+        assert len(registros) == 2
+        assert {shard.name for shard in layout.shard_roots(g.dir)} == {
+            "320x720", "480x960"
+        }
+
+        for registro in registros:
+
+            largura = registro["frame_width"]
+            altura = registro["frame_height"]
+
+            assert (largura, altura) in resolucoes
+            assert registro["boxes"][0]["x"] == largura // 2
+            assert registro["boxes"][0]["y"] == altura // 2
+            assert caminho_imagem(g.dir, registro).is_file()
+            assert not Path(registro["image"]).is_absolute()
 
 
 def test_todas_as_acoes_do_bot_entram():
@@ -1125,7 +1297,7 @@ def test_sha256_confere_com_o_arquivo():
 
         r = g.registros()[0]
 
-        conteudo = (g.dir / r["image"]).read_bytes()
+        conteudo = caminho_imagem(g.dir, r).read_bytes()
 
         assert (
             hashlib.sha256(conteudo).hexdigest()
@@ -1174,7 +1346,7 @@ def test_grava_em_jpg():
 
             assert r["image"].endswith(".jpg"), r["image"]
 
-            caminho = g.dir / r["image"]
+            caminho = caminho_imagem(g.dir, r)
 
             assert caminho.exists()
 
@@ -1251,7 +1423,7 @@ def test_jpg_e_bem_menor_que_png():
                 r = g.registros()[0]
 
                 tamanhos[formato] = (
-                    g.dir / r["image"]
+                    caminho_imagem(g.dir, r)
                 ).stat().st_size
 
     finally:
@@ -1594,8 +1766,40 @@ def test_falha_faz_rollback_e_propaga():
     raise AssertionError("deveria ter propagado")
 
 
+def test_sessao_com_rollback_e_inserida_no_lote_seguinte():
+
+    store, conexao = store_falso(batch_size=1)
+    commit_original = conexao.commit
+
+    def falhar_no_commit():
+        raise RuntimeError("commit falhou")
+
+    conexao.commit = falhar_no_commit
+
+    try:
+
+        store.insert(registro_exemplo())
+
+    except RuntimeError:
+        pass
+
+    else:
+        raise AssertionError("deveria ter propagado")
+
+    assert store.session_registered == set()
+
+    conexao.commit = commit_original
+    conexao.chamadas.clear()
+    store.insert(registro_exemplo(1))
+
+    assert len(conexao.linhas("dataset_session")) == 1
+    assert store.session_registered == {"sessao-1"}
+
+
 def test_recorder_sobrevive_a_falha_do_banco():
     """Fim a fim: banco quebrado, arquivo gravado."""
+
+    from unittest.mock import patch
 
     class StoreQuebrado:
 
@@ -1637,16 +1841,18 @@ def test_recorder_sobrevive_a_falha_do_banco():
             lag=0.3,
         )
 
-        rec.observe(
-            frame(231),
-            [],
-            time.monotonic() + 1.0,
-            "NORMAL",
-        )
+        with patch("dataset.recorder.DATASET_NEGATIVE_INTERVAL", 0):
+
+            rec.observe(
+                frame(231),
+                [],
+                time.monotonic() + 1.0,
+                "NORMAL",
+            )
 
         rec.stop()
 
-        indice = pasta / "samples.jsonl"
+        indice = layout.index_path(layout.shard_root(pasta, 1080, 2400))
 
         assert indice.exists(), "o arquivo é o que não se recupera"
 

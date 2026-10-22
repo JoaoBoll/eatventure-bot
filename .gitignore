@@ -11,6 +11,7 @@ venv/
 
 # Saída solta
 output.txt
+/logs/
 
 # Capturas de trabalho do template_selector: descartáveis.
 tests/capture/
@@ -26,9 +27,15 @@ tests/capture/
 
 # Cache de features já extraídas: derivado do dataset e regenerável.
 /dataset/cache/
+/dataset/.index.lock
+/dataset/.training.lock
+/dataset/.cleanup/
 
 # Modelo treinado: derivado do cache, regenerado a cada `train_ai.py` local.
 /IA/*.joblib
+/IA/models/
+/IA/*.current.json
+/IA/training_reports/
 
 
 /dataset_to_unify/images

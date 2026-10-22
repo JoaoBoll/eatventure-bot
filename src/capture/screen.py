@@ -6,6 +6,7 @@ import subprocess
 import threading
 import time
 import os
+import posixpath
 
 import av
 import cv2
@@ -48,6 +49,8 @@ class ScreenCapture:
         self.socket_name = "scrcpy"
 
         self.first_chunk = None  # Primeiro pedaço do stream (H.264 real, não descartável)
+        self._forward_port = None
+        self._server_pushed = False
 
         self.running = False
         self.capture_thread = None
@@ -73,16 +76,31 @@ class ScreenCapture:
 
     def start(self):
 
+        if self.running:
+            return
+
+        if self.capture_thread and self.capture_thread.is_alive():
+            raise RuntimeError("A captura anterior ainda está encerrando.")
+
+        if self.socket or self.server_process or self._forward_port is not None or self._server_pushed:
+            self.stop()
+
+        with self.condition:
+            self.latest_frame = None
+            self.latest_frame_time = 0.0
+        self._published_at = 0.0
+
         # Um scid novo por execução: o socket abstrato do
         # servidor é "scrcpy_<scid>", e um id próprio garante
         # que não colidimos com o espelho nem com sobras de
         # execuções anteriores.
         self.scid = random.randint(0, 0x7FFFFFFF)
         self.socket_name = f"scrcpy_{self.scid:08x}"
+        jar_base, jar_ext = posixpath.splitext(type(self).DEVICE_JAR)
+        self.DEVICE_JAR = f"{jar_base}-{self.scid:08x}{jar_ext}"
 
         logger.info("Iniciando scrcpy-server (socket @%s)...", self.socket_name)
 
-        self._cleanup_forward()
         self._push_server()
         self._setup_forward()
         self._start_server()
@@ -212,10 +230,10 @@ class ScreenCapture:
 
                 return candidato, data
 
+            self._fecha(candidato)
+
             if not morto:
                 break
-
-            self._fecha(candidato)
 
             time.sleep(0.15)
 
@@ -253,6 +271,18 @@ class ScreenCapture:
 
         self.first_chunk = None
 
+        try:
+            self._receive(pendente)
+        finally:
+            # Acorda quem espera mesmo se a conversão do frame falhar.
+            with self.condition:
+                self.running = False
+                self.condition.notify_all()
+
+    def _receive(self, pendente):
+
+        stream = self.socket
+
         while self.running:
 
             if pendente is not None:
@@ -260,13 +290,14 @@ class ScreenCapture:
                 data = pendente
                 pendente = None
 
-                self._decode(data)
+                if not self._decode(data):
+                    break
 
                 continue
 
             try:
 
-                data = self.socket.recv(65536)
+                data = stream.recv(65536)
 
             except socket.timeout:
 
@@ -296,13 +327,6 @@ class ScreenCapture:
 
             if not self._decode(data):
                 break
-
-        # Acorda quem estiver esperando frame.
-        with self.condition:
-
-            self.running = False
-
-            self.condition.notify_all()
 
     def _decode(self, data):
         """Retorna False quando o stream terminou (EOF)."""
@@ -403,45 +427,46 @@ class ScreenCapture:
 
     def _push_server(self):
 
-            # Verifica se o caminho do scrcpy-server está configurado e existe
-            if not self.SERVER_PATH:
-                raise RuntimeError(
-                    "Caminho do scrcpy-server não configurado (SCRCPY_SERVER_PATH vazio). "
-                    "Instale scrcpy no PATH ou coloque o scrcpy-server*.jar em tools/scrcpy e tente novamente."
-                )
-
-            if not os.path.exists(self.SERVER_PATH):
-                raise RuntimeError(
-                    f"scrcpy-server não encontrado em '{self.SERVER_PATH}'. Verifique SCRCPY_SERVER_PATH."
-                )
-
-            result = subprocess.run(
-                self._adb(
-                    "push",
-                    self.SERVER_PATH,
-                    self.DEVICE_JAR,
-                ),
-                capture_output=True,
-                text=True,
+        if not self.SERVER_PATH:
+            raise RuntimeError(
+                "Caminho do scrcpy-server não configurado (SCRCPY_SERVER_PATH vazio). "
+                "Instale scrcpy no PATH ou coloque o scrcpy-server*.jar em tools/scrcpy e tente novamente."
             )
 
-            if result.returncode != 0:
+        if not os.path.exists(self.SERVER_PATH):
+            raise RuntimeError(
+                f"scrcpy-server não encontrado em '{self.SERVER_PATH}'. Verifique SCRCPY_SERVER_PATH."
+            )
 
-                raise RuntimeError(
-                    "Erro ao enviar scrcpy-server:\n"
-                    + (result.stderr or "")
-                )
+        result = subprocess.run(
+            self._adb("push", self.SERVER_PATH, self.DEVICE_JAR),
+            capture_output=True,
+            text=True,
+            timeout=15.0,
+        )
+
+        if result.returncode != 0:
+            raise RuntimeError("Erro ao enviar scrcpy-server:\n" + (result.stderr or ""))
+
+        self._server_pushed = True
 
     def _setup_forward(self):
 
-        subprocess.run(
+        result = subprocess.run(
             self._adb(
                 "forward",
-                f"tcp:{self.PORT}",
+                "--no-rebind",
+                f"tcp:{type(self).PORT}",
                 f"localabstract:{self.socket_name}",
             ),
             check=True,
+            capture_output=True,
+            text=True,
+            timeout=10.0,
         )
+
+        self.PORT = type(self).PORT or int(result.stdout.strip())
+        self._forward_port = self.PORT
 
     def _start_server(self):
 
@@ -485,6 +510,11 @@ class ScreenCapture:
         if self.socket:
 
             try:
+                self.socket.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+            try:
                 self.socket.close()
 
             except OSError:
@@ -493,7 +523,8 @@ class ScreenCapture:
 
         if self.capture_thread:
             self.capture_thread.join(timeout=2)
-            self.capture_thread = None
+            if not self.capture_thread.is_alive():
+                self.capture_thread = None
 
         self._cleanup_forward()
 
@@ -503,28 +534,35 @@ class ScreenCapture:
                 self.server_process.wait(timeout=2)
             except subprocess.TimeoutExpired:
                 self.server_process.kill()
+                self.server_process.wait(timeout=2)
             self.server_process = None
 
-        subprocess.run(
-            self._adb(
-                "shell",
-                "rm",
-                self.DEVICE_JAR,
-            ),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        if self._server_pushed:
+            try:
+                subprocess.run(
+                    self._adb("shell", "rm", self.DEVICE_JAR),
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=5.0,
+                )
+            except (OSError, subprocess.SubprocessError) as error:
+                logger.warning("Não foi possível remover o servidor: %s", error)
+            self._server_pushed = False
 
         logger.info("Captura encerrada.")
 
     def _cleanup_forward(self):
 
-        subprocess.run(
-            self._adb(
-                "forward",
-                "--remove",
-                f"tcp:{self.PORT}",
-            ),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        if self._forward_port is None:
+            return
+
+        try:
+            subprocess.run(
+                self._adb("forward", "--remove", f"tcp:{self._forward_port}"),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=5.0,
+            )
+        except (OSError, subprocess.SubprocessError) as error:
+            logger.warning("Não foi possível remover o túnel: %s", error)
+        self._forward_port = None

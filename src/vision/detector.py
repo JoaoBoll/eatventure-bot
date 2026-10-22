@@ -28,6 +28,7 @@ from core.config import (
     ESCALA_LIBERA_SECAS,
     ESCALA_UNICA_POR_TEMPLATE,
     LEARN_RESOLUTION_TEMPLATES,
+    TEMPLATE_REFRESH_INTERVAL,
     MAX_DETECTION_AGE,
     TEMPLATES_WATCH_INTERVAL,
     MAX_MATCHES_PER_TEMPLATE,
@@ -70,6 +71,8 @@ FALLBACK_SELECTOR_DIR = TEMPLATES_DIR / "default_selector"
 
 # Abaixo deste tamanho a redução destrói o template.
 MIN_COARSE_SIDE = 12
+_REFRESH_FRAME = object()
+_LEARN_CANDIDATE = object()
 
 
 class Detector:
@@ -84,13 +87,18 @@ class Detector:
         coarse_margin=COARSE_MARGIN,
         use_defaults=True,
         learn_only_actions=False,
+        learn_resolution_templates=None,
     ):
 
-        # False: busca só os overrides da resolução (rápido, mas cego onde
-        # ainda não há override) — para o bot rodar enquanto outro processo
-        # (main_layouts.py) escaneia os defaults e atualiza os overrides.
+        # False: busca somente overrides; os existentes seguem atualizados no worker.
         self.use_defaults = use_defaults
+        # Restringe a descoberta inicial; os existentes continuam atualizados.
         self.learn_only_actions = learn_only_actions
+        self.learn_resolution_templates = (
+            LEARN_RESOLUTION_TEMPLATES
+            if learn_resolution_templates is None
+            else learn_resolution_templates
+        )
 
         # Similaridade do formato/padrão
         self.threshold = threshold
@@ -127,17 +135,19 @@ class Detector:
         # aprendido invalida o merge daquela resolução, e sem este cache
         # isso obrigaria reescalar todos os defaults no frame seguinte.
         self._defaults_cache = {}
+        self._default_variants_cache = {}
+        self._defaults_selection = {}
+        self._prefer_active_scale = False
 
         # ROI em pixels por (categoria, largura, altura).
         self._roi_cache = {}
 
-        # (resolução, categoria) -> {nome_base: (escala que bateu, quando)}.
-        # Enquanto há escala conhecida, a passada olha só ela — as outras
-        # variantes do pente existem no cache mas não são procuradas.
+        # (resolução, categoria) -> {nome: (escala, confiança, quando, vistos)}.
+        # Após a calibração, a passada olha só a variante vencedora.
         self._escala_ativa = {}
 
-        # (resolução, categoria) -> passadas dadas, para rotacionar a sonda
-        # de escala dos templates que ainda não bateram nenhuma vez.
+        # (resolução, categoria) -> passadas dadas, para rotacionar a fila
+        # dos templates frios quando há um teto de busca.
         self._sonda = {}
 
         # (resolução, categoria) -> passadas completas seguidas sem detecção.
@@ -170,19 +180,27 @@ class Detector:
         # nasceram na resolução do device).
         self._resolution_templates = {}
 
-        # (chave, categoria, nome) -> confiança do match que gerou a versão
-        # salva do override. Nova candidata só substitui se vier com
-        # confiança maior — o override melhora com o tempo, nunca piora.
+        # Fidelidade do último recorte aprovado, sem exigir melhora histórica.
         self._fidelity = {}
+        self._learned_sequence = {}
+        self._defaults_generation = 0
+        self._learn_writing = False
 
         # Protege _fidelity/_resolution_templates/_scaled_cache de corrida
         # entre a thread de visão (detect) e a thread de aprendizado.
         self._learn_lock = threading.Lock()
 
-        # Fila descartável: a thread de visão só copia o recorte (barato) e
-        # devolve — quem grava em disco é a thread de aprendizado, para
-        # não bloquear o detect() com I/O.
+        # Uma entrada por identidade pendente mantém o último recorte sem
+        # acumular cópias enquanto a thread de aprendizado grava em disco.
         self._learn_queue = queue.Queue()
+        self._learn_queue_lock = threading.Lock()
+        self._learn_pending = {}
+        self._learn_stopping = False
+        self._learn_sequence = 0
+        self._refresh_frame = None
+        self._refresh_pending = False
+        self._refresh_started_at = None
+        self._refresh_scanner = None
 
         self._learn_thread = threading.Thread(
             target=self._learn_worker,
@@ -190,7 +208,8 @@ class Detector:
             daemon=True,
         )
 
-        self._learn_thread.start()
+        if self.learn_resolution_templates:
+            self._learn_thread.start()
 
         # (mtime mais recente, total de .png) na última checagem — permite
         # notar template novo/editado na pasta sem reiniciar o bot.
@@ -219,6 +238,28 @@ class Detector:
         self._miss_at = 0.0
 
         self.load_templates()
+
+    def stop(self, timeout=5.0):
+        """Drena o aprendizado pendente após a visão parar e encerra a thread."""
+
+        with self._learn_queue_lock:
+
+            if not self._learn_stopping:
+                self._learn_stopping = True
+                self._refresh_frame = None
+                self._refresh_pending = False
+                if self._learn_thread.ident is not None:
+                    self._learn_queue.put_nowait(None)
+
+        if self._learn_thread.is_alive():
+            self._learn_thread.join(timeout=timeout)
+
+        stopped = not self._learn_thread.is_alive()
+
+        if not stopped:
+            logger.warning("Aprendizado ainda encerrando após %.1fs", timeout)
+
+        return stopped
 
     def _coarse_scale_for(self, smallest_side):
         """Menor escala com MIN_COARSE_SIDE de lado; arredonda para cima na grade (opção mais segura)."""
@@ -265,9 +306,13 @@ class Detector:
 
         if not manter_defaults:
 
+            self._defaults_generation += 1
+
             self.templates.clear()
             self.by_category.clear()
             self._defaults_cache.clear()
+            self._default_variants_cache.clear()
+            self._defaults_selection.clear()
             self._escala_ativa.clear()
             self._sonda.clear()
             self._secas.clear()
@@ -452,15 +497,12 @@ class Detector:
         adiantada (nunca mais haveria reload). O rglob sai na thread de
         aprendizado, não na de visão."""
 
-        if self._templates_signature_cache is None:
-            return
-
-        defaults, _ = self._templates_signature_cache
-
-        self._templates_signature_cache = (
-            defaults,
-            self._assina_pastas(self._pastas_resolucao()),
-        )
+        assinatura = self._assina_pastas(self._pastas_resolucao())
+        with self._learn_lock:
+            if self._templates_signature_cache is None:
+                return
+            defaults, _ = self._templates_signature_cache
+            self._templates_signature_cache = (defaults, assinatura)
 
     def _maybe_reload_templates(self):
         """Recarrega do disco quando a pasta de templates muda — permite
@@ -486,6 +528,9 @@ class Detector:
         # _load_templates_locked (não load_templates) porque o lock não é
         # reentrante.
         with self._learn_lock:
+
+            if self._learn_writing:
+                return
 
             assinatura = self._templates_signature()
 
@@ -548,7 +593,9 @@ class Detector:
         if not largura.isdigit() or not altura.isdigit():
             return None
 
-        return int(largura), int(altura)
+        resolucao = int(largura), int(altura)
+
+        return resolucao if all(resolucao) else None
 
     # "1080x2400_item_001.png" -> ("1080x2400", "item_001.png"). O default
     # acumula recortes de devices diferentes, então o nome carrega a
@@ -616,8 +663,7 @@ class Detector:
         return resolution_dir / "_fidelity.json"
 
     def _load_fidelity(self, chave, resolution_dir):
-        """Carrega a confiança salva de cada override desta resolução — sem
-        entrada aqui, a próxima candidata (mesmo fraca) substitui de cara."""
+        """Carrega a fidelidade do último recorte salvo nesta resolução."""
 
         caminho = self._fidelity_path(resolution_dir)
 
@@ -652,16 +698,16 @@ class Detector:
             ] = float(confianca)
 
     def _save_fidelity(self, chave):
-        """Persiste a fidelidade dos overrides desta resolução — sem isto, um
-        restart esquece a confiança e a próxima candidata substitui à toa."""
+        """Persiste a fidelidade atual para diagnóstico."""
 
         resolution_dir = TEMPLATES_DIR / f"{chave[0]}x{chave[1]}"
 
-        dados = {
-            f"{categoria}/{nome}": confianca
-            for (res, categoria, nome), confianca in self._fidelity.items()
-            if res == chave
-        }
+        with self._learn_lock:
+            dados = {
+                f"{categoria}/{nome}": confianca
+                for (res, categoria, nome), confianca in self._fidelity.items()
+                if res == chave
+            }
 
         try:
 
@@ -911,7 +957,7 @@ class Detector:
         )
 
     def _templates_for(self, frame_width, frame_height):
-        """Templates deste frame por categoria: default (reescalado para o frame, em várias escalas) + overrides da pasta do device, cacheados por resolução."""
+        """Overrides nativos e defaults apenas onde ainda falta override."""
 
         chave = (frame_width, frame_height)
 
@@ -938,11 +984,16 @@ class Detector:
                 }
             )
 
-        default_categorias = (
-            self._defaults_for(frame_width, frame_height)
-            if self.use_defaults
-            else {}
-        )
+        cobertos = {
+            (categoria, self._base_name(template["name"]))
+            for categoria, lista in (extras or {}).items()
+            for template in lista
+        }
+        faltantes = [
+            template for template in self.templates
+            if (template["category"], self._base_name(template["name"])) not in cobertos
+        ] if self.use_defaults else []
+        default_categorias = self._defaults_for(frame_width, frame_height, faltantes)
 
         # Sempre uma cópia, nunca o próprio dict de _defaults_cache: os dois
         # caches são invalidados em momentos diferentes (override aprendido
@@ -955,17 +1006,9 @@ class Detector:
 
         if extras:
 
-            # Override não substitui o default na busca — só entra na
-            # frente. Se ele não bater neste frame, o default do mesmo nome
-            # ainda está na lista e pode salvar a detecção. Tirar as
-            # variantes de escala daqui tiraria justamente a que está
-            # vencendo neste device, e a sonda de escala já faz o pente
-            # inteiro custar 1 match por passada — não há o que economizar.
             for categoria, lista in extras.items():
 
-                cacheados[categoria] = (
-                    lista + cacheados.get(categoria, [])
-                )
+                cacheados[categoria] = lista + cacheados.get(categoria, [])
 
         with self._learn_lock:
 
@@ -977,30 +1020,42 @@ class Detector:
 
         return cacheados
 
-    def _defaults_for(self, frame_width, frame_height):
-        """Defaults reescalados desta resolução, cacheados à parte do merge.
-
-        Também na referência: o zoom da câmera do jogo muda o tamanho do
-        ícone na tela (medido: 10% menor derruba 0.98 -> 0.80), então escala
-        1.0 fixa deixava justo a resolução de referência sem a tolerância
-        que todas as outras já tinham."""
+    def _defaults_for(self, frame_width, frame_height, templates=None):
+        """Cria e mantém variantes somente dos defaults pedidos nesta resolução."""
 
         chave = (frame_width, frame_height)
+        templates = self.templates if templates is None else templates
+        selecao = tuple((template["category"], template["name"]) for template in templates)
 
-        cacheados = self._defaults_cache.get(chave)
+        if self._defaults_selection.get(chave) == selecao:
+            return self._defaults_cache[chave]
 
-        if cacheados is None:
+        anteriores = self._default_variants_cache.get(chave, {})
+        novos = [
+            template for template in templates
+            if (template["category"], template["name"]) not in anteriores
+        ]
+        gerados = self._rescale_defaults(frame_width, frame_height, novos) if novos else {}
+        variantes = {}
+        for categoria, lista in gerados.items():
+            for template in lista:
+                variantes.setdefault((categoria, template["name"]), []).append(template)
 
-            cacheados = self._rescale_defaults(
-                frame_width,
-                frame_height,
-            )
+        cacheados = {}
+        selecionados = {}
+        for identidade in selecao:
+            lista = anteriores.get(identidade, variantes.get(identidade, []))
+            selecionados[identidade] = lista
+            if lista:
+                cacheados.setdefault(identidade[0], []).extend(lista)
 
-            self._defaults_cache[chave] = cacheados
+        self._default_variants_cache[chave] = selecionados
+        self._defaults_selection[chave] = selecao
+        self._defaults_cache[chave] = cacheados
 
         return cacheados
 
-    def _rescale_defaults(self, frame_width, frame_height):
+    def _rescale_defaults(self, frame_width, frame_height, templates=None):
         """Templates default reescalados para este frame, em várias escalas ao redor da base (nenhuma aposta única: 8% de erro de escala já derruba a confiança abaixo de 0.95, e a supressão por sobreposição + ordenação por confiança escolhe o melhor entre elas)."""
 
         base = self._frame_scale(frame_width, frame_height)
@@ -1015,15 +1070,27 @@ class Detector:
 
         base_arredondada = round(base, 4)
 
-        total_escalas = len(escalas_base)
-
         categorias = {}
 
-        for template in self.templates:
+        for template in self.templates if templates is None else templates:
 
             nome_base = self._base_name(template["name"])
 
-            for indice, escala in enumerate(escalas_base):
+            # O seletor salva pixels crus de qualquer device no default;
+            # a referência global só vale para os recortes sem procedência.
+            origem = self._parse_resolution_dir_name(
+                template.get("source") or ""
+            )
+            escala_origem = (
+                self._frame_scale(*origem)
+                if origem is not None
+                else 1.0
+            )
+            variantes = []
+
+            for escala in escalas_base:
+
+                escala /= escala_origem
 
                 variante = self._rescale_template(
                     template,
@@ -1039,15 +1106,21 @@ class Detector:
                     variante = dict(template)
 
                 variante["nome_base"] = nome_base
+                variante["nome_escala"] = template["name"]
                 variante["escala"] = escala
-                variante["escala_base"] = escala == base_arredondada
+                variante["escala_base"] = (
+                    abs(escala * escala_origem - base_arredondada)
+                    < 1e-8
+                )
 
-                # Posição no pente: enquanto a escala deste template for
-                # desconhecida, cada passada sonda UMA posição (rotativa),
-                # então o custo é 1 match por template por passada em vez
-                # de 5, e a escala certa aparece em no máximo 5 passadas.
+                variantes.append(variante)
+
+            for indice, variante in enumerate(variantes):
+
+                # Só variantes viáveis contam para concluir a calibração;
+                # recortes que encolheram demais não serão procurados.
                 variante["indice_escala"] = indice
-                variante["total_escalas"] = total_escalas
+                variante["total_escalas"] = len(variantes)
 
                 categorias.setdefault(
                     variante["category"],
@@ -1079,10 +1152,9 @@ class Detector:
         frame_width,
         frame_height,
         confidence,
+        sequence=None,
     ):
-        """Chamado de dentro do detect() — tem que ser barato. Só copia o
-        recorte (pequeno) e entrega pra thread de aprendizado decidir; nada
-        de disco aqui, pra não atrasar a visão."""
+        """Entrega o último recorte por identidade sem acumular gravações."""
 
         chave = (frame_width, frame_height)
         categoria = template["category"]
@@ -1093,10 +1165,10 @@ class Detector:
         # fidelidade e o aprendizado regravaria a cada passada.
         nome = self._base_name(template["name"])
 
-        # Checagem sem lock: leitura de dict é uma operação atômica o
-        # bastante pra esse fim — o pior caso é uma candidata a mais na
-        # fila, que a thread de aprendizado descarta na conferência final.
-        if confidence <= self._fidelity.get((chave, categoria, nome), 0.0):
+        if template.get("origin", "default") != "default":
+            return
+
+        if not self.category_thresholds.get(categoria, self.threshold) <= confidence <= 1.0:
             return
 
         altura = template["height"]
@@ -1109,9 +1181,31 @@ class Detector:
 
         try:
 
-            self._learn_queue.put_nowait(
-                (categoria, nome, chave, crop.copy(), confidence)
-            )
+            with self._learn_queue_lock:
+
+                if self._learn_stopping:
+                    return
+
+                if sequence is None:
+                    self._learn_sequence += 1
+                    sequence = self._learn_sequence
+                else:
+                    self._learn_sequence = max(self._learn_sequence, sequence)
+
+                identity = (chave, categoria, nome)
+                pending = self._learn_pending.get(identity)
+                if pending is not None and sequence < pending[5]:
+                    return
+
+                if pending is not None and np.array_equal(crop, pending[3]):
+                    crop = pending[3]
+                else:
+                    crop = crop.copy()
+
+                candidato = (categoria, nome, chave, crop, confidence, sequence)
+                if pending is None:
+                    self._learn_queue.put_nowait((_LEARN_CANDIDATE, identity))
+                self._learn_pending[identity] = candidato
 
         except queue.Full:
             pass
@@ -1119,7 +1213,7 @@ class Detector:
     def learn_action(self, frame, detection):
         """Aprende somente a detecção que originou uma ação executada."""
 
-        if not LEARN_RESOLUTION_TEMPLATES or frame is None:
+        if not self.learn_resolution_templates or frame is None:
             return
 
         template = detection.get("_template") if detection else None
@@ -1135,11 +1229,59 @@ class Detector:
             frame.shape[1],
             frame.shape[0],
             detection.get("confidence", 0.0),
+            detection.get("_learn_sequence"),
         )
 
+    def _queue_refresh_frame(self, frame):
+        if not self.learn_resolution_templates:
+            return None
+
+        chave = (frame.shape[1], frame.shape[0])
+        with self._learn_lock:
+            coberto = bool(self._resolution_templates.get(chave))
+
+        with self._learn_queue_lock:
+            if self._learn_stopping:
+                return None
+
+            self._learn_sequence += 1
+            sequence = self._learn_sequence
+
+            if not coberto:
+                return sequence
+
+            now = time.monotonic()
+            if (
+                not self._refresh_pending
+                and self._refresh_started_at is not None
+                and now - self._refresh_started_at < TEMPLATE_REFRESH_INTERVAL
+            ):
+                return sequence
+
+            self._refresh_frame = (frame.copy(), sequence)
+            if not self._refresh_pending:
+                self._refresh_pending = True
+                self._learn_queue.put_nowait(_REFRESH_FRAME)
+
+            return sequence
+
+    def _refresh_defaults(self, frame, sequence):
+        if self._refresh_scanner is None:
+            from vision.template_updater import DefaultTemplateScanner
+
+            self._refresh_scanner = DefaultTemplateScanner(self)
+
+        detections = self._refresh_scanner.detect(frame)
+        height, width = frame.shape[:2]
+        for detection in detections:
+            self._queue_learn_candidate(
+                frame, detection["_template"],
+                detection["x"], detection["y"], width, height,
+                detection["confidence"], sequence,
+            )
+
     def _learn_worker(self):
-        """Roda numa thread própria: grava em disco e atualiza os overrides
-        em uso sem bloquear o detect() da thread de visão."""
+        """Atualiza defaults cobertos e grava recortes fora da visão principal."""
 
         while True:
 
@@ -1147,13 +1289,33 @@ class Detector:
 
             try:
 
-                self._process_learn_candidate(*item)
+                if item is None:
+                    return
+
+                if item is _REFRESH_FRAME:
+                    with self._learn_queue_lock:
+                        pending = self._refresh_frame
+                        self._refresh_frame = None
+                        self._refresh_pending = False
+                        self._refresh_started_at = time.monotonic()
+                    if pending is not None:
+                        self._refresh_defaults(*pending)
+                elif item[0] is _LEARN_CANDIDATE:
+                    with self._learn_queue_lock:
+                        pending = self._learn_pending.pop(item[1], None)
+                    if pending is not None:
+                        self._process_learn_candidate(*pending)
+                else:
+                    self._process_learn_candidate(*item)
 
             except Exception:
 
                 logger.exception(
                     "Erro processando candidata de aprendizado"
                 )
+
+            finally:
+                self._learn_queue.task_done()
 
     def _process_learn_candidate(
         self,
@@ -1162,15 +1324,39 @@ class Detector:
         chave,
         crop,
         confidence,
+        sequence=None,
     ):
 
         fidelity_id = (chave, categoria, nome)
 
+        if not self.category_thresholds.get(categoria, self.threshold) <= confidence <= 1.0:
+            return
+
         with self._learn_lock:
 
-            if confidence <= self._fidelity.get(fidelity_id, 0.0):
+            if sequence is not None and sequence < self._learned_sequence.get(fidelity_id, -1):
                 return
 
+            anterior = next((
+                template for template in self._resolution_templates.get(chave, {}).get(categoria, [])
+                if self._base_name(template["name"]) == nome
+            ), None)
+            if anterior is not None and np.array_equal(anterior.get("image"), crop):
+                self._fidelity[fidelity_id] = confidence
+                if sequence is not None:
+                    self._learned_sequence[fidelity_id] = sequence
+                return
+
+            self._learn_writing = True
+
+        try:
+            self._write_learn_candidate(categoria, nome, chave, crop, confidence, sequence)
+        finally:
+            with self._learn_lock:
+                self._learn_writing = False
+
+    def _write_learn_candidate(self, categoria, nome, chave, crop, confidence, sequence):
+        fidelity_id = (chave, categoria, nome)
         frame_width, frame_height = chave
 
         destino_dir = (
@@ -1202,13 +1388,11 @@ class Detector:
 
         with self._learn_lock:
 
-            # Outra candidata pode ter vencido enquanto gravávamos.
-            if confidence <= self._fidelity.get(fidelity_id, 0.0):
-                return
-
             anterior = self._fidelity.get(fidelity_id)
 
             self._fidelity[fidelity_id] = confidence
+            if sequence is not None:
+                self._learned_sequence[fidelity_id] = sequence
 
             lista = self._resolution_templates.setdefault(
                 chave, {}
@@ -1231,9 +1415,8 @@ class Detector:
 
             self._overrides_versao += 1
 
-            self._save_fidelity(chave)
-
-            self._reassina_overrides()
+        self._save_fidelity(chave)
+        self._reassina_overrides()
 
         logger.info(
             "Override %dx%d %s/%s: fidelidade %s -> %.4f",
@@ -1383,11 +1566,10 @@ class Detector:
         """Esta variante entra na passada?
 
         Override entra sempre (nasceu na resolução do device, não tem pente).
-        Escala já promovida: só a variante dela. Caso contrário, só as variantes
-        ainda não vistas — 1 match por passada em vez dos 5 do pente, com o pente
-        inteiro visto em no máximo 5 passadas."""
+        Escala já promovida: só a variante dela. Durante a calibração,
+        mantém a melhor e examina as variantes ainda não vistas."""
 
-        nome_base = template.get("nome_base")
+        nome_base = template.get("nome_escala", template.get("nome_base"))
 
         if nome_base is None or not ESCALA_UNICA_POR_TEMPLATE:
             return True
@@ -1397,7 +1579,7 @@ class Detector:
         if entrada is None:
             return True
 
-        _, _, quando, vistos = entrada
+        escala, _, quando, vistos = entrada
 
         if agora - quando > QUENTES_TTL:
 
@@ -1413,10 +1595,9 @@ class Detector:
 
         if vistos == completo:
             # Promovida: só a escala vencedora
-            return vistos >> indice & 1
+            return template["escala"] == escala
 
-        # Provisória: só escalas não-vistas
-        return not (vistos >> indice & 1)
+        return template["escala"] == escala or not (vistos >> indice & 1)
 
     @staticmethod
     def _anota_escala(
@@ -1425,40 +1606,43 @@ class Detector:
         confidence,
         agora,
     ):
-        """Registra a escala que bateu. Marca o bit de vistos e compara
-        confiança. Promove quando todas as escalas foram vistas."""
+        """Registra a escala examinada; confiança None significa que não
+        bateu. Promove a melhor quando todas as variantes foram vistas."""
 
-        nome_base = template["nome_base"]
+        nome_base = template.get("nome_escala", template["nome_base"])
         indice = template.get("indice_escala", 0)
-        total = template.get("total_escalas") or 1
-        completo = (1 << total) - 1
 
         anterior = escalas_ativas.get(nome_base)
 
         if anterior is None:
 
-            escalas_ativas[nome_base] = (
-                template["escala"],
-                confidence,
-                agora,
-                1 << indice,
-            )
+            if confidence is not None:
+
+                escalas_ativas[nome_base] = (
+                    template["escala"],
+                    confidence,
+                    agora,
+                    1 << indice,
+                )
 
             return
 
-        escala, melhor, _, vistos = anterior
+        escala, melhor, quando, vistos = anterior
 
         vistos |= 1 << indice
 
-        if vistos < completo and confidence > melhor:
+        if confidence is not None and confidence > melhor:
 
             escala = template["escala"]
             melhor = confidence
 
+        if confidence is not None:
+            quando = agora
+
         escalas_ativas[nome_base] = (
             escala,
             melhor,
-            agora,
+            quando,
             vistos,
         )
 
@@ -1477,10 +1661,17 @@ class Detector:
         if not ativas:
             return True
 
-        total = 5
+        templates = self._scaled_cache.get(self._last_frame_size, {}).get(
+            categoria, []
+        )
 
-        for _, _, _, vistos in ativas.values():
-            if vistos == (1 << total) - 1:
+        for template in templates:
+
+            nome = template.get("nome_escala", template.get("nome_base"))
+            entrada = ativas.get(nome)
+            total = template.get("total_escalas") or 1
+
+            if entrada is not None and entrada[3] == (1 << total) - 1:
                 return False
 
         return True
@@ -1614,6 +1805,7 @@ class Detector:
             )
 
         frame_height, frame_width = frame_gray.shape[:2]
+        learn_sequence = self._queue_refresh_frame(frame_color)
 
         chave = (frame_width, frame_height)
 
@@ -1772,7 +1964,7 @@ class Detector:
                 ):
                     continue
 
-                if not exaustiva and not self._na_escala_da_vez(
+                if (not exaustiva or self._prefer_active_scale) and not self._na_escala_da_vez(
                     template,
                     escalas_ativas,
                     agora,
@@ -1846,6 +2038,7 @@ class Detector:
                             "origin": template["origin"],
                             "source": template["source"],
                             "_template": template,
+                            "_learn_sequence": learn_sequence,
 
                             "confidence": float(confidence),
                             "color_similarity": float(
@@ -1864,8 +2057,9 @@ class Detector:
                     )
 
                     if (
-                        LEARN_RESOLUTION_TEMPLATES
+                        self.learn_resolution_templates
                         and not self.learn_only_actions
+                        and origin == "default"
                     ):
 
                         self._queue_learn_candidate(
@@ -1876,7 +2070,17 @@ class Detector:
                             frame_width,
                             frame_height,
                             confidence,
+                            learn_sequence,
                         )
+
+                if template.get("nome_base") is not None:
+
+                    self._anota_escala(
+                        escalas_ativas,
+                        template,
+                        None,
+                        agora,
+                    )
 
                 # Os dois cortes só valem DEPOIS de achar: passada parcial
                 # com detecção não pode ser confundida com tela vazia, que em
@@ -1903,18 +2107,10 @@ class Detector:
 
                 # Categoria sumiu por várias passadas seguidas: pode ser o
                 # zoom da câmera do jogo, que muda a escala de tudo. Remove
-                # apenas as escalas promovidas (vistos == completo), preservando
-                # as provisórias e o acúmulo de confiança.
+                # as escalas antigas para recalibrar na próxima passada.
                 if secas >= ESCALA_LIBERA_SECAS:
 
-                    for nome in list(escalas_ativas.keys()):
-
-                        _, _, _, vistos = escalas_ativas[nome]
-
-                        total = self.templates[0].get("total_escalas", 5) if self.templates else 5
-
-                        if vistos == (1 << total) - 1:
-                            del escalas_ativas[nome]
+                    escalas_ativas.clear()
 
                     secas = 0
 

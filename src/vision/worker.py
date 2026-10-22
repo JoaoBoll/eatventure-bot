@@ -20,6 +20,7 @@ class VisionWorker:
 
         self.running = False
         self.thread = None
+        self._stop_event = threading.Event()
 
         # Inicializando para evitar AttributeError na primeira volta de _run
         self.latest_raw_frame = None
@@ -66,28 +67,38 @@ class VisionWorker:
 
     def start(self):
 
-        if self.running:
-            return
+        with self.frame_lock:
 
-        self.running = True
+            if self.thread is not None and self.thread.is_alive():
+                return
 
-        self.thread = threading.Thread(
-            target=self._run,
-            name="vision-worker",
-            daemon=True,
-        )
+            self.running = True
+            self._stop_event.clear()
 
-        self.thread.start()
+            self.thread = threading.Thread(
+                target=self._run,
+                name="vision-worker",
+                daemon=True,
+            )
+
+            self.thread.start()
 
     def stop(self):
 
-        self.running = False
+        with self.frame_lock:
 
-        if self.thread:
+            self.running = False
+            self._stop_event.set()
+            self.frame_lock.notify_all()
 
-            self.thread.join(timeout=5)
+            thread = self.thread
 
-            self.thread = None
+        if thread is not None and thread is not threading.current_thread():
+
+            thread.join(timeout=5)
+
+            if not thread.is_alive() and self.thread is thread:
+                self.thread = None
 
     def set_frame(self, frame, timestamp=None):
         """Frame bruto sem processamento. Detector reescala templates por resolução."""
@@ -194,18 +205,19 @@ class VisionWorker:
 
                 # Sem isto, um erro imediato viraria laço
                 # quente consumindo uma CPU inteira.
-                time.sleep(0.1)
+                self._stop_event.wait(0.1)
 
     def _pass(self):
         """Uma passada: aguarda frame novo, detecta, publica."""
         # Descarta frames atrasados (só o mais novo interessa)
         with self.frame_lock:
 
-            if self.latest_raw_frame is None:
+            if self.latest_raw_frame is None and self.running:
 
-                # Dorme até chegar frame. O timeout é só para
-                # o self.running voltar a ser consultado.
-                self.frame_lock.wait(0.2)
+                self.frame_lock.wait_for(
+                    lambda: self.latest_raw_frame is not None
+                    or not self.running
+                )
 
             raw_frame = self.latest_raw_frame
             frame_time = self.latest_frame_time
@@ -247,12 +259,20 @@ class VisionWorker:
 
         self.rate.tick()
 
-        with self.detection_lock:
+        with self.frame_lock:
 
-            self.detections = detections
-            self.detections_time = frame_time
+            # Uma ação pode elevar o piso enquanto detect() trabalha.
+            if self.frame_floor and frame_time <= self.frame_floor:
+                self.skipped_stale += 1
+                self.waiting_settle = True
+                return
 
-            self.detections_frame = raw_frame
+            with self.detection_lock:
+
+                self.detections = detections
+                self.detections_time = frame_time
+                self.detections_frame = raw_frame
+                self.last_error = None
 
         if self.interval:
-            time.sleep(self.interval)
+            self._stop_event.wait(self.interval)

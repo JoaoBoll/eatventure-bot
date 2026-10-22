@@ -40,17 +40,26 @@ def propose(frame, escala=0.5):
     if frame is None or frame.size == 0:
         return []
 
+    if not 0 < escala <= 1:
+        raise ValueError("escala deve ficar entre 0 (exclusivo) e 1")
+
+    altura, largura = frame.shape[:2]
+
     pequeno = (
         cv2.resize(
             frame,
-            None,
-            fx=escala,
-            fy=escala,
+            (
+                max(1, int(round(largura * escala))),
+                max(1, int(round(altura * escala))),
+            ),
             interpolation=cv2.INTER_AREA,
         )
         if escala < 1.0
         else frame
     )
+
+    escala_x = pequeno.shape[1] / largura
+    escala_y = pequeno.shape[0] / altura
 
     hsv = cv2.cvtColor(pequeno, cv2.COLOR_BGR2HSV)
 
@@ -81,11 +90,13 @@ def propose(frame, escala=0.5):
 
         x, y, w, h = cv2.boundingRect(contorno)
 
-        # De volta ao espaço do frame.
-        x = int(round(x / escala))
-        y = int(round(y / escala))
-        w = int(round(w / escala))
-        h = int(round(h / escala))
+        # O resize arredonda dimensões ímpares: use a escala efetiva de cada eixo.
+        x2 = min(largura, int(round((x + w) / escala_x)))
+        y2 = min(altura, int(round((y + h) / escala_y)))
+        x = int(round(x / escala_x))
+        y = int(round(y / escala_y))
+        w = x2 - x
+        h = y2 - y
 
         if w < MIN_SIDE or h < MIN_SIDE:
             continue

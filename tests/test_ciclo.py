@@ -242,7 +242,7 @@ def test_hud_desenha_o_ciclo():
     import numpy as np
     from vision.detector import Detector
 
-    detector = Detector()
+    detector = Detector(learn_resolution_templates=False)
 
     frame = np.zeros((2400, 1080, 3), np.uint8)
 
@@ -269,7 +269,7 @@ def test_hud_marca_travado():
     from core.config import CYCLE_STALL_FACTOR
     from vision.detector import Detector
 
-    detector = Detector()
+    detector = Detector(learn_resolution_templates=False)
 
     frame = np.zeros((2400, 1080, 3), np.uint8)
 

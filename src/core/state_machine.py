@@ -282,6 +282,17 @@ class StateMachine:
 
         return categories
 
+    def resume_after_pause(self, duration):
+        """Desconta a pausa dos prazos sem perder o estado do jogo."""
+        self.state_entered += duration
+        self.explore_anchor += duration
+        self.cycle_at += duration
+        if self.up_food_wait_start is not None:
+            self.up_food_wait_start += duration
+        self._frame = None
+        self._frame_time = None
+        self._detections = []
+
     def update(
         self,
         detections,
@@ -290,13 +301,12 @@ class StateMachine:
         frame_time=None,
     ):
 
+        self._frame = frame
+        self._detections = detections
+
         # Antes de qualquer return: é aqui que a ação anterior
         # recebe veredito, mesmo nos frames em que o bot não age.
         if self.recorder is not None:
-
-            self._frame = frame
-
-            self._detections = detections
 
             self.recorder.observe(
                 frame,
@@ -305,11 +315,13 @@ class StateMachine:
                 self.state,
             )
 
-        # lag é a idade do frame; guardado antes de qualquer
-        # coisa porque todo caminho de ação passa por _can_act.
-        self._frame_time = time.monotonic() - lag
-
-        self._lag = lag
+        # O timestamp original evita que tempo gasto entre a leitura
+        # do worker e este update faça um frame antigo parecer novo.
+        now = time.monotonic()
+        self._frame_time = (
+            now - lag if frame_time is None else frame_time
+        )
+        self._lag = max(0.0, now - self._frame_time)
 
         if self._timed_out():
             return
@@ -318,7 +330,7 @@ class StateMachine:
         # acerta onde o objeto ESTAVA.
         if (
             MAX_DETECTION_AGE is not None
-            and lag > MAX_DETECTION_AGE
+            and self._lag > MAX_DETECTION_AGE
         ):
 
             now = time.monotonic()
@@ -329,7 +341,7 @@ class StateMachine:
                     "Detecções com %.0f ms de atraso "
                     "(máx %.0f ms) — não vou clicar. "
                     "Detector lento demais?",
-                    lag * 1000,
+                    self._lag * 1000,
                     MAX_DETECTION_AGE * 1000,
                 )
 
@@ -413,11 +425,13 @@ class StateMachine:
         if not self._can_act():
             return False
 
+        dismiss_before = (self._dismiss_attempts, self._dismiss_rounds)
         action = self._escalate(action)
 
         if not self.action_manager.execute(action, detection):
 
             # Worker ocupado: tenta no próximo frame.
+            self._dismiss_attempts, self._dismiss_rounds = dismiss_before
             return False
 
         confidence = (
@@ -774,6 +788,10 @@ class StateMachine:
             self.state,
             elapsed,
         )
+
+        if self.state == FOOD and self._food_target is not None:
+            self._register_food_failure(self._food_target)
+            self._food_target = None
 
         self._enter(NORMAL)
 

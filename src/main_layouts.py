@@ -1,11 +1,9 @@
 """EatVenture AI — atualizador de layouts (python src/main_layouts.py).
 
 Mesma janela/visão do main.py; a única diferença é o que roda por trás:
-aqui não há StateMachine nem ações, só captura + Detector com os defaults
-ligados em todas as categorias (categories=None), o que aciona o
-aprendizado de overrides já existente em vision/detector.py
-(_queue_learn_candidate / _learn_worker) — sem custar nada ao loop do bot
-principal quando ele roda com `main.py --layout-only`.
+aqui não há StateMachine nem ações, só captura + Detector em todas as
+categorias. Aprende os overrides que faltam e atualiza os existentes em
+segundo plano, como o detector do bot.
 
 O outro processo recarrega os overrides sozinho — ver
 Detector._maybe_reload_templates / TEMPLATES_WATCH_INTERVAL. Nenhuma
@@ -119,7 +117,9 @@ def run_loop(capture, detector):
 
             break
 
-        if frame is None:
+        if frame is None or version == last_version:
+            if SHOW_AI_VISION and cv2.waitKey(1) & 0xFF == 27:
+                break
             continue
 
         last_version = version
@@ -213,12 +213,7 @@ def main(argv=None):
 
         return 1
 
-    # Espelho do scrcpy é opcional: a captura deste processo não passa por ele.
-    scrcpy_process = (
-        start_scrcpy(device_id)
-        if SHOW_SCRCPY
-        else None
-    )
+    scrcpy_process = None
 
     capture = ScreenCapture(device_id)
 
@@ -231,6 +226,9 @@ def main(argv=None):
     )
 
     try:
+
+        if SHOW_SCRCPY:
+            scrcpy_process = start_scrcpy(device_id)
 
         capture.start()
 
@@ -246,6 +244,8 @@ def main(argv=None):
     finally:
 
         logger.info("Encerrando atualizador de layouts...")
+
+        detector.stop()
 
         capture.stop()
 

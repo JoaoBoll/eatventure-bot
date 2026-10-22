@@ -14,7 +14,13 @@ import numpy as np
 
 from core import log
 from dataset import layout
+from dataset.training_files import index_lock, raw_dataset_bytes
 from core.config import (
+    AI_AUTO_TRAIN,
+    AI_PAUSE_BOT_WHILE_TRAINING,
+    AI_TRAIN_BATCH_SIZE,
+    AI_TRAIN_CHECK_INTERVAL,
+    AI_TRAIN_JOBS,
     DATASET_ACTIONS,
     DATASET_DIR,
     DATASET_HASH_SIZE,
@@ -73,6 +79,7 @@ class DatasetRecorder:
         store=None,
         session=None,
         enabled=True,
+        auto_train=None,
     ):
 
         self.root = Path(
@@ -81,10 +88,21 @@ class DatasetRecorder:
 
         # Índice consultável (Postgres). None = só arquivos.
         self.store = store
+        self._store_closed = False
 
         self.session = session or uuid.uuid4().hex
 
         self.enabled = enabled
+        self.auto_trainer = None
+        enable_auto_train = AI_AUTO_TRAIN if auto_train is None else auto_train
+        if enable_auto_train:
+            from dataset.auto_train import AutoTrainer
+
+            self.auto_trainer = AutoTrainer(
+                self.root, batch_size=AI_TRAIN_BATCH_SIZE,
+                interval=AI_TRAIN_CHECK_INTERVAL, jobs=AI_TRAIN_JOBS,
+                pause_bot=AI_PAUSE_BOT_WHILE_TRAINING,
+            )
 
         # Destino é por resolução e decidido por amostra: o device pode
         # trocar de resolução no meio da sessão (outro aparelho, rotação).
@@ -114,20 +132,24 @@ class DatasetRecorder:
         # passado para a primeira sair logo.
         self.last_negative = 0.0
 
-        # Bytes já gravados nesta execução, para o teto de
-        # disco. Só conta o que esta sessão escreveu: varrer a
-        # pasta a cada amostra custaria I/O à toa.
         self.bytes_written = 0
+        self.disk_bytes = 0
+        self.last_disk_check = 0.0
 
         self.disk_warned = False
 
     def start(self):
 
-        if self.running or not self.enabled:
+        if (
+            self.running
+            or (self.thread is not None and self.thread.is_alive())
+            or not self.enabled
+        ):
             return
 
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
+        self._store_closed = False
         self.running = True
 
         self.thread = threading.Thread(
@@ -138,6 +160,9 @@ class DatasetRecorder:
 
         self.thread.start()
 
+        if self.auto_trainer is not None:
+            self.auto_trainer.start()
+
         logger.info(
             "Gravando dataset em %s (sessão %s)",
             self.root,
@@ -146,7 +171,16 @@ class DatasetRecorder:
 
     def stop(self):
 
+        if self.auto_trainer is not None:
+            self.auto_trainer.stop()
+
         if not self.running:
+
+            if self.thread is None or not self.thread.is_alive():
+
+                self.thread = None
+                self._close_store()
+
             return
 
         # Fecha a pendente com veredito UNKNOWN em vez de perdê-la.
@@ -154,17 +188,22 @@ class DatasetRecorder:
 
         self.running = False
 
-        try:
-            self.queue.put_nowait(None)
-
-        except queue.Full:
-            pass
-
         if self.thread:
 
             self.thread.join(timeout=10.0)
 
-            self.thread = None
+            if self.thread.is_alive():
+
+                logger.warning(
+                    "A gravação do dataset ainda está finalizando a fila."
+                )
+
+            else:
+
+                self.thread = None
+
+        if self.thread is None:
+            self._close_store()
 
         logger.info(
             "Dataset: %d gravadas (%.1f MB), %d duplicadas, "
@@ -176,9 +215,14 @@ class DatasetRecorder:
             dict(sorted(self.by_action.items())) or "",
         )
 
-        if self.store:
-
-            self.store.close()
+    def prepare_for_training(self):
+        with self.queue.all_tasks_done:
+            if self.queue.unfinished_tasks:
+                return False
+        # A tela após o treino não pode julgar o resultado do último toque.
+        self._flush_pending(UNKNOWN, None)
+        with self.queue.all_tasks_done:
+            return self.queue.unfinished_tasks == 0
 
     def on_action(
         self,
@@ -397,28 +441,45 @@ class DatasetRecorder:
 
     def _run(self):
 
-        while self.running:
+        try:
 
-            try:
+            # stop() interrompe a coleta; o que já entrou na fila ainda vale.
+            while self.running or not self.queue.empty():
 
-                sample = self.queue.get(timeout=0.2)
+                try:
 
-            except queue.Empty:
-                continue
+                    sample = self.queue.get(timeout=0.2)
 
-            if sample is None:
-                break
+                except queue.Empty:
+                    continue
 
-            try:
+                try:
 
-                self._write(sample)
+                    self._write(sample)
 
-            except Exception as error:
+                except Exception as error:
 
-                logger.exception(
-                    "Erro gravando amostra: %s",
-                    error,
-                )
+                    logger.exception(
+                        "Erro gravando amostra: %s",
+                        error,
+                    )
+
+                finally:
+
+                    self.queue.task_done()
+
+        finally:
+
+            self._close_store()
+
+    def _close_store(self):
+
+        with self.lock:
+
+            if self.store and not self._store_closed:
+
+                self._store_closed = True
+                self.store.close()
 
     def _write(self, sample):
 
@@ -427,20 +488,17 @@ class DatasetRecorder:
         if frame is None:
             return
 
-        # Teto de disco: o bot roda horas sem ninguém olhando.
-        if (
-            DATASET_MAX_DISK_MB
-            and self.bytes_written >= DATASET_MAX_DISK_MB * 1_000_000
-        ):
+        # A coleta pode enfileirar várias amostras antes de saved avançar.
+        if DATASET_MAX_SAMPLES and self.saved >= DATASET_MAX_SAMPLES:
+            return
+
+        if self._disk_full():
 
             if not self.disk_warned:
 
                 logger.warning(
-                    "Dataset chegou ao teto de %d MB — parando "
-                    "de gravar. O bot continua jogando. Suba "
-                    "DATASET_MAX_DISK_MB, mude "
-                    "DATASET_IMAGE_FORMAT para jpg (4.3x menor) "
-                    "ou mova a pasta.",
+                    "Dataset chegou ao teto de %d MB; a coleta "
+                    "aguardará a liberação de espaço.",
                     DATASET_MAX_DISK_MB,
                 )
 
@@ -522,18 +580,20 @@ class DatasetRecorder:
 
         registro = self._record(sample, caminho, chave, shard)
 
-        with layout.index_path(shard).open(
-            "a",
-            encoding="utf-8",
-        ) as arquivo:
+        with index_lock(self.root):
+            with layout.index_path(shard).open(
+                "a", encoding="utf-8",
+            ) as arquivo:
+                arquivo.write(json.dumps(registro, ensure_ascii=False) + "\n")
 
-            arquivo.write(
-                json.dumps(registro, ensure_ascii=False) + "\n"
-            )
+        if self.auto_trainer is not None:
+            self.auto_trainer.notify()
 
         self.saved += 1
 
-        self.bytes_written += caminho.stat().st_size
+        tamanho = caminho.stat().st_size
+        self.bytes_written += tamanho
+        self.disk_bytes += tamanho
 
         rotulo = sample.action or "negativo"
 
@@ -553,6 +613,20 @@ class DatasetRecorder:
                     "foi gravado): %s",
                     error,
                 )
+
+    def _disk_full(self):
+        limite = DATASET_MAX_DISK_MB * 1_000_000
+        if not limite or self.disk_bytes < limite:
+            return False
+        agora = time.monotonic()
+        if agora - self.last_disk_check >= 5.0:
+            # O treino pode ter liberado as imagens já contabilizadas nesta sessão.
+            self.disk_bytes = raw_dataset_bytes(self.root)
+            self.last_disk_check = agora
+        if self.disk_bytes < limite:
+            self.disk_warned = False
+            return False
+        return True
 
     def _record(self, sample, caminho, phash, shard):
 

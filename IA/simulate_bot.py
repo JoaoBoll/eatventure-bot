@@ -68,9 +68,10 @@ def simulate_bot(args):
 
     from dataset_io import action_label, read_index, box_labels
     from features import FEATURE_SIZE, box_features
+    from model_updates import resolve_publication
 
     raiz = Path(args.dataset_root).expanduser().resolve()
-    modelo_path = Path(args.model).expanduser().resolve()
+    modelo_path = resolve_publication(args.model).model_path
 
     print(f"dataset ......... {raiz}")
     print(f"modelo .......... {modelo_path}")
