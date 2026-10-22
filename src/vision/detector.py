@@ -77,6 +77,38 @@ _LEARN_CANDIDATE = object()
 
 class Detector:
 
+    @classmethod
+    def log_template_inventory(cls):
+        """Conta candidatos sem carregar imagens nem iniciar o aprendizado."""
+        counts = {}
+        try:
+            folders = TEMPLATES_DIR.iterdir() if TEMPLATES_DIR.is_dir() else ()
+            for folder in sorted(folders):
+                if not folder.is_dir() or (
+                    folder != DEFAULT_TEMPLATES_DIR
+                    and cls._parse_resolution_dir_name(folder.name) is None
+                ):
+                    continue
+                counts[folder.name] = sum(
+                    1
+                    for category in folder.iterdir() if category.is_dir()
+                    for path in category.glob("*.png") if path.is_file()
+                )
+        except OSError as error:
+            logger.warning("Não foi possível contar os arquivos de templates: %s", error)
+            return
+
+        defaults = counts.pop(DEFAULT_TEMPLATES_DIR.name, 0)
+        overrides = sum(counts.values())
+        logger.info(
+            "Arquivos de templates encontrados: %d total | %d default | "
+            "%d por resolução %s",
+            defaults + overrides,
+            defaults,
+            overrides,
+            counts,
+        )
+
     def __init__(
         self,
         threshold=SHAPE_THRESHOLD,
@@ -392,9 +424,15 @@ class Detector:
 
                 self._load_fidelity(resolucao, resolution_dir)
 
+        overrides = {
+            f"{width}x{height}": sum(len(items) for items in categories.values())
+            for (width, height), categories in sorted(self._resolution_templates.items())
+        }
+        override_count = sum(overrides.values())
         logger.info(
-            "Templates: %d default em %d categorias %s | "
-            "overrides para %d resolução(ões) %s",
+            "Templates carregados: %d total | %d default em %d categorias %s | "
+            "%d overrides para %d resolução(ões) %s",
+            len(self.templates) + override_count,
             len(self.templates),
             len(self.by_category),
             {
@@ -403,11 +441,9 @@ class Detector:
                     self.by_category.items()
                 )
             },
-            len(self._resolution_templates),
-            sorted(
-                f"{w}x{h}"
-                for w, h in self._resolution_templates
-            ),
+            override_count,
+            len(overrides),
+            overrides,
         )
 
         # Sem template não há detecção — mesmo sintoma de detector quebrado (bot parado).

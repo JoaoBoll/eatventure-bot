@@ -395,6 +395,8 @@ def main(argv=None):
 
     log.setup(LOG_LEVEL, log_dir=LOG_DIR if args.log else None)
 
+    Detector.log_template_inventory()
+
     # --device manda no config, o config manda na pergunta.
     # Ctrl+C aqui é desistência do usuário, não erro.
     try:
