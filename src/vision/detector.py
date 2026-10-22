@@ -77,38 +77,6 @@ _LEARN_CANDIDATE = object()
 
 class Detector:
 
-    @classmethod
-    def log_template_inventory(cls):
-        """Conta candidatos sem carregar imagens nem iniciar o aprendizado."""
-        counts = {}
-        try:
-            folders = TEMPLATES_DIR.iterdir() if TEMPLATES_DIR.is_dir() else ()
-            for folder in sorted(folders):
-                if not folder.is_dir() or (
-                    folder != DEFAULT_TEMPLATES_DIR
-                    and cls._parse_resolution_dir_name(folder.name) is None
-                ):
-                    continue
-                counts[folder.name] = sum(
-                    1
-                    for category in folder.iterdir() if category.is_dir()
-                    for path in category.glob("*.png") if path.is_file()
-                )
-        except OSError as error:
-            logger.warning("Não foi possível contar os arquivos de templates: %s", error)
-            return
-
-        defaults = counts.pop(DEFAULT_TEMPLATES_DIR.name, 0)
-        overrides = sum(counts.values())
-        logger.info(
-            "Arquivos de templates encontrados: %d total | %d default | "
-            "%d por resolução %s",
-            defaults + overrides,
-            defaults,
-            overrides,
-            counts,
-        )
-
     def __init__(
         self,
         threshold=SHAPE_THRESHOLD,
@@ -653,6 +621,14 @@ class Detector:
         """Nome sem o prefixo de resolução — mesma identidade em qualquer pasta."""
 
         return cls._split_source(name)[1]
+
+    def template_count(self):
+        with self._learn_lock:
+            return len(self.templates) + sum(
+                len(items)
+                for categories in self._resolution_templates.values()
+                for items in categories.values()
+            )
 
     def template_coverage(self, frame_width=None, frame_height=None):
         """(quantos defaults já têm override nesta resolução, total de defaults).

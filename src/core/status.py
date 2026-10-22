@@ -42,7 +42,7 @@ def formata_bateria(leitura):
     return texto
 
 
-LINHAS_BASE = 5
+LINHAS_BASE = 6
 
 
 class StatusPanel:
@@ -54,6 +54,7 @@ class StatusPanel:
         interval=0.5,
         stream=None,
         misses_line=None,
+        templates=0,
     ):
 
         self.device = device or "?"
@@ -78,7 +79,7 @@ class StatusPanel:
         self.ultimo = 0.0
         self.lock = threading.RLock()
         self._closed = False
-        self._resumo = {"estado": "iniciando"}
+        self._resumo = {"estado": "iniciando", "templates": templates}
         self._extra = None
         self._misses = None
         self._mensagem = "Aguardando eventos."
@@ -186,6 +187,7 @@ class StatusPanel:
 
         linhas = [
             f"Dispositivo conectado: {self.device}",
+            f"Templates encontrados: {resumo.get('templates', 0)}",
             f"Voou: {resumo.get('voos', 0)} vezes",
             f"Renovou: {resumo.get('reformas', 0)} vezes",
             f"Ação: {acao}",

@@ -213,6 +213,7 @@ def run_loop(
     def update_panel():
         if panel is not None:
             resumo = state_machine.summary()
+            resumo["templates"] = detector.template_count()
             if pause_started is not None:
                 resumo["estado"] = "PAUSADO PARA TREINO"
             panel.update(
@@ -395,8 +396,6 @@ def main(argv=None):
 
     log.setup(LOG_LEVEL, log_dir=LOG_DIR if args.log else None)
 
-    Detector.log_template_inventory()
-
     # --device manda no config, o config manda na pergunta.
     # Ctrl+C aqui é desistência do usuário, não erro.
     try:
@@ -451,6 +450,7 @@ def main(argv=None):
             device_id,
             interval=STATUS_PANEL_INTERVAL,
             stream=log.console_stream(),
+            templates=detector.template_count(),
         )
         if STATUS_PANEL
         else None
