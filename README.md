@@ -77,6 +77,8 @@ Enables a connection over the same Wi-Fi network. Confirm with `adb devices` bef
 
 ## Run commands
 
+The optional [web control panel](docs/painel-web.md) manages multiple devices, starts/stops bots and saves local settings per device. It runs on a headless server; the terminal commands below remain available. The panel and its setup guide are in Portuguese.
+
 Keep EatVenture open, with the screen on and unlocked.
 
 ```bash

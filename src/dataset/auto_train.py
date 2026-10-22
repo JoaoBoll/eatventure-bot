@@ -6,7 +6,7 @@ import sys
 import threading
 from pathlib import Path
 
-from core import log
+from core import config, log
 from dataset.training_files import snapshot_records, trained_sample_ids
 
 
@@ -120,6 +120,8 @@ class AutoTrainer:
             "--batch-size", str(self.batch_size),
             "--cleanup", "--jobs", str(self.jobs),
         ]
+        if config.AI_DEVICE_MODEL_DIR is not None:
+            command.extend(("--model-out", str(Path(config.AI_DEVICE_MODEL_DIR) / "category.joblib")))
         process = None
         returncode = None
         try:

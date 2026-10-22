@@ -1,0 +1,97 @@
+# Painel web opcional
+
+O painel roda no próprio servidor, sem área de trabalho, Docker ou build de frontend. O comando `python src/main.py` continua disponível independentemente dele.
+
+## Instalar e abrir
+
+Na raiz do projeto, com o ambiente virtual ativado e as dependências do bot instaladas:
+
+```bash
+python -m pip install -r requirements-web.txt
+python src/web.py --host 0.0.0.0 --port 8765
+```
+
+Abra `http://IP_DO_SERVIDOR:8765` no navegador do seu computador ou celular. Para acesso somente no próprio computador, use `python src/web.py`, que escuta em `127.0.0.1`.
+
+No primeiro início é criado um token de acesso. Leia-o em outro terminal:
+
+```bash
+cat local/dashboard.token
+```
+
+No PowerShell: `Get-Content local/dashboard.token`. Cole o token na tela de entrada. Ele fica somente na sessão do navegador. Também é possível fornecer um token próprio de pelo menos 24 caracteres pela variável `EATVENTURE_WEB_TOKEN`; nesse caso, não é criado o arquivo de token.
+
+O painel permite controlar os dispositivos autorizados no ADB desse servidor. Use a rede local ou um proxy HTTPS/VPN para acesso remoto. A porta de escuta e a autenticação do painel são independentes das portas ADB do Android.
+
+## Dispositivos e execução
+
+- **Atualizar** busca os aparelhos no ADB. Estados offline e não autorizado aparecem no painel; a autorização USB deve ser aceita no Android.
+- **Conectar Android** permite informar endereço e porta da depuração Wi-Fi. O pareamento tem endereço/porta e código próprios, diferentes da porta de conexão.
+- Selecione um ou vários aparelhos e use **Iniciar**, **Parar** ou **Reiniciar**. Cada aparelho possui processo, logs e métricas separados.
+- USB e Wi-Fi do mesmo aparelho são agrupados pelo identificador físico quando o Android o disponibiliza. USB é preferido para executar. Se esse identificador não estiver disponível, o perfil usa o serial da conexão ADB.
+- Os cards mostram estado, voos, reformas, ações, templates carregados, FPS e bateria. Valores ainda indisponíveis aparecem como `—`.
+- Os logs recentes ficam em memória, limitados a 2.000 linhas por dispositivo, e podem ser baixados. A opção **Salvar arquivo de log** mantém também o log completo no disco.
+
+O painel só gerencia processos que ele iniciou. Ao encerrar o servidor web, solicita a parada desses bots e dos treinos filhos. Fechar somente a aba do navegador mantém os bots ativos. Não inicie outra instância do bot pelo terminal para o mesmo aparelho simultaneamente.
+
+## Configurações locais por aparelho
+
+Abra o aparelho e ajuste as abas **Configurações** e **Itens**. É possível alterar fidelidade da forma/cor, FPS, intervalo de detecção, aprendizado, coleta, treino e tempos de ações. Ative **Personalizar** somente nos campos que deseja substituir.
+
+A fidelidade de forma segue esta prioridade:
+
+1. Valor personalizado para o item.
+2. Valor personalizado ou padrão da categoria.
+3. Fidelidade global de forma, quando a categoria não tem valor próprio.
+
+As opções de coleta de IA, uso exclusivo dos templates da resolução e gravação de log também são individuais. **Salvar** grava o perfil; **Reiniciar** aplica os ajustes ao bot ativo. Restaurar um item, grupo ou perfil devolve os padrões do código sem editar nenhum arquivo Python. A restauração do perfil preserva dataset, modelos, templates aprendidos e logs existentes.
+
+Os arquivos ficam em:
+
+```text
+local/
+  dashboard.token
+  devices/<hash-do-aparelho>.json
+  runtime/<hash>.status.json
+  device-data/<hash>/
+    templates/
+    dataset/
+    models/
+    logs/
+```
+
+`local/` é ignorado pelo Git. Faça backup dessa pasta para preservar os perfis e dados. Os templates compartilhados do projeto são lidos como base; o aprendizado feito pelo painel grava somente na pasta do aparelho. Modelos do treino automático também ficam separados por dispositivo. Alterações no perfil são aplicadas antes dos módulos do bot serem importados em cada processo.
+
+## Serviço no Ubuntu
+
+Exemplo de `/etc/systemd/system/eatventure-web.service`, ajustando usuário e caminhos:
+
+```ini
+[Unit]
+Description=Painel EatVenture
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sv
+WorkingDirectory=/Server/eatventure-bot
+ExecStart=/Server/eatventure-bot/.venv/bin/python /Server/eatventure-bot/src/web.py --host 0.0.0.0 --port 8765
+Restart=on-failure
+TimeoutStopSec=40
+KillMode=mixed
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Use o mesmo usuário que autorizou o ADB e que tem permissão de escrita em `local/`. Não configure múltiplos workers do Uvicorn: o supervisor dos dispositivos pertence a um único processo. `--state-dir CAMINHO` permite guardar os dados locais em outro diretório.
+
+## Verificação simulada
+
+Os testes do painel usam ADB, processos e HTTP simulados, sem servidor de rede ou dispositivos reais:
+
+```bash
+python -m pip install pytest httpx
+python -m pytest -q tests/test_device_profiles.py tests/test_dashboard_supervisor.py tests/test_dashboard_api.py tests/test_web_runtime.py
+```

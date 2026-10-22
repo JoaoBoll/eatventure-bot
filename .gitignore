@@ -12,6 +12,7 @@ venv/
 # Saída solta
 output.txt
 /logs/
+/local/
 
 # Capturas de trabalho do template_selector: descartáveis.
 tests/capture/

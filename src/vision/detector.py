@@ -12,7 +12,8 @@ import time
 import cv2
 import numpy as np
 
-from core import log
+from core import config, log
+from core.device_profiles import template_key
 from core.metrics import formata_duracao
 from core.config import (
     CATEGORY_COLOR_THRESHOLDS,
@@ -57,12 +58,13 @@ logger = log.get("detector")
 
 
 # Relativo ao arquivo, não ao cwd — não depende de rodar da raiz do repo.
-TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
+SHARED_TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
+TEMPLATES_DIR = Path(config.DEVICE_TEMPLATE_DIR) if config.DEVICE_TEMPLATE_DIR else SHARED_TEMPLATES_DIR
 
 # Templates comuns a todo device. Pastas irmãs desta, nomeadas "LARGURAxALTURA"
 # (na resolução real do frame, sem normalizar orientação), guardam extras/
 # overrides só daquele device — mescladas com estas em runtime.
-DEFAULT_TEMPLATES_DIR = TEMPLATES_DIR / "default"
+DEFAULT_TEMPLATES_DIR = SHARED_TEMPLATES_DIR / "default"
 
 # Capturas manuais fora da resolução de referência (tools/template_selector.py):
 # ficam aqui, cruas, sem entrar no default nem em nenhuma resolução — não são
@@ -105,6 +107,7 @@ class Detector:
 
         # Similaridade das cores
         self.color_threshold = color_threshold
+        self.item_thresholds = dict(config.ITEM_THRESHOLDS)
 
         self.category_thresholds = (
             CATEGORY_THRESHOLDS
@@ -347,7 +350,10 @@ class Detector:
                     [],
                 ).append(template)
 
-        for resolution_dir in sorted(TEMPLATES_DIR.iterdir()):
+        resolution_dirs = list(TEMPLATES_DIR.iterdir())
+        if config.DEVICE_TEMPLATE_DIR and TEMPLATES_DIR != SHARED_TEMPLATES_DIR and SHARED_TEMPLATES_DIR.is_dir():
+            resolution_dirs = list(SHARED_TEMPLATES_DIR.iterdir()) + resolution_dirs
+        for resolution_dir in resolution_dirs:
 
             if (
                 not resolution_dir.is_dir()
@@ -388,7 +394,11 @@ class Detector:
 
             if por_categoria:
 
-                self._resolution_templates[resolucao] = por_categoria
+                existing = self._resolution_templates.setdefault(resolucao, {})
+                for category, items in por_categoria.items():
+                    merged = {self._base_name(item["name"]): item for item in existing.get(category, [])}
+                    merged.update({self._base_name(item["name"]): item for item in items})
+                    existing[category] = list(merged.values())
 
                 self._load_fidelity(resolucao, resolution_dir)
 
@@ -461,7 +471,11 @@ class Detector:
         if not TEMPLATES_DIR.exists():
             return pastas
 
-        for pasta in sorted(TEMPLATES_DIR.iterdir()):
+        roots = [TEMPLATES_DIR]
+        if config.DEVICE_TEMPLATE_DIR and TEMPLATES_DIR != SHARED_TEMPLATES_DIR:
+            roots.append(SHARED_TEMPLATES_DIR)
+        folders = [folder for root in roots if root.is_dir() for folder in root.iterdir()]
+        for pasta in sorted(folders):
 
             if not pasta.is_dir():
                 continue
@@ -629,6 +643,11 @@ class Detector:
                 for categories in self._resolution_templates.values()
                 for items in categories.values()
             )
+
+    def _threshold_for(self, category, name):
+        return self.item_thresholds.get(
+            template_key(category, name), self.category_thresholds.get(category, self.threshold),
+        )
 
     def template_coverage(self, frame_width=None, frame_height=None):
         """(quantos defaults já têm override nesta resolução, total de defaults).
@@ -1180,7 +1199,7 @@ class Detector:
         if template.get("origin", "default") != "default":
             return
 
-        if not self.category_thresholds.get(categoria, self.threshold) <= confidence <= 1.0:
+        if not self._threshold_for(categoria, nome) <= confidence <= 1.0:
             return
 
         altura = template["height"]
@@ -1341,7 +1360,7 @@ class Detector:
 
         fidelity_id = (chave, categoria, nome)
 
-        if not self.category_thresholds.get(categoria, self.threshold) <= confidence <= 1.0:
+        if not self._threshold_for(categoria, nome) <= confidence <= 1.0:
             return
 
         with self._learn_lock:
@@ -1987,6 +2006,9 @@ class Detector:
 
                 olhados += 1
 
+                min_threshold = self._threshold_for(
+                    category, template.get("nome_base") or template["name"],
+                )
                 candidates = self._search(
                     frame_gray,
                     coarse_for(template["coarse_scale"]),

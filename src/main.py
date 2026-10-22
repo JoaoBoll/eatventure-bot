@@ -201,6 +201,7 @@ def run_loop(
     battery,
     panel=None,
     auto_trainer=None,
+    runtime=None,
 ):
 
     last_version = 0
@@ -211,11 +212,18 @@ def run_loop(
     vision_avisada = False
 
     def update_panel():
-        if panel is not None:
+        if panel is not None or runtime is not None:
             resumo = state_machine.summary()
             resumo["templates"] = detector.template_count()
             if pause_started is not None:
                 resumo["estado"] = "PAUSADO PARA TREINO"
+            if runtime is not None:
+                runtime.publish(
+                    resumo, fps=vision.get_fps(), capture_fps=capture.get_fps(),
+                    templates=resumo["templates"], battery=battery.get(),
+                )
+            if panel is None:
+                return
             panel.update(
                 resumo,
                 extra=(
@@ -226,6 +234,9 @@ def run_loop(
             )
 
     while True:
+
+        if runtime is not None and runtime.should_stop():
+            break
 
         paused = auto_trainer is not None and auto_trainer.pause_requested
         # Timeout curto para a janela do OpenCV continuar respondendo
@@ -390,7 +401,7 @@ def run_loop(
             break
 
 
-def main(argv=None):
+def main(argv=None, runtime=None):
 
     args = parse_args(argv)
 
@@ -489,6 +500,7 @@ def main(argv=None):
             battery,
             panel,
             auto_trainer=recorder.auto_trainer if recorder else None,
+            runtime=runtime,
         )
 
     except KeyboardInterrupt:

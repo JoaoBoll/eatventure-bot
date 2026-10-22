@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#111714">
+  <title>EatVenture · Controle</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <section id="login" class="login-screen">
+    <form id="login-form" class="login-card">
+      <div class="brand-mark" aria-hidden="true">e<span>.</span></div>
+      <p class="eyebrow">EATVENTURE AI</p>
+      <h1>Seu bot, sob controle.</h1>
+      <p class="muted">Entre com o token salvo em <span class="mono">local/dashboard.token</span> no servidor.</p>
+      <label for="token">Token de acesso</label>
+      <input id="token" type="password" autocomplete="current-password" required placeholder="Cole o token do servidor">
+      <p id="login-error" class="form-error" role="alert"></p>
+      <button class="button primary" type="submit">Acessar painel <span aria-hidden="true">→</span></button>
+      <p class="login-note">O token permanece apenas nesta sessão do navegador.</p>
+    </form>
+  </section>
+
+  <div id="app" class="app-shell" hidden>
+    <aside class="sidebar">
+      <a href="#" class="brand" aria-label="EatVenture, início"><span class="brand-mark small">e<span>.</span></span><span>EatVenture<small>BOT CONTROL</small></span></a>
+      <div class="nav-label">WORKSPACE</div>
+      <a class="nav-item active" href="#"><span aria-hidden="true">▦</span> Dispositivos <span id="nav-count" class="nav-count">0</span></a>
+      <div class="sidebar-bottom"><span class="server-dot" id="server-dot"></span><div><strong id="server-status">Conectando</strong><small id="server-detail">Painel local</small></div></div>
+    </aside>
+    <main>
+      <header class="topbar"><div class="breadcrumb">Workspace <span>/</span> <strong>Dispositivos</strong></div><div class="topbar-actions"><span id="last-update" class="muted update-label"></span><button id="refresh" class="button ghost compact" type="button" title="Atualizar dispositivos ADB">↻ <span>Atualizar</span></button><button id="logout" class="button ghost compact" type="button">Sair</button></div></header>
+      <div class="page-content">
+        <section class="page-heading"><div><p class="eyebrow">CENTRAL DE OPERAÇÃO</p><h1>Dispositivos</h1><p class="muted">Execute, acompanhe e ajuste cada bot em um só lugar.</p></div><button id="connect-open" class="button primary" type="button"><span aria-hidden="true">＋</span> Conectar Android</button></section>
+        <section class="kpi-grid" aria-label="Resumo da operação">
+          <article class="kpi"><span class="kpi-label"><span class="mini-dot green"></span> Bots em execução</span><strong id="kpi-running">—</strong><span id="kpi-running-detail" class="kpi-detail">Aguardando dados</span></article>
+          <article class="kpi"><span class="kpi-label">Dispositivos conectados</span><strong id="kpi-connected">—</strong><span class="kpi-detail">Disponíveis via ADB</span></article>
+          <article class="kpi"><span class="kpi-label">Ações nesta sessão</span><strong id="kpi-actions">—</strong><span class="kpi-detail">Soma dos bots exibidos</span></article>
+          <article class="kpi"><span class="kpi-label"><span class="mini-dot amber"></span> Templates encontrados</span><strong id="kpi-templates">—</strong><span id="kpi-templates-detail" class="kpi-detail">Biblioteca de reconhecimento</span></article>
+        </section>
+        <section class="device-section" aria-label="Seus dispositivos">
+          <div class="section-toolbar"><div class="search-box"><span aria-hidden="true">⌕</span><input id="search" type="search" aria-label="Buscar dispositivo" placeholder="Buscar nome, modelo ou serial…"></div><select id="status-filter" aria-label="Filtrar por status"><option value="all">Todos os status</option><option value="running">Em execução</option><option value="ready">Prontos</option><option value="offline">Desconectados</option></select><span id="device-count" class="muted">0 dispositivos</span></div>
+          <div class="selection-toolbar"><label class="check-label"><input type="checkbox" id="select-all"><span id="selection-label">Selecionar todos</span></label><div class="bulk-actions"><button id="bulk-start" class="button ghost compact" type="button" disabled>▷ Iniciar</button><button id="bulk-restart" class="button ghost compact" type="button" disabled>↻ Reiniciar</button><button id="bulk-stop" class="button ghost compact danger-text" type="button" disabled>□ Parar</button></div></div>
+          <div id="state-error" class="notice error" role="alert" hidden></div>
+          <div id="devices" class="device-grid" aria-live="polite"><div class="empty-state"><span class="loading-spinner"></span><h2>Buscando dispositivos</h2><p>Consultando o servidor e o ADB.</p></div></div>
+        </section>
+        <footer class="page-footer"><span><span class="mini-dot green"></span> Atualização automática a cada 5 segundos</span><span>Perfis salvos localmente por dispositivo</span></footer>
+      </div>
+    </main>
+  </div>
+
+  <dialog id="device-dialog" class="device-dialog" aria-labelledby="detail-title">
+    <div class="drawer-heading"><div><p class="eyebrow">CONTROLE DO DISPOSITIVO</p><h2 id="detail-title">Dispositivo</h2><p id="detail-serial" class="mono muted"></p></div><button id="detail-close" class="icon-button" aria-label="Fechar detalhes" type="button">×</button></div>
+    <div id="detail-status" class="detail-status"></div>
+    <div class="tabs" role="tablist" aria-label="Detalhes do dispositivo"><button id="tab-settings" class="tab active" role="tab" aria-controls="panel-settings" aria-selected="true" data-tab="settings">Configurações</button><button id="tab-items" class="tab" role="tab" aria-controls="panel-items" aria-selected="false" data-tab="items" tabindex="-1">Itens e fidelidade</button><button id="tab-logs" class="tab" role="tab" aria-controls="panel-logs" aria-selected="false" data-tab="logs" tabindex="-1">Logs</button></div>
+    <div class="drawer-body">
+      <div id="profile-error" class="notice error" role="alert" hidden></div>
+      <section id="panel-settings" role="tabpanel" aria-labelledby="tab-settings"><p class="section-description">Ajustes exclusivos deste dispositivo. Ative “Personalizar” para substituir um valor padrão.</p><div id="profile-fields"></div></section>
+      <section id="panel-items" role="tabpanel" aria-labelledby="tab-items" hidden><div class="notice subtle">A fidelidade é a confiança mínima para reconhecer um item. Valores maiores exigem uma correspondência mais exata.</div><div class="items-toolbar"><input id="item-search" type="search" placeholder="Buscar categoria ou item…" aria-label="Buscar item"><button id="reset-thresholds" class="button ghost compact" type="button">Restaurar fidelidades</button></div><div id="item-fields"></div></section>
+      <section id="panel-logs" class="logs-panel" role="tabpanel" aria-labelledby="tab-logs" hidden><div class="log-toolbar"><label class="check-label"><input id="log-autoscroll" type="checkbox" checked> Rolar automaticamente</label><div><button id="log-pause" class="button ghost compact" type="button">Pausar</button><button id="log-download" class="button ghost compact" type="button">Baixar</button></div></div><p class="log-hint muted">Últimas 2.000 linhas desta execução; saída completa depende da opção de salvar log.</p><div id="log-output" class="log-output" tabindex="0" aria-label="Saída do bot"></div><p id="log-status" class="muted log-hint" aria-live="polite">Aguardando logs.</p></section>
+    </div>
+    <footer class="drawer-footer"><div><strong id="pending-count">Sem alterações pendentes</strong><small>Alterações aplicadas ao iniciar/reiniciar.</small></div><div class="drawer-footer-actions"><button id="reset-profile" class="button ghost" type="button">Restaurar perfil</button><button id="save-profile" class="button primary" type="button" disabled>Salvar perfil</button></div></footer>
+  </dialog>
+
+  <dialog id="connect-dialog" class="connect-dialog" aria-labelledby="connect-title"><form id="connect-form"><div class="modal-heading"><div><p class="eyebrow">ANDROID VIA WI-FI</p><h2 id="connect-title">Conectar dispositivo</h2></div><button id="connect-close" class="icon-button" type="button" aria-label="Fechar conexão">×</button></div><p class="muted">Ative a depuração sem fio no Android. O servidor precisa alcançar o endereço do dispositivo.</p><label for="connect-address">Endereço de conexão</label><input id="connect-address" required placeholder="192.168.1.4:39015" autocomplete="off" spellcheck="false"><details class="pair-details"><summary>Precisa parear primeiro?</summary><p class="muted">Abra “Parear dispositivo com código” no Android. A porta de pareamento costuma ser diferente da porta de conexão.</p><label for="pair-address">Endereço de pareamento</label><input id="pair-address" placeholder="192.168.1.4:37123" autocomplete="off" spellcheck="false"><label for="pair-code">Código de pareamento</label><div class="pair-code-row"><input id="pair-code" inputmode="numeric" autocomplete="off" placeholder="123456" maxlength="6"><button id="pair-submit" class="button secondary" type="button">Parear</button></div></details><p id="connect-result" class="form-error" role="status"></p><button id="connect-submit" type="submit" class="button primary full-width">Conectar Android</button></form></dialog>
+  <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
+</body>
+</html>

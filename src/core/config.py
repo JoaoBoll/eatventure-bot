@@ -391,3 +391,9 @@ STATE_TIMEOUTS = {
     "NEW_POINT": 5.0,
     "FOOD": 5.0,
 }
+
+
+# Overrides do painel são locais ao processo, antes dos imports consumidores.
+from core.device_profiles import apply_environment_profile as _apply_environment_profile
+
+_apply_environment_profile(globals())

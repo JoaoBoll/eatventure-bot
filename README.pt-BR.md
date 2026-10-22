@@ -77,6 +77,8 @@ Habilita a conexão pela mesma rede Wi-Fi. Confirme com `adb devices` antes de r
 
 ## Comandos para rodar
 
+Para controlar vários aparelhos pelo navegador, iniciar/parar bots e salvar ajustes locais por dispositivo, use o [painel web opcional](docs/painel-web.md). Ele roda no servidor sem interface gráfica; os comandos de terminal abaixo continuam disponíveis.
+
 Mantenha o EatVenture aberto, com a tela ligada e desbloqueada.
 
 ```bash
