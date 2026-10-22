@@ -275,6 +275,20 @@ def test_split_nunca_deixa_teste_vazio():
     assert treino and teste
 
 
+def test_split_vazio_tem_contagens_zeradas():
+
+    treino, teste, info = dio.split_groups([])
+
+    assert treino == []
+    assert teste == []
+
+    for campo in (
+        "grupos", "grupos_treino", "grupos_teste",
+        "amostras_treino", "amostras_teste",
+    ):
+        assert info[campo] == 0, info
+
+
 def test_baseline_da_maioria():
 
     rotulos = ["a"] * 7 + ["b"] * 3
@@ -497,6 +511,33 @@ def test_leitura_ignora_linha_invalida_e_imagem_ausente():
         shutil.rmtree(pasta, ignore_errors=True)
 
 
+def test_leitura_ignora_json_de_tipo_invalido_e_caminho_sem_arquivo():
+
+    with tempfile.TemporaryDirectory() as pasta:
+
+        raiz = Path(pasta)
+        (raiz / "images").mkdir()
+        (raiz / "images" / "amostra.jpg").touch()
+
+        linhas = [
+            [], None, "texto", 42,
+            {"image": ["images/amostra.jpg"]},
+            {"image": "images"},
+            {"id": "ok", "image": "images/amostra.jpg"},
+        ]
+
+        (raiz / "samples.jsonl").write_text(
+            "\n".join(json.dumps(linha) for linha in linhas),
+            encoding="utf-8",
+        )
+
+        registros, aviso = dio.read_index(raiz)
+
+        assert [registro["id"] for registro in registros] == ["ok"]
+        assert aviso["invalidas"] == 4
+        assert aviso["sem_imagem"] == 2
+
+
 def test_indice_ausente_da_erro_com_instrucao():
 
     pasta = Path(tempfile.mkdtemp())
@@ -638,6 +679,41 @@ def test_proponente_tem_teto_de_candidatos():
         )
 
     assert len(proposer.propose(imagem)) <= proposer.MAX_PROPOSALS
+
+
+def test_proponente_preserva_limites_em_resolucao_impar():
+
+    import proposer
+
+    imagem = np.full((719, 311, 3), 40, np.uint8)
+    imagem[600:688, 231:311] = (255, 120, 20)
+
+    candidatos = proposer.propose(imagem)
+
+    assert candidatos
+
+    for x, y, largura, altura in candidatos:
+
+        assert 0 <= x < x + largura <= 311
+        assert 0 <= y < y + altura <= 719
+
+
+def test_proponente_rejeita_escala_invalida():
+
+    import proposer
+
+    imagem = np.full((64, 64, 3), 40, np.uint8)
+
+    for escala in (0, -0.5, 1.5, float("nan")):
+
+        try:
+            proposer.propose(imagem, escala=escala)
+
+        except ValueError as erro:
+            assert "escala" in str(erro)
+
+        else:
+            raise AssertionError(f"aceitou escala inválida: {escala}")
 
 
 def test_supressao_remove_repetidos_da_mesma_categoria():

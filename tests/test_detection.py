@@ -29,23 +29,32 @@ POSITION_TOLERANCE = 10
 CONFIDENCE_TOLERANCE = 0.03
 
 
-def detect_all(detector):
+def load_images():
 
-    results = {}
+    paths = sorted(IMAGES_DIR.glob("*.png"))
 
-    for image_path in sorted(IMAGES_DIR.glob("*.png")):
+    if not paths:
+        raise ValueError(f"Nenhuma imagem PNG em {IMAGES_DIR}.")
+
+    for image_path in paths:
 
         image = cv2.imread(str(image_path))
 
         if image is None:
+            raise ValueError(f"Não carregou: {image_path.name}")
 
-            print(f"  ! não carregou: {image_path.name}")
+        yield image_path.name, image
 
-            continue
+
+def detect_all(detector):
+
+    results = {}
+
+    for name, image in load_images():
 
         detections = detector.detect(image)
 
-        results[image_path.name] = [
+        results[name] = [
             {
                 "category": d["category"],
                 "x": d["x"],
@@ -104,6 +113,10 @@ def compare(expected_all, actual_all):
 
             continue
 
+        if name not in actual_all:
+            failures.append(f"{name}: imagem esperada ausente.")
+            continue
+
         remaining = list(actual)
 
         for item in expected:
@@ -149,7 +162,7 @@ def compare(expected_all, actual_all):
     return failures, warnings
 
 
-def main():
+def main(argv=None):
 
     parser = argparse.ArgumentParser()
 
@@ -165,11 +178,22 @@ def main():
         help="mede o tempo por passada",
     )
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     log.setup("WARNING")
 
-    detector = Detector()
+    detector = Detector(learn_resolution_templates=False)
+
+    try:
+        return run(args, detector)
+    except (OSError, ValueError) as error:
+        print(f"\nFALHA: {error}")
+        return 1
+    finally:
+        detector.stop()
+
+
+def run(args, detector):
 
     print(
         f"Templates: {len(detector.templates)} | "
@@ -178,10 +202,7 @@ def main():
 
     if args.bench:
 
-        images = [
-            cv2.imread(str(p))
-            for p in sorted(IMAGES_DIR.glob("*.png"))
-        ]
+        images = [image for _, image in load_images()]
 
         for image in images:
             detector.detect(image)

@@ -1,278 +1,86 @@
-# Pasta IA
+# IA do EatVentureAI
 
-Treino e execução do modelo de visão.
+Treino e execução do modelo de visão experimental do bot.
 
-Os números de amostras, caixas e acurácia abaixo são uma fotografia de uma
-coleta específica; eles não são métricas garantidas para o dataset atual.
+## Requisitos
 
-| Arquivo | O quê |
-|---|---|
-| `features.py` | extração de features — **fonte única** para treino e inferência |
-| `dataset_io.py` | leitura do índice, split sem vazamento, referências |
-| `proposer.py` | proposta de regiões candidatas (**experimental**) |
-| `train_ai.py` | treina o modelo |
-| `bot_ai.py` | roda o modelo, mostrando ou agindo |
-| `model.joblib` | modelo treinado |
-| `model.meta.json` | como o modelo foi feito e quanto ele acerta |
+- Execute os comandos na pasta principal do projeto.
+- Para treinar ou avaliar, é necessário ter amostras coletadas em `dataset/`. Veja [como coletar](../docs/dataset.md).
+- Para usar a IA, execute um treino primeiro. As versões ficam em `IA/models/`, e o bot encontra a versão atual automaticamente.
+- Para acompanhar ou controlar o jogo ao vivo, configure o Android, o ADB, o scrcpy e os templates conforme o [README principal](../README.pt-BR.md).
 
-Os testes ficam em `../tests/test_ia.py`, fora desta pasta.
+## Comandos para rodar
 
----
-
-## Por que a fidelidade estava abaixo de 30%
-
-Não faltava dado: são **29.297 amostras** e **65.730 caixas**.
-Eram três coisas, todas medidas no dataset.
-
-### 1. O alvo desaparecia antes de chegar ao modelo
-
-A versão anterior reduzia o frame inteiro de 1080x2400 para
-32x32:
-
-| | tamanho |
-|---|---|
-| alvo mediano no frame | 95 x 94 px |
-| **o mesmo alvo a 32x32** | **2.8 x 1.3 px** |
-
-Não existe classificador que resolva 3 pixels. E aumentar a
-resolução da tela não resolve — mesmo a 256x256 o alvo teria
-22 x 10 px.
-
-O que resolve é recortar o **objeto** e usar 32x32 **nele**.
-Mesma resolução, conteúdo diferente: o alvo passa a preencher o
-quadro.
-
-### 2. O split era inválido
-
-**56% das amostras têm `phash` repetido** — o bot age ~1x/s
-numa tela quase estática. Com `train_test_split` aleatório, o
-mesmo quadro caía em treino **e** em teste.
-
-Isso não deixa a acurácia "um pouco otimista": deixa ela sem
-significado. Agora o split é por grupo (`--split phash`), ou por
-sessão inteira (`--split session`), que é o teste honesto de
-generalizar para outra partida.
-
-### 3. Não havia referência para comparar
-
-"30%" sozinho não informa nada. As referências deste dataset:
-
-| Referência | Acerto |
-|---|---|
-| chutar a classe majoritária (`open_box`) | 16,7% |
-| **só olhar o estado da máquina** | **46,2%** |
-| estado + categorias na tela | **96,0%** ← teto |
-
-O modelo anterior estava **abaixo de olhar só o estado** — atrás
-de uma regra de uma linha. O treino agora imprime essas linhas
-sempre, e avisa em voz alta se o modelo não bater a majoritária.
-
----
-
-## A arquitetura
-
-O teto de 96% é a chave: se saber **o que está na tela** resolve
-96% da escolha da ação, então o que precisa ser aprendido é
-**detectar categoria** — e a ação sai da tabela de prioridade que
-já existe em `src/core/state_machine.py` e já é testada.
-
-```
-frame → caixas candidatas → modelo diz a categoria
-      → StateMachine escolhe a ação e o alvo
-      → ActionManager toca
+```powershell
+python -m pip install -r requirements.txt
 ```
 
-O modelo faz só a parte que é aprendizado. Prioridade,
-coordenada, cooldown, espera de efeito e escada de fechamento
-vêm do código que já funciona.
+Instala as dependências do projeto.
 
----
+```powershell
+python src/main.py --ai-collect
+```
 
-## Treinar
+Coleta dados usando o bot por templates. A cada **10 mil registros novos**, somando todas as resoluções, inicia um treino automático. Durante o treino, mantém os processos e janelas abertos, mas pausa as ações do bot e a coleta. A execução retoma automaticamente quando o treino termina ou falha.
 
-Para treinar novamente com o cache, basta rodar `python IA/train_ai.py`, sem
-parâmetro extra.
-
-No modo padrão (`category`), o script guarda as features em `dataset/cache/`.
-Na próxima execução, extrai as amostras novas e treina com elas **e com todas
-as amostras já guardadas no cache**, mesmo que as imagens antigas tenham sido
-apagadas. Ele cria um modelo novo a cada treino e sobrescreve
-`IA/model.joblib`: o que se acumula são os dados de treino, não o estado do
-modelo anterior. A saída mostra quantas amostras foram extraídas e quantas
-foram reaproveitadas.
-
-Use `--no-cache` para extrair apenas as amostras disponíveis no dataset atual,
-sem ler nem gravar o cache. `--kind action` também não usa esse cache. Mudanças
-nas configurações das features ou em `--negatives` invalidam o cache antigo;
-nesse caso, amostras cujas imagens já foram apagadas não podem ser reconstruídas.
-
-**Atenção aos filtros:** com o cache ligado, `--limit` e `--outcome` restringem
-as amostras novas lidas do dataset, mas não removem as que já estão no cache.
-Para um treino estritamente filtrado, use `--no-cache` junto com esses filtros.
-
-```bash
-# recomendado
+```powershell
 python IA/train_ai.py
-
-# ensaio rápido, para ver se o encanamento funciona
-python IA/train_ai.py --limit 2000 --trees 60 --no-cache
-
-# só ações que funcionaram: não herda os erros do professor
-python IA/train_ai.py --outcome changed negative --no-cache
-
-# teste mais duro: treina numa partida, avalia em outra
-python IA/train_ai.py --split session
-
-# comparação: tela inteira → ação (o jeito antigo, corrigido)
-python IA/train_ai.py --kind action
 ```
 
-O treino imprime acurácia, as referências, relatório por classe,
-matriz de confusão e as maiores confusões em pares. A média
-**macro** do relatório é o número que expõe classe rara
-ignorada: `plane` tem 52 caixas contra 17.642 de `food`, e um
-modelo que ignora `plane` ainda acerta 99,9%.
+Faz um treino manual sem esperar 10 mil registros. Publica o modelo novo, salva o relatório e remove os registros e imagens aproveitados nesse treino. O cache mantém os dados dos treinos anteriores, mesmo após a limpeza das imagens.
 
-### Todas as flags do treino
-
-Uma linha, um exemplo, o que ela muda de verdade.
-
-| Flag | Exemplo | O que muda |
-|---|---|---|
-| `--kind` | `--kind category` | `category` (padrão): recorte de caixa → categoria, e a ação sai da tabela de prioridade. `--kind action`: tela inteira → ação, existe só para comparar. **O bot só usa `category`.** |
-| `--split` | `--split session` | Define o **grupo** do split. `phash` (padrão): quadros iguais não cruzam treino/teste. `session`: a partida inteira vai para um lado — mede generalizar para outra partida. A queda entre os dois é o quanto o modelo decorou o restaurante. |
-| `--test-ratio` | `--test-ratio 0.3` | Fração de **grupos** (não de amostras) para teste. Reduza se o teste sair vazio com `--split session`. A contagem final de amostras não bate exato com a fração, e isso é esperado. |
-| `--outcome` | `--outcome changed negative` | Filtra os registros lidos do dataset por resultado: `changed`, `unchanged`, `unknown`, `negative`. Para excluir também os registros já presentes no cache, combine com `--no-cache`. |
-| `--negatives` | `--negatives 4` | Recortes de fundo sorteados por frame, rotulados `background`. Sem eles todo pedaço de cenário viraria detecção. `--negatives 0` desliga. |
-| `--trees` | `--trees 60` | Árvores da floresta (padrão 200). Menos = treino rápido para ensaio; mais = ganho pequeno e custo linear. |
-| `--jobs` | `--jobs 4` | Núcleos. Padrão `-1` (todos). Baixe se a máquina ficar inutilizável durante o treino. |
-| `--limit` | `--limit 2000` | Lê só as N primeiras amostras do dataset; com cache ligado, amostras antigas ainda entram no treino. Para ensaio com apenas N amostras, combine com `--no-cache`. |
-| `--seed` | `--seed 7` | Semente do split e da floresta. Trocar dá outra divisão — útil para ver se um resultado bom foi sorte. |
-| `--dataset-root` | `--dataset-root dataset2` | Outra pasta de dataset. |
-| `--cache-root` | `--cache-root dataset/outro-cache` | Outra pasta para o cache de features; o padrão é `<dataset-root>/cache`. |
-| `--no-cache` | `--no-cache` | Não lê nem grava o cache; extrai as amostras do dataset atual. |
-| `--model-out` | `--model-out IA/teste.joblib` | Grava em outro lugar, sem sobrescrever o modelo bom. Use sempre que estiver experimentando. |
-
-Exemplos combinando:
-
-```bash
-# ensaio: rápido, descartável, sem tocar no modelo bom
-python IA/train_ai.py --limit 2000 --trees 60 --no-cache --model-out IA/ensaio.joblib
-
-# o treino "de verdade", medido do jeito mais honesto
-python IA/train_ai.py --split session --outcome changed negative --no-cache
-
-# o mesmo split com outra semente: o resultado se mantém?
-python IA/train_ai.py --split session --seed 7
+```powershell
+python IA/train_ai.py --keep-data
 ```
 
-Ele **não instala dependência sozinho** — se faltar algo, ele
-diz o comando. Instalar pacote como efeito colateral de treinar
-muda o ambiente de quem só queria treinar.
+Faz o treino manual preservando os registros e as imagens.
 
----
-
-## Rodar
-
-```bash
-# ver o que o modelo enxerga. NÃO toca no jogo.
-python IA/bot_ai.py
-
-# medir o modelo contra o template matching, caixa a caixa
-python IA/bot_ai.py --compare
-
-# revisar imagens já gravadas, sem device
+```powershell
 python IA/bot_ai.py --demo --demo-limit 30
-
-# deixar agir
-python IA/bot_ai.py --auto --min-confidence 0.80
 ```
 
-Sem `--auto` **nada é enviado ao device** — a execução é
-substituída na origem, não com um `if` espalhado pelo loop.
+Avalia o modelo em até 30 imagens coletadas, sem precisar conectar um aparelho.
 
-### As duas fontes de candidatos
-
-`--source templates` (padrão): o detector atual diz **onde**
-olhar, o modelo diz **o que é**. Não é circular — serve para
-medir o modelo em tela real antes de confiar nele, e é o caminho
-que funciona hoje.
-
-`--source proposer`: regiões por cor e contorno, o caminho para
-largar os templates da coleta de referência (184 naquele snapshot).
-**Experimental** — é a única parte
-destes arquivos que não saiu de número medido no dataset.
-Confira antes com:
-
-```bash
-python IA/bot_ai.py --source proposer --debug-proposals
+```powershell
+python IA/bot_ai.py
 ```
 
-### Todas as flags do bot
+Mostra as detecções da IA no jogo ao vivo, sem enviar comandos ao aparelho. Por padrão, usa os templates para localizar os elementos que o modelo vai reconhecer.
 
-| Flag | Exemplo | O que muda |
-|---|---|---|
-| `--auto` | `--auto` | **A única que toca no jogo.** Sem ela, `execute` e `swipe` são substituídos na origem e nada é enviado ao device. |
-| `--model` | `--model IA/ensaio.joblib` | Qual modelo carregar. O load confere o número de features e se as classes são categorias — um modelo de ação é barrado aqui. |
-| `--source` | `--source proposer` | De onde vêm as caixas. `templates` (padrão): o detector atual diz onde olhar. `proposer`: cor e contorno, **experimental**. |
-| `--min-confidence` | `--min-confidence 0.80` | Piso global de confiança (padrão 0.60). `fly`, `renovate` e `plane` têm piso próprio mais baixo e **ignoram** o valor global quando ele é maior — perder um `fly` custa um ciclo de reforma inteiro. |
-| `--compare` | `--compare` | Compara a categoria do modelo com a do template matching, caixa a caixa, e imprime a concordância. Só faz sentido com `--source templates`. |
-| `--demo` | `--demo` | Roda sobre imagens do dataset e mede o acerto contra os rótulos. **Sem device.** É a forma barata de saber se o modelo presta. |
-| `--demo-limit` | `--demo-limit 30` | Quantas amostras no modo demo (padrão 50). |
-| `--debug-proposals` | `--debug-proposals` | Desenha em cinza também as caixas candidatas **descartadas**. É o que mostra se o proposer está propondo lixo. |
-| `--device` | `--device emulator-5554` | Serial do device. Sem isto, pergunta. |
-| `--headless` | `--headless` | Sem janela. Para medir sem o custo do `imshow`. |
-| `--dataset-root` | `--dataset-root dataset2` | Pasta do dataset, no modo demo. |
-
-Exemplos combinando:
-
-```bash
-# medir um modelo recém-treinado, sem device nenhum
-python IA/bot_ai.py --model IA/ensaio.joblib --demo --demo-limit 30
-
-# ver o proposer trabalhando, com as caixas descartadas
-python IA/bot_ai.py --source proposer --debug-proposals
-
-# agir, mas exigente
-python IA/bot_ai.py --auto --min-confidence 0.80
+```powershell
+python IA/bot_ai.py --auto
 ```
 
-### O overlay durante a execução
+Permite que o bot controle o jogo usando as detecções da IA. Os comandos ao vivo carregam os modelos novos automaticamente entre os frames, sem reiniciar. Uma atualização inválida mantém o modelo anterior em uso.
 
-| Campo | O que dizer quando parece travado |
-|---|---|
-| `lag` | Idade real do frame que gerou as detecções, em ms. Acima de 2000 a StateMachine **para de clicar** de propósito (`MAX_DETECTION_AGE`) — detector lento demais. |
-| `no est` | Tempo no estado atual. Subindo sem parar = estado sem saída. Em `RENOVATE`, quase sempre é o modelo não conhecer `fly`/`renovate`. |
-| `cand` / `det` | Candidatos propostos e detecções aceitas. `cand` alto com `det` zero = tudo caiu no `--min-confidence`. |
-| `auto` | `nao` = nada é enviado ao device. |
+Nos comandos ao vivo, adicione `--device SERIAL` para escolher o aparelho ou `--headless` para executar sem janela. Encerre com `Ctrl+C`.
 
----
+## Relatórios e limpeza
 
-## Ordem sugerida
+Cada treino gera um JSON próprio em `IA/training_reports/`, com data, duração, resultado, parâmetros e métricas de validação. As contagens incluem ações, tipos, estados, resultados e resoluções, separando o lote atual dos dados reaproveitados. Cada arquivo descreve somente aquela execução.
 
-1. `python tests/test_ia.py` — o encanamento está de pé?
-2. `python IA/train_ai.py --limit 2000 --trees 60 --no-cache` — ensaio rápido
-3. `python IA/train_ai.py` — treino de verdade
-4. `python IA/bot_ai.py --demo --demo-limit 30` — acerto de
-   categoria contra os rótulos, sem device
-5. `python IA/bot_ai.py --compare` — modelo x professor, ao vivo
-6. `python IA/bot_ai.py --auto` — só depois dos anteriores
+A limpeza só ocorre depois de salvar o modelo e o relatório com sucesso. Remove apenas os registros e imagens aproveitados; dados novos ou não aproveitados permanecem. Se a limpeza for interrompida, ela é retomada na próxima verificação da coleta ou no próximo treino.
 
----
+O automático funciona enquanto a coleta está ligada. `AI_AUTO_TRAIN` e `AI_TRAIN_BATCH_SIZE`, em [config.py](../src/core/config.py), controlam sua ativação e o tamanho do lote. A pausa durante o treino vem ativada por padrão; use `AI_PAUSE_BOT_WHILE_TRAINING = False` para continuar jogando e coletando em paralelo. Ao encerrar a coleta, um treino automático ainda em andamento é interrompido; os dados não consumidos permanecem para a próxima execução.
 
-## Se ainda ficar ruim
+## Planejamento futuro
 
-O relatório diz onde olhar:
+- Ampliar a coleta e a validação nas resoluções abaixo. São metas de cobertura, ainda sem garantia de funcionamento em todas as telas.
+- Coletar aproximadamente **100 mil amostras por resolução**, totalizando **900 mil amostras** nas nove configurações iniciais, com situações e sessões variadas.
+- Validar depois **1080 × 1920** e telas internas de celulares dobráveis.
+- Implementar a continuação do treino a partir do modelo anterior, preservando o desempenho nas resoluções já aprendidas. Atualmente, os dados são reaproveitados, mas cada treino cria um modelo novo.
+- Aprimorar e validar a detecção experimental por cor e contorno para reduzir a dependência de templates.
 
-- **acurácia perto de 46%** → está no nível de "olhar só o
-  estado". As features não estão carregando informação; confira
-  se o modelo é `category` e não `action`.
-- **macro muito abaixo da acurácia** → classes raras ignoradas.
-  `--outcome changed negative` reduz o desbalanceamento, ou
-  colete mais amostras das raras (`plane` tem 52, `fly` tem 39).
-- **confusão concentrada em um par** (ex. `food` × `box`) → é um
-  problema específico e resolvível: mais margem no recorte
-  (`PATCH_MARGIN`) dá mais contexto.
-- **queda grande de `--split phash` para `--split session`** → o
-  modelo decorou o restaurante em vez de aprender o objeto.
-  Precisa de sessões mais variadas, não de mais amostras.
+Resoluções planejadas, em pixels, no formato **lado menor × lado maior**:
+
+- 720 × 1600
+- 1080 × 2340
+- 1080 × 2400
+- 1220 × 2712
+- 1440 × 3120
+- 800 × 1340
+- 1200 × 1920
+- 1600 × 2560
+- 2136 × 3200
+
+A coleta deve considerar a resolução efetiva recebida pelo bot, que pode diferir da anunciada pelo aparelho.

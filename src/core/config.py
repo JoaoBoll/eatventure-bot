@@ -21,13 +21,14 @@ DEVICE_SERIAL = None
 # ==== SCRCPY ====
 
 _scrcpy_dir = PROJECT_ROOT / "tools" / "scrcpy"
-_SERVER_NAMES = ("scrcpy-server*.jar", "scrcpy-server")
+_SERVER_NAMES = ("scrcpy-server", "scrcpy-server*.jar")
 
 
-def _find_server(base: Path):
+def _find_server(base: Path, recursive=True):
     for pattern in _SERVER_NAMES:
         try:
-            hit = next((p for p in base.rglob(pattern) if p.is_file()), None)
+            matches = base.rglob(pattern) if recursive else base.glob(pattern)
+            hit = next((p for p in matches if p.is_file()), None)
         except Exception:
             hit = None
         if hit is not None:
@@ -35,30 +36,39 @@ def _find_server(base: Path):
     return None
 
 
-_scrcpy_path = shutil.which("scrcpy")
-if _scrcpy_path:
-    SCRCPY_PATH = _scrcpy_path
-    try:
-        _jar = _find_server(Path(_scrcpy_path).parent)
-    except Exception:
-        _jar = None
-    if _jar is None and _scrcpy_dir.exists():
-        _jar = _find_server(_scrcpy_dir)
-    SCRCPY_SERVER_PATH = str(_jar) if _jar is not None else r""
-else:
-    SCRCPY_PATH = r""
-    SCRCPY_SERVER_PATH = r""
-    if _scrcpy_dir.exists():
-        try:
-            _exe = next(_scrcpy_dir.rglob(f"scrcpy{_EXE_SUFFIX}"), None)
-            _jar = _find_server(_scrcpy_dir)
-            SCRCPY_PATH = str(_exe) if _exe is not None else r""
-            SCRCPY_SERVER_PATH = str(_jar) if _jar is not None else r""
-        except Exception:
-            pass
+def _find_installed_server(executable):
+    if not executable:
+        return None
 
-SCRCPY_SERVER_VERSION = "4.1"
-SCRCPY_PORT = 27283
+    binary = Path(executable)
+    try:
+        resolved = binary.resolve()
+    except OSError:
+        resolved = binary
+    for location in dict.fromkeys((resolved, binary)):
+        for directory in (
+            location.parent,
+            location.parent.parent / "share" / "scrcpy",
+            location.parent.parent / "lib" / "scrcpy",
+        ):
+            server = _find_server(directory, recursive=False)
+            if server is not None:
+                return server
+    return None
+
+
+SCRCPY_PATH = shutil.which("scrcpy") or ""
+if not SCRCPY_PATH and _scrcpy_dir.exists():
+    _exe = next(_scrcpy_dir.rglob(f"scrcpy{_EXE_SUFFIX}"), None)
+    SCRCPY_PATH = str(_exe) if _exe is not None else ""
+
+_installed_server = _find_installed_server(SCRCPY_PATH)
+_jar = _installed_server or _find_server(_scrcpy_dir)
+SCRCPY_SERVER_PATH = str(_jar) if _jar is not None else ""
+# None usa a versão do executável da mesma instalação; arquivo avulso mantém 4.1.
+SCRCPY_SERVER_VERSION = None if _installed_server is not None else "4.1"
+# 0 deixa o ADB reservar uma porta livre para cada processo.
+SCRCPY_PORT = 0
 SCRCPY_DEVICE_JAR = "/data/local/tmp/eatventure-server.jar"
 
 
@@ -101,8 +111,15 @@ CAPTURE_MAX_FPS = 60
 
 # ==== UI ====
 
-SHOW_AI_VISION = True
+SHOW_AI_VISION = False
 SHOW_SCRCPY = False
+
+if platform.system() == "Linux" and not (
+    os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
+):
+    SHOW_AI_VISION = False
+    SHOW_SCRCPY = False
+
 SHOW_DETECTION_LABELS = True
 SHOW_DETECTION_LAG = True
 SHOW_CYCLE_TIME = True
@@ -147,6 +164,10 @@ DATASET_JPEG_QUALITY = 92
 
 DATASET_ACTIONS = {
     "click",
+    "delivery",
+    "accept_delivery",
+    "helper",
+    "invite_helper",
     "close",
     "food",
     "new_point",
@@ -177,6 +198,12 @@ DATASET_OUTCOME_TIMEOUT = 3.0
 DATASET_MAX_SAMPLES = 0
 DATASET_MAX_DISK_MB = 20_000
 
+AI_AUTO_TRAIN = True
+AI_TRAIN_BATCH_SIZE = 10_000
+AI_TRAIN_CHECK_INTERVAL = 5.0
+AI_TRAIN_JOBS = 1
+AI_PAUSE_BOT_WHILE_TRAINING = True
+
 DATASET_DB_ENABLED = os.environ.get(
     "EATVENTURE_DB_ENABLED",
     "false",
@@ -189,6 +216,7 @@ DATASET_DB_BATCH = 20
 # ==== LOGGING ====
 
 LOG_LEVEL = "INFO"
+LOG_DIR = PROJECT_ROOT / "logs"
 
 
 # ==== TEMPLATES ====
@@ -258,10 +286,10 @@ CATEGORY_COLOR_THRESHOLDS = {
 
 CATEGORY_ROIS = {}
 
-# Ao detectar via template default, grava o recorte na resolução exata do
-# device (mesmo na referência) — as próximas passadas usam esse override
-# em vez do default.
+# Guarda o último recorte aprovado; defaults já cobertos são atualizados
+# apenas na thread de aprendizado, sem busca duplicada na visão principal.
 LEARN_RESOLUTION_TEMPLATES = True
+TEMPLATE_REFRESH_INTERVAL = 1.0
 
 # De quanto em quanto tempo checar se a pasta de templates mudou (template
 # novo, editado ou removido) e recarregar sem reiniciar o bot. 0 desliga.

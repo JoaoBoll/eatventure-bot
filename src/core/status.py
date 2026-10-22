@@ -1,18 +1,12 @@
-"""
-Painel de status: bloco fixo reescrito no lugar, sem acumular linhas.
-
-Responde "o que está acontecendo AGORA" — o log conta a história
-evento a evento, o que exige rolar o terminal para achar a linha atual.
-Painel e log disputam o mesmo terminal, por isso o main baixa o log do
-console para WARNING enquanto o painel está ligado (desligue
-STATUS_PANEL para voltar ao log linha-por-linha).
-"""
+"""Status e último evento em uma tela do terminal, sem acumular linhas."""
 
 import os
 import platform
 import shutil
 import sys
+import threading
 import time
+import unicodedata
 
 from core.config import (
     BATTERY_POLL_INTERVAL,
@@ -48,11 +42,7 @@ def formata_bateria(leitura):
     return texto
 
 
-# Fixo de propósito: a reescrita precisa saber quantas linhas subir, e
-# contar o que foi impresso deixa o desenho torto. A linha de
-# quase-acerto é a única opcional, decidida UMA vez na construção — se
-# entrasse e saísse, deslocaria o bloco e o `\033[nA` subiria errado.
-LINHAS_BASE = 5
+LINHAS_BASE = 6
 
 
 class StatusPanel:
@@ -64,6 +54,7 @@ class StatusPanel:
         interval=0.5,
         stream=None,
         misses_line=None,
+        templates=0,
     ):
 
         self.device = device or "?"
@@ -86,6 +77,12 @@ class StatusPanel:
 
         self.desenhado = False
         self.ultimo = 0.0
+        self.lock = threading.RLock()
+        self._closed = False
+        self._resumo = {"estado": "iniciando", "templates": templates}
+        self._extra = None
+        self._misses = None
+        self._mensagem = "Aguardando eventos."
 
         self.iniciado = time.monotonic()
 
@@ -94,6 +91,9 @@ class StatusPanel:
         self.ansi = self._suporta_ansi()
 
     def _suporta_ansi(self):
+
+        if os.environ.get("TERM") == "dumb":
+            return False
 
         if not hasattr(self.stream, "isatty"):
             return False
@@ -114,13 +114,21 @@ class StatusPanel:
         try:
 
             import ctypes
+            from ctypes import wintypes
+            import msvcrt
 
             kernel32 = ctypes.windll.kernel32
+            kernel32.GetConsoleMode.argtypes = (
+                wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD),
+            )
+            kernel32.GetConsoleMode.restype = wintypes.BOOL
+            kernel32.SetConsoleMode.argtypes = (
+                wintypes.HANDLE, wintypes.DWORD,
+            )
+            kernel32.SetConsoleMode.restype = wintypes.BOOL
 
-            # -11 = STD_OUTPUT_HANDLE, 0x0004 = VT processing
-            handle = kernel32.GetStdHandle(-11)
-
-            modo = ctypes.c_uint32()
+            handle = msvcrt.get_osfhandle(self.stream.fileno())
+            modo = wintypes.DWORD()
 
             if not kernel32.GetConsoleMode(
                 handle,
@@ -139,16 +147,30 @@ class StatusPanel:
             return False
 
     def _largura(self):
-        """Largura útil do terminal — linha mais comprida QUEBRA em duas e desalinha a contagem de `\033[nA`."""
+        return max(1, shutil.get_terminal_size(fallback=(100, 24)).columns - 1)
 
-        try:
-            colunas = shutil.get_terminal_size().columns
+    @staticmethod
+    def _cortar(texto, largura):
+        caracteres = [
+            (caractere, 0 if unicodedata.combining(caractere) else (
+                2 if unicodedata.east_asian_width(caractere) in ("W", "F") else 1
+            ))
+            for caractere in str(texto).replace("\n", " ").replace("\r", " ")
+            if not unicodedata.category(caractere).startswith("C")
+        ]
 
-        except Exception:
-            return 100
+        if sum(tamanho for _, tamanho in caracteres) <= largura:
+            return "".join(caractere for caractere, _ in caracteres)
 
-        # -1: escrever na última coluna já provoca quebra em alguns terminais.
-        return max(20, colunas - 1)
+        resultado = []
+        ocupado = 0
+        for caractere, tamanho in caracteres:
+            if ocupado + tamanho > largura - 1:
+                break
+            resultado.append(caractere)
+            ocupado += tamanho
+
+        return "".join(resultado) + "…"
 
     def _linhas(self, resumo, extra=None, misses=None):
 
@@ -165,6 +187,7 @@ class StatusPanel:
 
         linhas = [
             f"Dispositivo conectado: {self.device}",
+            f"Templates encontrados: {resumo.get('templates', 0)}",
             f"Voou: {resumo.get('voos', 0)} vezes",
             f"Renovou: {resumo.get('reformas', 0)} vezes",
             f"Ação: {acao}",
@@ -181,8 +204,6 @@ class StatusPanel:
 
         linhas.append(rodape)
 
-        # Só existe com o debug ligado; aparece sempre (mesmo sem nada a
-        # relatar) porque o bloco tem altura fixa.
         if self.misses_line:
 
             linhas.append(
@@ -191,8 +212,6 @@ class StatusPanel:
                 else "Sem deteccao: —"
             )
 
-        # Trava o tamanho: uma linha nova sem ajustar a conta comeria a
-        # linha de cima em vez de falhar visivelmente.
         assert len(linhas) == self.linhas, (
             len(linhas),
             self.linhas,
@@ -201,59 +220,67 @@ class StatusPanel:
         largura = self._largura()
 
         return [
-            linha
-            if len(linha) <= largura
-            else linha[: largura - 1] + "…"
+            self._cortar(linha, largura)
             for linha in linhas
         ]
 
     def update(self, resumo, extra=None, misses=None, force=False):
         """Redesenha se já passou o intervalo. `resumo` é StateMachine.summary(), `misses` é Detector.miss_report()."""
 
-        agora = time.monotonic()
+        with self.lock:
+            if self._closed:
+                return
+            self._resumo = dict(resumo)
+            self._extra = extra
+            self._misses = misses
+            self._redesenhar(force)
 
+    def write_log(self, mensagem, force=False):
+        with self.lock:
+            if self._closed or not self.ansi:
+                return False
+            self._mensagem = mensagem
+            self._redesenhar(force)
+            return True
+
+    def _redesenhar(self, force=False):
+        agora = time.monotonic()
         if not force and agora - self.ultimo < self.interval:
             return
-
         self.ultimo = agora
 
-        linhas = self._linhas(resumo, extra, misses)
-
+        linhas = self._linhas(self._resumo, self._extra, self._misses)
         if not self.ansi:
-
-            # Sem ANSI, imprime UMA vez e para, em vez do bloco repetido mil vezes.
             if not self.desenhado:
-
                 self.stream.write("\n".join(linhas) + "\n")
                 self.stream.flush()
-
                 self.desenhado = True
-
             return
 
-        saida = []
+        altura = max(1, shutil.get_terminal_size(fallback=(100, 24)).lines - 1)
+        linhas.extend(("", "Último log:"))
+        disponiveis = max(0, altura - len(linhas))
+        if disponiveis:
+            linhas.extend(
+                self._cortar(linha, self._largura())
+                for linha in self._mensagem.splitlines()[-disponiveis:]
+            )
 
-        if self.desenhado:
-
-            # Sobe ao topo do bloco anterior.
-            saida.append(f"\033[{self.linhas}A")
-
-        for linha in linhas:
-
-            # \033[2K limpa a linha inteira, senão o rabo do texto anterior fica na tela.
-            saida.append(f"\r\033[2K{linha}\n")
-
-        self.stream.write("".join(saida))
+        # A tela alternativa evita que o redimensionamento reordene o histórico.
+        prefixo = "" if self.desenhado else "\033[?1049h\033[?25l"
+        saida = "\n".join(f"\r\033[2K{linha}" for linha in linhas[:altura])
+        self.stream.write(prefixo + "\033[H" + saida + "\033[J")
         self.stream.flush()
-
         self.desenhado = True
 
     def close(self):
-        """Deixa o cursor abaixo do bloco, para log de encerramento/traceback não escrever em cima."""
-
-        if self.desenhado and self.ansi:
-
-            self.stream.write("\n")
-            self.stream.flush()
-
-        self.desenhado = False
+        with self.lock:
+            if self._closed:
+                return
+            self._closed = True
+            if self.desenhado and self.ansi:
+                self.stream.write("\033[?25h\033[?1049l")
+                linhas = self._linhas(self._resumo, self._extra, self._misses)
+                self.stream.write("\n".join(linhas) + "\n" + self._mensagem + "\n")
+                self.stream.flush()
+            self.desenhado = False

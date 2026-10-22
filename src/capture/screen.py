@@ -1,11 +1,13 @@
 """ScreenCapture: stream H.264 do scrcpy-server, versioning, FPS cap."""
 
 import random
+import re
 import socket
 import subprocess
 import threading
 import time
 import os
+import posixpath
 
 import av
 import cv2
@@ -18,6 +20,7 @@ from core.config import (
     CAPTURE_START_TIMEOUT,
     SCRCPY_DEVICE_JAR,
     SCRCPY_PORT,
+    SCRCPY_PATH,
     SCRCPY_SERVER_PATH,
     SCRCPY_SERVER_VERSION,
     ADB_PATH,
@@ -44,10 +47,12 @@ class ScreenCapture:
         self.socket = None
         self.codec = None
 
-        self.scid = 0  # Server instance ID (scrcpy_<id> em scrcpy 4.1+)
+        self.scid = 0  # Server instance ID (scrcpy_<id> em scrcpy 2.0+)
         self.socket_name = "scrcpy"
 
         self.first_chunk = None  # Primeiro pedaço do stream (H.264 real, não descartável)
+        self._forward_port = None
+        self._server_pushed = False
 
         self.running = False
         self.capture_thread = None
@@ -73,16 +78,37 @@ class ScreenCapture:
 
     def start(self):
 
-        # Um scid novo por execução: o socket abstrato do
-        # servidor é "scrcpy_<scid>", e um id próprio garante
-        # que não colidimos com o espelho nem com sobras de
-        # execuções anteriores.
+        if self.running:
+            return
+
+        if self.capture_thread and self.capture_thread.is_alive():
+            raise RuntimeError("A captura anterior ainda está encerrando.")
+
+        if self.socket or self.server_process or self._forward_port is not None or self._server_pushed:
+            self.stop()
+
+        server_version = self._resolve_server_version()
+
+        with self.condition:
+            self.latest_frame = None
+            self.latest_frame_time = 0.0
+        self._published_at = 0.0
+
+        # Desde 2.0, o scid evita colisões com o espelho e outras capturas.
+        # O servidor 1.x usa obrigatoriamente o socket fixo "scrcpy".
         self.scid = random.randint(0, 0x7FFFFFFF)
-        self.socket_name = f"scrcpy_{self.scid:08x}"
+        self.socket_name = (
+            f"scrcpy_{self.scid:08x}" if server_version >= (2, 0) else "scrcpy"
+        )
+        jar_base, jar_ext = posixpath.splitext(type(self).DEVICE_JAR)
+        self.DEVICE_JAR = f"{jar_base}-{self.scid:08x}{jar_ext}"
 
-        logger.info("Iniciando scrcpy-server (socket @%s)...", self.socket_name)
+        logger.info(
+            "Iniciando scrcpy-server %s (socket @%s)...",
+            self.SERVER_VERSION,
+            self.socket_name,
+        )
 
-        self._cleanup_forward()
         self._push_server()
         self._setup_forward()
         self._start_server()
@@ -212,10 +238,10 @@ class ScreenCapture:
 
                 return candidato, data
 
+            self._fecha(candidato)
+
             if not morto:
                 break
-
-            self._fecha(candidato)
 
             time.sleep(0.15)
 
@@ -253,6 +279,18 @@ class ScreenCapture:
 
         self.first_chunk = None
 
+        try:
+            self._receive(pendente)
+        finally:
+            # Acorda quem espera mesmo se a conversão do frame falhar.
+            with self.condition:
+                self.running = False
+                self.condition.notify_all()
+
+    def _receive(self, pendente):
+
+        stream = self.socket
+
         while self.running:
 
             if pendente is not None:
@@ -260,13 +298,14 @@ class ScreenCapture:
                 data = pendente
                 pendente = None
 
-                self._decode(data)
+                if not self._decode(data):
+                    break
 
                 continue
 
             try:
 
-                data = self.socket.recv(65536)
+                data = stream.recv(65536)
 
             except socket.timeout:
 
@@ -296,13 +335,6 @@ class ScreenCapture:
 
             if not self._decode(data):
                 break
-
-        # Acorda quem estiver esperando frame.
-        with self.condition:
-
-            self.running = False
-
-            self.condition.notify_all()
 
     def _decode(self, data):
         """Retorna False quando o stream terminou (EOF)."""
@@ -403,47 +435,86 @@ class ScreenCapture:
 
     def _push_server(self):
 
-            # Verifica se o caminho do scrcpy-server está configurado e existe
-            if not self.SERVER_PATH:
-                raise RuntimeError(
-                    "Caminho do scrcpy-server não configurado (SCRCPY_SERVER_PATH vazio). "
-                    "Instale scrcpy no PATH ou coloque o scrcpy-server*.jar em tools/scrcpy e tente novamente."
-                )
-
-            if not os.path.exists(self.SERVER_PATH):
-                raise RuntimeError(
-                    f"scrcpy-server não encontrado em '{self.SERVER_PATH}'. Verifique SCRCPY_SERVER_PATH."
-                )
-
-            result = subprocess.run(
-                self._adb(
-                    "push",
-                    self.SERVER_PATH,
-                    self.DEVICE_JAR,
-                ),
-                capture_output=True,
-                text=True,
+        if not self.SERVER_PATH:
+            raise RuntimeError(
+                "Caminho do scrcpy-server não configurado (SCRCPY_SERVER_PATH vazio). "
+                "No Ubuntu, instale scrcpy, scrcpy-server e adb pelo apt. "
+                "O servidor é procurado junto ao executável, em share/scrcpy, lib/scrcpy e tools/scrcpy."
             )
 
-            if result.returncode != 0:
+        if not os.path.exists(self.SERVER_PATH):
+            raise RuntimeError(
+                f"scrcpy-server não encontrado em '{self.SERVER_PATH}'. Verifique SCRCPY_SERVER_PATH."
+            )
 
-                raise RuntimeError(
-                    "Erro ao enviar scrcpy-server:\n"
-                    + (result.stderr or "")
-                )
+        result = subprocess.run(
+            self._adb("push", self.SERVER_PATH, self.DEVICE_JAR),
+            capture_output=True,
+            text=True,
+            timeout=15.0,
+        )
+
+        if result.returncode != 0:
+            raise RuntimeError("Erro ao enviar scrcpy-server:\n" + (result.stderr or ""))
+
+        self._server_pushed = True
 
     def _setup_forward(self):
 
-        subprocess.run(
+        result = subprocess.run(
             self._adb(
                 "forward",
-                f"tcp:{self.PORT}",
+                "--no-rebind",
+                f"tcp:{type(self).PORT}",
                 f"localabstract:{self.socket_name}",
             ),
             check=True,
+            capture_output=True,
+            text=True,
+            timeout=10.0,
         )
 
+        self.PORT = type(self).PORT or int(result.stdout.strip())
+        self._forward_port = self.PORT
+
+    def _resolve_server_version(self):
+        if self.SERVER_VERSION is None:
+            try:
+                result = subprocess.run(
+                    [SCRCPY_PATH, "--version"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5.0,
+                    check=True,
+                )
+            except (OSError, subprocess.SubprocessError) as error:
+                raise RuntimeError("Não foi possível consultar a versão do scrcpy instalado.") from error
+
+            output = result.stdout + "\n" + result.stderr
+            match = re.search(r"(?m)^scrcpy\s+(\S+)", output)
+            if match is None:
+                raise RuntimeError("Versão do scrcpy não reconhecida na saída de scrcpy --version.")
+            self.SERVER_VERSION = match.group(1)
+
+        match = re.match(r"(\d+)\.(\d+)", self.SERVER_VERSION)
+        if match is None:
+            raise RuntimeError(f"Versão do scrcpy inválida: {self.SERVER_VERSION!r}.")
+        version = tuple(map(int, match.groups()))
+        if version < (1, 23):
+            raise RuntimeError(
+                f"scrcpy {self.SERVER_VERSION} não suporta a captura usada pelo bot. "
+                "Atualize o scrcpy para a versão 1.23 ou superior."
+            )
+        return version
+
     def _start_server(self):
+
+        version = self._resolve_server_version()
+        options = ["tunnel_forward=true", "control=false", "cleanup=false"]
+        if version >= (2, 0):
+            options.extend((f"scid={self.scid:08x}", "audio=false", "video_codec=h264"))
+        raw_option = "raw_stream" if version >= (2, 1) else "raw_video_stream"
+        options.append(f"{raw_option}=true")
 
         command = self._adb(
             "shell",
@@ -454,19 +525,7 @@ class ScreenCapture:
             "/",
             "com.genymobile.scrcpy.Server",
             self.SERVER_VERSION,
-            f"scid={self.scid:08x}",  # Obrigatório: socket abstrato é scrcpy_<id>
-
-            "tunnel_forward=true",
-
-            "audio=false",
-
-            "control=false",
-
-            "cleanup=false",
-
-            "raw_stream=true",
-
-            "video_codec=h264",
+            *options,
         )
 
         self.server_process = subprocess.Popen(
@@ -485,6 +544,11 @@ class ScreenCapture:
         if self.socket:
 
             try:
+                self.socket.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+            try:
                 self.socket.close()
 
             except OSError:
@@ -493,7 +557,8 @@ class ScreenCapture:
 
         if self.capture_thread:
             self.capture_thread.join(timeout=2)
-            self.capture_thread = None
+            if not self.capture_thread.is_alive():
+                self.capture_thread = None
 
         self._cleanup_forward()
 
@@ -503,28 +568,35 @@ class ScreenCapture:
                 self.server_process.wait(timeout=2)
             except subprocess.TimeoutExpired:
                 self.server_process.kill()
+                self.server_process.wait(timeout=2)
             self.server_process = None
 
-        subprocess.run(
-            self._adb(
-                "shell",
-                "rm",
-                self.DEVICE_JAR,
-            ),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        if self._server_pushed:
+            try:
+                subprocess.run(
+                    self._adb("shell", "rm", self.DEVICE_JAR),
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=5.0,
+                )
+            except (OSError, subprocess.SubprocessError) as error:
+                logger.warning("Não foi possível remover o servidor: %s", error)
+            self._server_pushed = False
 
         logger.info("Captura encerrada.")
 
     def _cleanup_forward(self):
 
-        subprocess.run(
-            self._adb(
-                "forward",
-                "--remove",
-                f"tcp:{self.PORT}",
-            ),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        if self._forward_port is None:
+            return
+
+        try:
+            subprocess.run(
+                self._adb("forward", "--remove", f"tcp:{self._forward_port}"),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=5.0,
+            )
+        except (OSError, subprocess.SubprocessError) as error:
+            logger.warning("Não foi possível remover o túnel: %s", error)
+        self._forward_port = None

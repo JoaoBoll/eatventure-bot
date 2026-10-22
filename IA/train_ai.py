@@ -1,24 +1,5 @@
 #!/usr/bin/env python3
-"""
-Treino do modelo de visão, a partir de dataset/samples.jsonl.
-
-    python IA/train_ai.py                       # modelo de categoria
-    python IA/train_ai.py --kind action         # comparação
-    python IA/train_ai.py --outcome changed     # só ações que funcionaram
-    python IA/train_ai.py --test-ratio 0.3      # teste com 30% aleatório
-    python IA/train_ai.py --limit 5000          # ensaio rápido
-
-`--kind category` (padrão) treina recorte-de-caixa -> categoria: o alvo
-mediano (95x94 px) desaparece se a tela inteira for reduzida a 32x32, então
-o que funciona é recortar o objeto antes. A ação final vem da tabela de
-prioridade de core/state_machine.py, não do modelo. `--kind action` (tela
-inteira -> ação) fica só para comparação, não alcança o teto de acurácia.
-
-O split de teste é aleatório por índice, não por sessão/tempo — 56% das
-amostras têm `phash` repetido (bot roda ~1x/s em tela quase estática), então
-comparar com os baselines de `state_baseline`/`ceiling_state_categories` é
-o que garante que a acurácia significa algo.
-"""
+"""Treino manual ou por lote, com replay, validação e publicação versionada."""
 
 import argparse
 import hashlib
@@ -68,6 +49,11 @@ def check_dependencies():
 def progress(feito, total, fase):
 
     if total <= 0:
+        return
+
+    if not sys.stdout.isatty():
+        if feito == total or feito % 1000 == 0:
+            print(f"{fase}: {feito}/{total}", flush=True)
         return
 
     fracao = feito / total
@@ -185,7 +171,7 @@ def extract_category_rows(
     return (
         X,
         np.asarray(rotulos, dtype="<U32"),
-        np.asarray(donos, dtype="<U40"),
+        np.asarray(donos, dtype=str),
         {"ilegiveis": ilegiveis, "recortes_vazios": vazios},
     )
 
@@ -195,17 +181,14 @@ def category_dataset(
     negativos_por_frame,
     cache_root,
     usar_cache=True,
+    metadata_records=None,
 ):
-    """(X, y, donos, info) de todas as resoluções, usando o cache por resolução.
-
-    Cada resolução tem cache próprio: só as amostras que ainda não estão lá
-    são extraídas, e o resultado vira um chunk novo. O cache é um superconjunto
-    (guarda o que já foi visto), então no fim as linhas são filtradas para as
-    amostras realmente pedidas nesta execução."""
+    """Junta as features novas e a memória, preservando metadados de cada frame."""
 
     import numpy as np
     from feature_cache import FeatureCache, signature
     from features import FEATURE_SIZE, HSV_BINS, PATCH_MARGIN, PATCH_SIZE
+    from training_run import compact_record, record_id, record_key
 
     tamanhos = box_sizes(registros)
 
@@ -219,66 +202,51 @@ def category_dataset(
     )
 
     por_shard = defaultdict(list)
-
+    disponiveis = defaultdict(dict)
+    for registro in metadata_records if metadata_records is not None else registros:
+        disponiveis[registro.get("_shard") or "."][record_id(registro)] = compact_record(registro)
     for registro in registros:
         por_shard[registro.get("_shard") or "."].append(registro)
 
-    # Shards que só existem no cache (amostras brutas já apagadas do disco)
-    # continuam entrando no treino — é isso que faz o conhecimento acumular
-    # em vez de se perder quando o dataset bruto é limpo.
     cache_kind_root = Path(cache_root) / "category"
-
     if usar_cache and cache_kind_root.exists():
+        if any(cache_kind_root.glob("*.npz")):
+            por_shard.setdefault(".", [])
         for pasta in cache_kind_root.iterdir():
             if pasta.is_dir():
                 por_shard.setdefault(pasta.name, [])
 
     partes = []
-
     info = {
         "ilegiveis": 0,
         "recortes_vazios": 0,
         "extraidas": 0,
         "reaproveitadas": 0,
         "invalidados": [],
+        "records": {},
+        "caches": {},
     }
-
+    planos = []
     for shard, lote in sorted(por_shard.items()):
+        cache = FeatureCache(cache_root, "category", shard, assinatura) if usar_cache else None
+        conhecidos = set()
+        metadados = {record_id(r): compact_record(r) for r in lote}
+        if cache is not None:
+            if not cache.valido():
+                raise RuntimeError(
+                    f"Cache incompatível preservado em {cache.dir}. "
+                    "Restaure as configurações originais ou escolha outro --cache-root."
+                )
+            conhecidos = cache.ids()
+            metadados.update(cache.ensure_metadata(disponiveis[shard]))
+            info["caches"][shard] = cache
+            for metadata in metadados.values():
+                tamanhos.extend(tuple(size) for size in metadata.get("box_sizes", []))
+        planos.append((shard, lote, cache, conhecidos, metadados))
 
-        if not usar_cache:
-
-            X, y, donos, extra = extract_category_rows(
-                lote,
-                negativos_por_frame,
-                tamanhos,
-                f"extraindo {shard}",
-            )
-
-            info["ilegiveis"] += extra["ilegiveis"]
-            info["recortes_vazios"] += extra["recortes_vazios"]
-            info["extraidas"] += len(lote)
-
-            partes.append((X, y, donos))
-
-            continue
-
-        cache = FeatureCache(cache_root, "category", shard, assinatura)
-
-        # Assinatura diferente = vetor guardado não é mais comparável.
-        if not cache.valido():
-            cache.descartar()
-            info["invalidados"].append(shard)
-
-        conhecidos = cache.ids()
-
-        novos = [
-            r
-            for r in lote
-            if str(r.get("id") or r["_path"].stem) not in conhecidos
-        ]
-
+    for shard, lote, cache, conhecidos, metadados in planos:
+        novos = [r for r in lote if record_id(r) not in conhecidos]
         if novos:
-
             X, y, donos, extra = extract_category_rows(
                 novos,
                 negativos_por_frame,
@@ -288,17 +256,22 @@ def category_dataset(
 
             info["ilegiveis"] += extra["ilegiveis"]
             info["recortes_vazios"] += extra["recortes_vazios"]
-            info["extraidas"] += len(novos)
+            info["extraidas"] += len(set(donos.tolist()))
+            if cache is not None:
+                cache.append(X, y, donos, records=metadados)
+        elif cache is None:
+            continue
 
-            cache.append(X, y, donos)
-
-        # Sem filtro por id: o cache é a memória acumulada, não só o que o
-        # dataset bruto ainda tem no disco agora.
-        X, y, donos = cache.load()
-
-        info["reaproveitadas"] += len(donos) - len(novos)
-
-        partes.append((X, y, donos))
+        if cache is not None:
+            X, y, donos = cache.load()
+            metadados = cache.ensure_metadata(disponiveis[shard])
+            info["reaproveitadas"] += len(conhecidos)
+        utilizados = set(str(dono) for dono in donos)
+        for dono in utilizados:
+            metadata = metadados[dono]
+            info["records"][record_key(metadata)] = metadata
+        chaves = np.asarray([f"{shard}/{dono}" for dono in donos], dtype=str)
+        partes.append((X, y, chaves))
 
     if not partes:
         raise SystemExit("Nenhuma amostra para montar o dataset.")
@@ -321,9 +294,11 @@ def build_action_dataset(registros):
     import numpy as np
     from dataset_io import action_label
     from features import SCREEN_FEATURE_SIZE, screen_features
+    from training_run import record_key
 
     linhas = []
     rotulos = []
+    donos = []
     ilegiveis = 0
     total = len(registros)
 
@@ -336,6 +311,7 @@ def build_action_dataset(registros):
             if vetor is not None:
                 linhas.append(vetor)
                 rotulos.append(action_label(registro))
+                donos.append(record_key(registro))
 
         if indice % 25 == 0 or indice == total:
             progress(indice, total, "lendo imagens")
@@ -345,7 +321,7 @@ def build_action_dataset(registros):
 
     X = np.asarray(linhas, dtype=np.float32)
     assert X.shape[1] == SCREEN_FEATURE_SIZE
-    return X, np.asarray(rotulos), {"ilegiveis": ilegiveis}
+    return X, np.asarray(rotulos), {"ilegiveis": ilegiveis, "ids": donos}
 
 
 def build_classifier(trees, seed, jobs):
@@ -546,308 +522,253 @@ def _report_criticas(y_teste, y_treino, previsto):
 
 
 def train(args):
-
-    import random
-
-    from dataset_io import (
-        action_label,
-        ceiling_state_categories,
-        filter_by_outcome,
-        read_index,
-        split_groups,
-        state_baseline,
-    )
+    from dataset.training_files import snapshot_records, training_lock
+    from dataset_io import filter_by_outcome
+    from training_run import record_key, trained_sample_ids
 
     raiz = Path(args.dataset_root).expanduser().resolve()
+    automatico = getattr(args, "automatic", False)
+    try:
+        with training_lock(raiz):
+            snapshot, aviso = snapshot_records(raiz)
+            registros = filter_by_outcome(snapshot, args.outcome)
+            registros = list({record_key(r): r for r in registros}.values())
+            if automatico:
+                treinados = trained_sample_ids(raiz, args.cache_root)
+                registros = [r for r in registros if record_key(r) not in treinados]
+                minimo = getattr(args, "min_samples", 10000)
+                if len(registros) < minimo:
+                    print(f"Treino automático aguardando: {len(registros)}/{minimo} amostras novas.")
+                    return 0
+                registros = registros[:getattr(args, "batch_size", 10000)]
+            if args.limit:
+                registros = registros[:args.limit]
+            return _train_snapshot(args, raiz, registros, snapshot, aviso)
+    except BlockingIOError:
+        print("Já existe um treino ativo para este dataset.")
+        return 0 if automatico else 1
+    except (Exception, SystemExit, KeyboardInterrupt) as error:
+        return _failed_training(args, error)
 
-    print(f"dataset ......... {raiz}")
 
-    registros, aviso = read_index(raiz)
+def _failed_training(args, error, execucao=None):
+    from training_run import TrainingRun
 
-    print(
-        "resolucoes ...... "
-        + ", ".join(
-            f"{nome} ({quantas})"
-            for nome, quantas in sorted(aviso["raizes"].items())
-        )
+    execucao = execucao or TrainingRun(ROOT / "IA", args)
+    execucao.data["error"] = {
+        "type": type(error).__name__,
+        "message": str(error),
+    }
+    execucao.finish("interrupted" if isinstance(error, KeyboardInterrupt) else "failed")
+    print(f"Treino não concluído: {error}")
+    print(f"Relatório: {execucao.path}")
+    return 130 if isinstance(error, KeyboardInterrupt) else 1
+
+
+def _train_snapshot(args, raiz, registros, snapshot, aviso):
+    from training_run import TrainingRun
+
+    execucao = TrainingRun(ROOT / "IA", args)
+    try:
+        execucao.save()
+        return _fit_snapshot(args, raiz, registros, snapshot, aviso, execucao)
+    except (Exception, SystemExit, KeyboardInterrupt) as error:
+        return _failed_training(args, error, execucao)
+
+
+def _fit_snapshot(args, raiz, registros, snapshot, aviso, execucao):
+    check_dependencies()
+
+    import numpy as np
+    from sklearn.metrics import classification_report
+
+    from dataset.training_files import cleanup_records
+    from dataset_io import ceiling_state_categories, split_groups, state_baseline
+    from training_run import (
+        activate_model, compact_record, publish_model,
+        record_id, record_key, summarize,
     )
 
-    print(f"amostras ........ {len(registros)}")
+    automatico = getattr(args, "automatic", False)
+    compativel_limpeza = args.kind == "category" and not args.no_cache
+    pedido_limpeza = getattr(args, "cleanup", None)
+    if pedido_limpeza is True and not compativel_limpeza:
+        raise ValueError("--cleanup exige --kind category e cache habilitado.")
+    if automatico and (not compativel_limpeza or pedido_limpeza is False):
+        raise ValueError("O treino automático exige categorias, cache e limpeza habilitados.")
+    if automatico and args.limit is not None:
+        raise ValueError("Use --batch-size para limitar lotes automáticos; --limit é apenas manual.")
+    limpar = compativel_limpeza if pedido_limpeza is None else pedido_limpeza
+    if getattr(args, "min_samples", 10000) <= 0 or getattr(args, "batch_size", 10000) <= 0:
+        raise ValueError("--min-samples e --batch-size devem ser positivos.")
+    if args.kind == "action" and Path(args.model_out).resolve() == DEFAULT_MODEL.resolve():
+        raise ValueError("--kind action exige --model-out alternativo para preservar o modelo do bot.")
 
-    if aviso["invalidas"] or aviso["sem_imagem"]:
+    selecionadas = {record_key(r) for r in registros}
+    execucao.data["dataset_root"] = str(raiz)
+    execucao.data["input_warnings"] = aviso
+    execucao.data["current_batch"] = {
+        **summarize(registros),
+        "available_frames": len(snapshot),
+        "sample_keys": sorted(selecionadas),
+    }
+    execucao.data["cleanup"] = {
+        "requested": bool(limpar),
+        "status": "pending" if limpar else "disabled",
+    }
+    execucao.save()
 
-        print(
-            f"  ignoradas: {aviso['invalidas']} linha(s) "
-            f"inválida(s), {aviso['sem_imagem']} sem imagem"
+    cache_root = Path(args.cache_root).expanduser().resolve() if args.cache_root else raiz / "cache"
+    if args.kind == "category":
+        X, y, donos, extra = category_dataset(
+            registros, args.negatives, cache_root,
+            usar_cache=not args.no_cache, metadata_records=snapshot,
         )
+        metadados = extra["records"]
+        caches = extra["caches"]
+    else:
+        X, y, extra = build_action_dataset(registros)
+        donos = np.asarray(extra["ids"], dtype=str)
+        utilizados = set(donos.tolist())
+        metadados = {
+            record_key(r): compact_record(r)
+            for r in registros if record_key(r) in utilizados
+        }
+        caches = {}
 
-    if args.outcome:
+    efetivas = set(donos.tolist())
+    atuais = efetivas & selecionadas
+    replay = efetivas - selecionadas
+    execucao.data["current_batch"].update({
+        "used_frames": len(atuais),
+        "unused_frames": len(selecionadas - atuais),
+        "used_rows": int(np.isin(donos, list(atuais)).sum()),
+        "used_summary": summarize(metadados[k] for k in sorted(atuais)),
+    })
+    execucao.data["replay"] = {
+        **summarize(metadados[k] for k in sorted(replay)),
+        "rows": int(np.isin(donos, list(replay)).sum()),
+    }
+    execucao.data["extraction"] = {
+        key: extra.get(key, 0)
+        for key in ("ilegiveis", "recortes_vazios", "extraidas", "reaproveitadas")
+    }
+    execucao.save()
+    if len(efetivas) < 20:
+        raise ValueError(f"Amostras efetivamente utilizáveis insuficientes: {len(efetivas)} (mínimo 20).")
 
-        antes = len(registros)
+    todos_registros = [metadados[k] for k in sorted(efetivas)]
+    treino, teste, divisao = split_groups(
+        todos_registros, train_ratio=1.0 - args.test_ratio,
+        mode=args.split, seed=args.seed,
+    )
+    ids_treino = {record_key(r) for r in treino}
+    ids_teste = {record_key(r) for r in teste}
+    mascara_teste = np.isin(donos, list(ids_teste))
+    X_treino, y_treino = X[~mascara_teste], y[~mascara_teste]
+    X_teste, y_teste = X[mascara_teste], y[mascara_teste]
+    if not len(X_treino) or not len(X_teste):
+        raise ValueError("O split por grupo precisa de conjuntos de treino e validação não vazios.")
+    if len(set(y_treino.tolist())) < 2:
+        raise ValueError("O conjunto de treino contém menos de duas categorias.")
 
-        registros = filter_by_outcome(registros, args.outcome)
-
-        print(
-            f"filtro outcome .. {args.outcome} "
-            f"({antes} -> {len(registros)})"
-        )
-
-    if args.limit:
-
-        registros = registros[: args.limit]
-
-        print(f"limite .......... {len(registros)} amostras")
-
-    if len(registros) < 20:
-
-        raise SystemExit(
-            f"Amostras insuficientes ({len(registros)}). "
-            "Rode o bot mais tempo com DATASET_SAVE ligado."
-        )
-
+    baseline_records = [
+        {**r, "boxes": [{"category": category} for category in r["categories"]]}
+        for r in todos_registros
+    ]
     referencias = {
-        "só o estado da máquina": state_baseline(registros),
-        "estado + categorias (teto)":
-            ceiling_state_categories(registros),
+        "só o estado da máquina": state_baseline(baseline_records),
+        "estado + categorias (teto)": ceiling_state_categories(baseline_records),
+    }
+    print(f"Avaliação: {len(ids_treino)} frames/{len(X_treino)} recortes no treino, "
+          f"{len(ids_teste)} frames/{len(X_teste)} recortes na validação.")
+    avaliador = build_classifier(args.trees, args.seed, args.jobs)
+    avaliador.fit(X_treino, y_treino)
+    acuracia = report(avaliador, X_teste, y_teste, y_treino, referencias, args.kind)
+    execucao.data["evaluation"] = {
+        "accuracy": float(acuracia),
+        "row_unit": "box_crop" if args.kind == "category" else "full_frame",
+        "split": {**divisao, "test_ratio": args.test_ratio},
+        "training": {**summarize(treino), "rows": int(len(X_treino))},
+        "validation": {**summarize(teste), "rows": int(len(X_teste))},
+        "class_metrics": classification_report(
+            y_teste, avaliador.predict(X_teste), output_dict=True, zero_division=0,
+        ),
+        "baselines": {name: float(value) for name, value in referencias.items()},
+        "scope": "held_out_groups_before_final_refit",
+    }
+    execucao.save()
+
+    print(f"Ajuste final: {len(efetivas)} frames/{len(X)} recortes, incluindo validação e replay.")
+    modelo = build_classifier(args.trees, args.seed, args.jobs)
+    modelo.fit(X, y)
+    execucao.data["final_fit"] = {
+        **summarize(todos_registros),
+        "rows": int(len(X)),
+        "row_unit": "box_crop" if args.kind == "category" else "full_frame",
+        "current_batch_frames": len(atuais),
+        "replay_frames": len(replay),
+        "classes": dict(sorted(Counter(str(label) for label in y).items())),
+        "includes_validation": True,
     }
 
-    print()
-    print("referências deste dataset:")
-
-    for nome, valor in referencias.items():
-        print(f"  {nome:<30} {valor:7.2%}")
-
-    random.seed(args.seed)
-
-    # Split por GRUPO, não por amostra: 56% das amostras repetem phash, e
-    # dividir por índice deixa o mesmo quadro dos dois lados — a acurácia sai
-    # inflada por decorar, não por generalizar.
-    treino, teste, info = split_groups(
-        registros,
-        train_ratio=1.0 - args.test_ratio,
-        mode=args.split,
-        seed=args.seed,
-    )
-
-    info["test_ratio"] = args.test_ratio
-
-    print()
-    print(f"split por {args.split} (nenhum grupo nos dois lados):")
-    print(f"  {info['grupos_treino']} grupos / {len(treino)} amostras de treino")
-    print(f"  {info['grupos_teste']} grupos / {len(teste)} amostras de teste")
-    print()
-
-    if not teste:
-
-        raise SystemExit(
-            "Conjunto de teste vazio."
-        )
-
-    inicio = time.monotonic()
-
-    if args.kind == "category":
-
-        import numpy as np
-
-        cache_root = (
-            Path(args.cache_root).expanduser().resolve()
-            if args.cache_root
-            else raiz / "cache"
-        )
-
-        print(
-            f"features ........ {'cache em ' + str(cache_root) if not args.no_cache else 'sem cache'}"
-        )
-
-        X, y, donos, extra = category_dataset(
-            registros,
-            args.negatives,
-            cache_root,
-            usar_cache=not args.no_cache,
-        )
-
-        if extra["invalidados"]:
-
-            print(
-                f"  cache invalidado (features mudaram): "
-                f"{', '.join(extra['invalidados'])}"
-            )
-
-        print(
-            f"  {extra['extraidas']} amostra(s) extraída(s), "
-            f"{extra['reaproveitadas']} reaproveitada(s) do cache"
-        )
-
-        ids_teste = {
-            str(r.get("id") or r["_path"].stem)
-            for r in teste
-        }
-
-        mascara_teste = np.isin(donos, list(ids_teste))
-
-        X_treino, y_treino = X[~mascara_teste], y[~mascara_teste]
-        X_teste, y_teste = X[mascara_teste], y[mascara_teste]
-
-    else:
-
-        print(f"montando telas de treino ({len(treino)} frames)")
-
-        X_treino, y_treino, extra = build_action_dataset(treino)
-
-        print(f"montando telas de teste ({len(teste)} frames)")
-
-        X_teste, y_teste, _ = build_action_dataset(teste)
-
-    if extra.get("ilegiveis"):
-
-        print(f"  {extra['ilegiveis']} imagem(ns) ilegível(is)")
-
-    if extra.get("recortes_vazios"):
-
-        print(f"  {extra['recortes_vazios']} recorte(s) vazio(s)")
-
-    print(
-        f"  treino {X_treino.shape[0]} x {X_treino.shape[1]} | "
-        f"teste {X_teste.shape[0]} x {X_teste.shape[1]} "
-        f"({time.monotonic() - inicio:.0f}s)"
-    )
-
-    if args.kind == "category":
-        background_count = sum(1 for y in y_treino if str(y) == "background")
-        total_treino = len(y_treino)
-        background_pct = (background_count / total_treino * 100) if total_treino > 0 else 0
-
-        if args.negatives == 0:
-            print()
-            print("  ⚠ AVISO: --negatives=0")
-            print("    Sem recortes de fundo, o modelo pode detectar qualquer")
-            print("    pixel que não for do alvo. Recomendado: --negatives=2+")
-        elif background_pct < 15:
-            print()
-            print(f"  ⚠ AVISO: background apenas {background_pct:.1f}% do treino")
-            print("    Muito poucos negativos. Aumentar --negatives?")
-        else:
-            print()
-            print(f"  ✓ background {background_pct:.1f}% do treino (saudável)")
-
-    contagem = Counter(y_treino.tolist())
-
-    print()
-    print("classes no treino:")
-
-    for classe, quantas in contagem.most_common():
-        print(f"  {classe:<16} {quantas:7d}")
-
-    if len(contagem) < 2:
-
-        raise SystemExit(
-            "Só uma classe no treino. Nada a aprender."
-        )
-
-    faltantes = set(y_teste.tolist()) - set(contagem)
-
-    if faltantes:
-
-        print()
-        print(
-            f"  aviso: {sorted(faltantes)} aparece(m) só no "
-            "teste — o modelo não pode acertar essas"
-        )
-
-    print()
-    print("verificação de categorias críticas:")
-
-    for categoria in CATEGORIAS_CRITICAS:
-        qtd = contagem.get(categoria, 0)
-        pct = (qtd / sum(contagem.values())) * 100 if sum(contagem.values()) > 0 else 0
-
-        if qtd == 0:
-            print(f"  ⚠ {categoria:<14} 0 exemplos!      <- coleta urgente")
-        elif qtd < 50:
-            print(f"  ⚠ {categoria:<14} {qtd:5d} ({pct:5.2f}%)  <- coleta recomendada")
-        else:
-            print(f"  ✓ {categoria:<14} {qtd:5d} ({pct:5.2f}%)")
-
-    print()
-    print(f"treinando ({args.trees} árvores)...")
-
-    inicio = time.monotonic()
-
-    clf = build_classifier(args.trees, args.seed, args.jobs)
-
-    clf.fit(X_treino, y_treino)
-
-    print(f"  {time.monotonic() - inicio:.0f}s")
-
-    acuracia = report(
-        clf, X_teste, y_teste, y_treino, referencias, args.kind
-    )
-
-    import joblib
-
-    from features import (
-        HSV_BINS,
-        PATCH_MARGIN,
-        PATCH_SIZE,
-        SCREEN_HEIGHT,
-        SCREEN_WIDTH,
-    )
-
-    destino = Path(args.model_out).expanduser().resolve()
-
-    destino.parent.mkdir(parents=True, exist_ok=True)
-
-    joblib.dump(clf, destino)
-
-    # registra como as features foram geradas: bot_ai confere isso no load
-    # para não usar um modelo antigo com PATCH_SIZE diferente
+    from features import HSV_BINS, PATCH_MARGIN, PATCH_SIZE, SCREEN_HEIGHT, SCREEN_WIDTH
     meta = {
+        "run_id": execucao.id,
         "kind": args.kind,
-        "labels": [str(c) for c in clf.classes_],
-        "counts": dict(sorted(contagem.items())),
+        "labels": [str(label) for label in modelo.classes_],
+        "counts": execucao.data["final_fit"]["classes"],
         "accuracy": float(acuracia),
-        "baselines": {
-            nome: float(valor)
-            for nome, valor in referencias.items()
-        },
-        "split": info,
+        "accuracy_scope": "validation_before_final_refit",
+        "baselines": execucao.data["evaluation"]["baselines"],
+        "split": execucao.data["evaluation"]["split"],
         "outcome_filter": args.outcome,
         "features": {
-            "patch_size": PATCH_SIZE,
-            "patch_margin": PATCH_MARGIN,
-            "hsv_bins": HSV_BINS,
-            "screen_width": SCREEN_WIDTH,
-            "screen_height": SCREEN_HEIGHT,
-            "n_features": int(X_treino.shape[1]),
+            "patch_size": PATCH_SIZE, "patch_margin": PATCH_MARGIN,
+            "hsv_bins": HSV_BINS, "screen_width": SCREEN_WIDTH,
+            "screen_height": SCREEN_HEIGHT, "n_features": int(X.shape[1]),
         },
-        "trees": args.trees,
-        "seed": args.seed,
+        "trees": args.trees, "seed": args.seed,
+        "final_fit": execucao.data["final_fit"],
     }
-
-    destino.with_suffix(".meta.json").write_text(
-        json.dumps(meta, ensure_ascii=False, indent=2),
-        encoding="utf-8",
+    execucao.data["artifacts"] = publish_model(
+        execucao, modelo, meta, args.model_out,
     )
+    execucao.data["status"] = "publishing"
+    execucao.save()
+    activate_model(execucao)
+    execucao.data["model_activated"] = True
+    execucao.finish("success")
 
-    print(f"modelo .......... {destino}")
-    print(f"metadado ........ {destino.with_suffix('.meta.json')}")
-    print()
-
-    if args.kind == "action":
-
-        print(
-            "Lembrete: `--kind action` existe para comparação.\n"
-            "O alvo mediano tem 95x94 px e a tela inteira é\n"
-            "reduzida, então ele não alcança o teto de 96%. O\n"
-            "modelo para usar no bot é o `category`."
-        )
-
-        return 0
-
-    _recommendations(acuracia, referencias, contagem, background_pct)
-
+    try:
+        if limpar:
+            fonte_limpeza = snapshot if not args.outcome and not args.limit else registros
+            consumiveis = [r for r in fonte_limpeza if record_key(r) in efetivas]
+            consumidos = {record_id(r) for r in consumiveis}
+            resultado = cleanup_records(raiz, consumiveis, consumidos)
+            execucao.data["cleanup"] = {
+                **resultado, "requested": True,
+                "eligible_snapshot_frames": len(consumiveis),
+                "replay_raw_frames": sum(record_key(r) in replay for r in consumiveis),
+            }
+            execucao.data["cleanup"].setdefault(
+                "status", "partial" if resultado.get("errors") else "completed"
+            )
+        for shard, cache in caches.items():
+            cache.mark_trained(
+                metadata["id"] for metadata in metadados.values()
+                if metadata["_shard"] == shard
+            )
+    except Exception as error:
+        execucao.data["cleanup"] = {
+            **execucao.data["cleanup"], "status": "failed",
+            "error": f"{type(error).__name__}: {error}",
+        }
+        print(f"Modelo publicado; limpeza/registro do lote não concluído: {error}")
+    execucao.finish("success")
+    print(f"Modelo: {execucao.data['artifacts']['model']}")
+    print(f"Relatório: {execucao.path}")
     return 0
-
 
 def _recommendations(acuracia, referencias, contagem, background_pct):
     print("=" * 62)
@@ -934,9 +855,31 @@ def parse_args(argv=None):
     )
 
     parser.add_argument(
+        "--automatic", action="store_true",
+        help="treina apenas quando há amostras novas suficientes, em lotes",
+    )
+    parser.add_argument(
+        "--min-samples", type=int, default=10000,
+        help="mínimo de frames novos para iniciar treino automático (padrão: 10000)",
+    )
+    parser.add_argument(
+        "--batch-size", type=int, default=10000,
+        help="máximo de frames novos por lote automático (padrão: 10000)",
+    )
+    limpeza = parser.add_mutually_exclusive_group()
+    limpeza.add_argument(
+        "--cleanup", dest="cleanup", action="store_true", default=None,
+        help="limpa os índices/imagens consumidos após sucesso (padrão com categorias e cache)",
+    )
+    limpeza.add_argument(
+        "--keep-data", dest="cleanup", action="store_false", default=None,
+        help="preserva índices e imagens após o treino manual",
+    )
+
+    parser.add_argument(
         "--model-out",
         default=str(DEFAULT_MODEL),
-        help="onde gravar o modelo",
+        help="nome de referência do modelo; publica versão em models/ e ponteiro .current.json",
     )
 
     parser.add_argument(
@@ -995,8 +938,6 @@ def parse_args(argv=None):
 def main(argv=None):
 
     args = parse_args(argv)
-
-    check_dependencies()
 
     return train(args)
 

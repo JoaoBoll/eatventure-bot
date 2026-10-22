@@ -5,13 +5,7 @@ import subprocess
 import sys
 import time
 
-import cv2
-
-from actions.manager import ActionManager
-from capture.screen import ScreenCapture
-from core import devices, log
-from core.battery import BatteryMonitor
-from dataset.recorder import DatasetRecorder
+from core import log
 from core.config import (
     AI_WINDOW_NAME,
     AI_WINDOW_POSITION,
@@ -20,6 +14,7 @@ from core.config import (
     DATASET_DB_ENABLED,
     DATASET_DB_SCHEMA,
     DEVICE_SERIAL,
+    LOG_DIR,
     LOG_LEVEL,
     DATASET_SAVE,
     SCRCPY_EXTRA_ARGS,
@@ -32,12 +27,6 @@ from core.config import (
     WINDOW_HEIGHT,
     WINDOW_WIDTH,
 )
-from core.state_machine import StateMachine
-from core.status import StatusPanel, formata_bateria
-from vision.detector import Detector
-from vision.worker import VisionWorker
-
-logger = log.get("main")
 
 
 def parse_args(argv=None):
@@ -63,17 +52,42 @@ def parse_args(argv=None):
     )
 
     parser.add_argument(
+        "--log",
+        action="store_true",
+        help="Salva o log completo da execução em arquivo na pasta logs/.",
+    )
+
+    parser.add_argument(
         "--layout-only",
         action="store_true",
         help=(
             "detect() busca só os overrides da resolução, sem os "
             "templates default (mais rápido, mas cego onde ainda não há "
-            "override). Rode src/main_layouts.py em paralelo para manter "
-            "os overrides atualizados."
+            "override). Os existentes continuam sendo atualizados "
+            "em segundo plano quando o aprendizado está ativo."
         ),
     )
 
     return parser.parse_args(argv)
+
+
+# Registra também erros ao importar as dependências durante a execução direta.
+if __name__ == "__main__":
+    log.setup(LOG_LEVEL, log_dir=LOG_DIR if parse_args().log else None)
+
+import cv2
+
+from actions.manager import ActionManager
+from capture.screen import ScreenCapture
+from core import devices
+from core.battery import BatteryMonitor
+from core.state_machine import StateMachine
+from core.status import StatusPanel, formata_bateria
+from dataset.recorder import DatasetRecorder
+from vision.detector import Detector
+from vision.worker import VisionWorker
+
+logger = log.get("main")
 
 
 def start_scrcpy(device_id):
@@ -82,7 +96,7 @@ def start_scrcpy(device_id):
 
     logger.info("Iniciando %s...", window_title)
 
-    return subprocess.Popen(
+    process = subprocess.Popen(
         [
             SCRCPY_PATH,
 
@@ -92,8 +106,16 @@ def start_scrcpy(device_id):
             "--window-title",
             window_title,
         ]
-        + list(SCRCPY_EXTRA_ARGS)
+        + list(SCRCPY_EXTRA_ARGS),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
     )
+
+    process.output_thread = log.start_process_output(process, "scrcpy")
+    return process
 
 
 def setup_window():
@@ -178,15 +200,34 @@ def run_loop(
     actions,
     battery,
     panel=None,
+    auto_trainer=None,
 ):
 
     last_version = 0
+    pause_started = None
+    resume_floor = 0.0
 
     # Evita repetir o aviso de visão caída a cada quadro.
     vision_avisada = False
 
+    def update_panel():
+        if panel is not None:
+            resumo = state_machine.summary()
+            resumo["templates"] = detector.template_count()
+            if pause_started is not None:
+                resumo["estado"] = "PAUSADO PARA TREINO"
+            panel.update(
+                resumo,
+                extra=(
+                    f"{vision.get_fps():.1f} fps"
+                    f" | {formata_bateria(battery.get())}"
+                ),
+                misses=detector.miss_report(),
+            )
+
     while True:
 
+        paused = auto_trainer is not None and auto_trainer.pause_requested
         # Timeout curto para a janela do OpenCV continuar respondendo
         # (e o ESC funcionar) mesmo se o stream travar.
         frame, version, timestamp = capture.get_frame(
@@ -200,7 +241,24 @@ def run_loop(
 
             break
 
-        if frame is None:
+        if paused:
+            if pause_started is None:
+                pause_started = time.monotonic()
+                vision.set_frame_floor(float("inf"))
+                logger.info("Bot pausado para o treino automático.")
+            recorder = state_machine.recorder
+            if not actions.is_busy() and (recorder is None or recorder.prepare_for_training()):
+                auto_trainer.acknowledge_pause()
+        elif pause_started is not None:
+            resume_floor = time.monotonic()
+            state_machine.resume_after_pause(resume_floor - pause_started)
+            pause_started = None
+            logger.info("Treino automático encerrado; retomando o bot.")
+
+        if frame is None or version == last_version:
+            update_panel()
+            if SHOW_AI_VISION and cv2.waitKey(1) & 0xFF == 27:
+                break
             continue
 
         last_version = version
@@ -212,24 +270,26 @@ def run_loop(
 
         actions.set_frame_size(largura_frame, altura_frame)
 
-        if VISION_FILTER_BY_STATE:
+        detections, lag, detect_frame, detect_time = [], 0.0, None, 0.0
+        if not paused:
+            if VISION_FILTER_BY_STATE:
+                vision.set_categories(state_machine.wanted_categories())
 
-            vision.set_categories(
-                state_machine.wanted_categories()
+            floor = state_machine.frame_floor()
+            if resume_floor:
+                floor = max(floor, resume_floor)
+            vision.set_frame_floor(floor)
+            vision.set_frame(frame, timestamp)
+
+            detections, lag, detect_frame, detect_time = (
+                read_detections(vision)
             )
 
-        # Frame anterior à última ação não pode gerar detecção válida
-        # (_can_act descarta), então o worker nem gasta uma passada nele.
-        vision.set_frame_floor(state_machine.frame_floor())
-
-        vision.set_frame(frame, timestamp)
-
-        # get_input (não get_detections): devolve também o frame que
-        # PRODUZIU as detecções, para dataset não gravar imagem/rótulo
-        # de passadas diferentes.
-        detections, lag, detect_frame, detect_time = (
-            read_detections(vision)
-        )
+            if detect_frame is not None and (
+                detect_frame.shape[:2] != frame.shape[:2]
+                or detect_time <= resume_floor
+            ):
+                detections, detect_frame, detect_time = [], None, 0.0
 
         # Thread do detector morta não para o programa sozinha (captura e
         # janela seguem ativas, o bot só some de agir) — loga uma vez.
@@ -244,32 +304,15 @@ def run_loop(
 
             vision_avisada = True
 
-        # Sem intervalo mínimo aqui: o cooldown de QUANDO agir já vive
-        # na StateMachine, que considera a idade do frame.
-        state_machine.update(
-            detections,
-            lag,
-            detect_frame,
-            detect_time,
-        )
-
-        # Depois do update, para mostrar o estado já com o efeito desta
-        # volta. O panel decide sozinho se redesenha, então chamar
-        # sempre não custa.
-        if panel is not None:
-
-            # Bateria via BatteryMonitor (memória): dumpsys custa ~56ms
-            # e não pode entrar no loop.
-            panel.update(
-                state_machine.summary(),
-                extra=(
-                    f"{vision.get_fps():.1f} fps"
-                    f" | {formata_bateria(battery.get())}"
-                ),
-
-                # Vazio com DETECTOR_DEBUG_MISSES desligado.
-                misses=detector.miss_report(),
+        if not paused and detect_frame is not None and detect_time > 0:
+            state_machine.update(
+                detections,
+                lag,
+                detect_frame,
+                detect_time,
             )
+
+        update_panel()
 
         # Sem janela, não há cópia nem desenho do frame.
         if not SHOW_AI_VISION:
@@ -317,7 +360,7 @@ def run_loop(
 
                 # Sem isto, overlay vazio não diz se o problema é
                 # template, threshold ou estado errado.
-                "state": state_machine.state,
+                "state": "PAUSADO PARA TREINO" if paused else state_machine.state,
                 "searched": detector.last_searched,
                 "searchable": detector.last_total,
                 "detections": len(detections),
@@ -349,9 +392,9 @@ def run_loop(
 
 def main(argv=None):
 
-    log.setup(LOG_LEVEL)
-
     args = parse_args(argv)
+
+    log.setup(LOG_LEVEL, log_dir=LOG_DIR if args.log else None)
 
     # --device manda no config, o config manda na pergunta.
     # Ctrl+C aqui é desistência do usuário, não erro.
@@ -380,20 +423,13 @@ def main(argv=None):
         "ESC ou Ctrl+C" if SHOW_AI_VISION else "Ctrl+C",
     )
 
-    # Espelho do scrcpy é opcional: a captura do bot não passa por ele.
-    scrcpy_process = (
-        start_scrcpy(device_id)
-        if SHOW_SCRCPY
-        else None
-    )
+    scrcpy_process = None
 
     capture = ScreenCapture(device_id)
 
     detector = Detector(
         use_defaults=not args.layout_only,
-        # O aprendizado de override por resolução não depende da coleta
-        # do dataset: ele deve continuar sempre que uma detecção válida
-        # aparecer, mesmo sem o modo de IA-collect ligado.
+        # O aprendizado por resolução independe da coleta do dataset.
         learn_only_actions=False,
     )
 
@@ -401,7 +437,7 @@ def main(argv=None):
 
     actions = ActionManager(device_id)
 
-    recorder = build_recorder(ai_collect=args.ai_collect)
+    recorder = build_recorder(ai_collect=True if args.ai_collect else None)
 
     state_machine = StateMachine(actions, recorder, detector)
 
@@ -413,18 +449,20 @@ def main(argv=None):
         StatusPanel(
             device_id,
             interval=STATUS_PANEL_INTERVAL,
+            stream=log.console_stream(),
+            templates=detector.template_count(),
         )
         if STATUS_PANEL
         else None
     )
 
     if panel is not None:
-
-        # Sem isto, cada ação imprime uma linha de INFO e empurra o
-        # painel, os dois brigando pelo mesmo terminal.
-        log.set_console_level("WARNING")
+        log.set_console_panel(panel)
 
     try:
+
+        if SHOW_SCRCPY:
+            scrcpy_process = start_scrcpy(device_id)
 
         capture.start()
 
@@ -450,6 +488,7 @@ def main(argv=None):
             actions,
             battery,
             panel,
+            auto_trainer=recorder.auto_trainer if recorder else None,
         )
 
     except KeyboardInterrupt:
@@ -458,13 +497,11 @@ def main(argv=None):
 
     finally:
 
-        # Antes de qualquer log: devolve o cursor para baixo do painel,
-        # senão as linhas de encerramento escrevem em cima dele.
         if panel is not None:
-
-            panel.close()
-
-            log.set_console_level(LOG_LEVEL)
+            try:
+                panel.close()
+            finally:
+                log.set_console_panel(None)
 
         logger.info("Encerrando EatVenture AI...")
 
@@ -477,11 +514,14 @@ def main(argv=None):
 
         vision.stop()
 
+        detector.stop()
+
         actions.stop()
 
         capture.stop()
 
-        cv2.destroyAllWindows()
+        if SHOW_AI_VISION:
+            cv2.destroyAllWindows()
 
         if scrcpy_process:
 
@@ -494,6 +534,11 @@ def main(argv=None):
             except subprocess.TimeoutExpired:
 
                 scrcpy_process.kill()
+                scrcpy_process.wait(timeout=2)
+
+            output_thread = getattr(scrcpy_process, "output_thread", None)
+            if output_thread is not None:
+                output_thread.join(timeout=2)
 
 
 if __name__ == "__main__":

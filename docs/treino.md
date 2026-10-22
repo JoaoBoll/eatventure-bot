@@ -54,25 +54,41 @@ python src/main.py --ai-collect
 Grava em `dataset/data/<resolucao>/`. Sem a flag, usa `DATASET_SAVE` do
 `src/core/config.py`.
 
+A cada 10 mil registros novos, somando as resoluções, inicia um treino
+automático. Os processos e janelas continuam abertos, mas as ações do bot e
+a coleta ficam pausadas. Ambos retomam automaticamente quando o treino
+termina ou falha.
+
+A pausa vem ativada por padrão em `src/core/config.py`. Para continuar
+jogando e coletando em paralelo ao treino automático, defina
+`AI_PAUSE_BOT_WHILE_TRAINING = False`.
+
 ### Treinar
 
 ```bash
 python IA/train_ai.py
 ```
 
-Junta todas as resoluções, usa o cache, grava `IA/model.joblib` e
-`IA/model.meta.json`.
+Treina manualmente sem esperar 10 mil registros. Junta as resoluções e o
+cache, publica uma versão em `IA/models/` e atualiza `IA/model.current.json`.
+Cada execução gera seu próprio JSON em `IA/training_reports/`, com contagens
+do lote atual, dados reaproveitados e métricas de validação separados.
+
+Após salvar o modelo e o relatório, remove os registros e imagens
+aproveitados. O cache acumulado permanece. Use `--keep-data` para preservar
+os dados brutos no treino manual. Dados novos e não aproveitados permanecem.
 
 | flag | padrão | o que faz |
 |---|---|---|
 | `--kind category\|action` | `category` | `category`: recorte → categoria (é o que o bot usa). `action`: tela inteira → ação, só para comparação |
 | `--dataset-root PASTA` | `dataset/` | raiz da coleta; todas as resoluções dentro dela |
-| `--model-out ARQUIVO` | `IA/model.joblib` | onde gravar o modelo |
+| `--model-out ARQUIVO` | `IA/model.joblib` | referência do modelo; publica a versão em `models/` e um ponteiro `*.current.json` ao lado |
 | `--split phash\|session` | `phash` | agrupamento do split. `phash`: quadros visualmente iguais ficam do mesmo lado. `session`: partida inteira de um lado só |
 | `--test-ratio FRACAO` | `0.2` | fração de **grupos** para teste |
 | `--negatives N` | `2` | recortes de fundo por frame. Muda a assinatura do cache |
 | `--cache-root PASTA` | `<dataset>/cache` | onde fica o cache de features |
-| `--no-cache` | desligado | extrai tudo do zero, sem ler nem gravar cache |
+| `--no-cache` | desligado | extrai tudo do zero, sem ler nem gravar cache e sem limpar os dados brutos |
+| `--keep-data` | desligado | preserva registros e imagens após o treino manual |
 | `--outcome R [R...]` | todos | filtra amostras: `changed`, `unchanged`, `unknown`, `negative` |
 | `--trees N` | `200` | árvores da floresta |
 | `--jobs N` | `-1` | processos no fit (`-1` = todos) |
@@ -89,6 +105,9 @@ inflada por decorar em vez de generalizar.
 ```bash
 python IA/bot_ai.py --model IA/model.joblib
 ```
+
+O modo ao vivo carrega as versões publicadas automaticamente, entre os
+frames. O bot principal (`src/main.py`) continua usando templates.
 
 | flag | padrão | o que faz |
 |---|---|---|

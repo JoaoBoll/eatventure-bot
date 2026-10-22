@@ -179,7 +179,7 @@ class FakeCapture:
 
 def build(device_size=(1080, 2400)):
 
-    detector = Detector()
+    detector = Detector(learn_resolution_templates=False)
 
     vision = VisionWorker(detector)
 
@@ -593,7 +593,7 @@ def test_proporcao_diferente_nao_encolhe_o_template():
         f"largura idêntica tem de dar escala 1.0, deu {escala}"
     )
 
-    detector = Detector()
+    detector = Detector(learn_resolution_templates=False)
 
     deteccoes = detector.detect(frame)
 
@@ -618,7 +618,7 @@ def test_proporcao_diferente_nao_encolhe_o_template():
             "o critério antigo deveria encolher o template"
         )
 
-        assert not Detector().detect(frame), (
+        assert not Detector(learn_resolution_templates=False).detect(frame), (
             "se o critério antigo também detecta, este teste "
             "não está medindo o que diz medir"
         )
@@ -634,7 +634,7 @@ def test_resolucao_proporcional_continua_valendo():
 
     base = cv2.imread(str(IMAGE))
 
-    esperado = Detector().detect(base)
+    esperado = Detector(learn_resolution_templates=False).detect(base)
 
     assert esperado, "nem detectou na referência"
 
@@ -657,7 +657,7 @@ def test_resolucao_proporcional_continua_valendo():
 
         assert abs(escala - fator) < 0.01, (largura, escala)
 
-        deteccoes = Detector().detect(frame)
+        deteccoes = Detector(learn_resolution_templates=False).detect(frame)
 
         assert deteccoes, f"não detectou em {largura}x{altura}"
 
@@ -668,12 +668,12 @@ def test_resolucao_proporcional_continua_valendo():
         ), (largura, altura, deteccoes)
 
 
-def test_referencia_nao_paga_pelas_escalas_extra():
-    """No aparelho de referência as escalas extra seriam custo puro: triplo de templates sem troca."""
+def test_referencia_mantem_escalas_para_zoom_em_cache():
+    """O zoom também varia na referência; gerar variantes uma vez mantém essa tolerância."""
 
     from core.config import REFERENCE_HEIGHT, REFERENCE_WIDTH
 
-    detector = Detector()
+    detector = Detector(learn_resolution_templates=False)
 
     originais = len(detector.templates)
 
@@ -687,16 +687,18 @@ def test_referencia_nao_paga_pelas_escalas_extra():
 
         indice = detector._templates_for(largura, altura)
 
-        assert indice is detector.by_category, (
-            "referência não devia gerar variante de escala"
-        )
-
         assert (
             sum(len(lista) for lista in indice.values())
-            == originais
-        )
+            > originais
+        ), "referência também precisa tolerar mudanças de zoom"
 
-    # Fora da referência, aí sim.
+        assert detector._templates_for(largura, altura) is indice
+
+        variantes = [t for lista in indice.values() for t in lista]
+        assert any(t.get("escala_base") for t in variantes)
+        assert any(t.get("escala_base") is False for t in variantes)
+
+    # Fora da referência, a mesma tolerância permanece.
     fora = detector._templates_for(1080, 1920)
 
     assert (

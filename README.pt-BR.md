@@ -2,213 +2,148 @@
 
 [Read in English](README.md)
 
-Bot de visão para EatVenture. Ele recebe o vídeo do Android pelo scrcpy-server, encontra elementos por comparação de templates e envia toques pelo ADB.
-
-> O detector por templates é o modo estável. A coleta e o modelo em `IA/` são experimentais.
+Bot para automatizar ações no EatVenture em um dispositivo Android. O uso padrão reconhece elementos por templates (imagens de referência); o modelo de IA ainda é experimental.
 
 ## Requisitos
 
-- Python 3.12 ou superior;
-- [scrcpy](https://github.com/Genymobile/scrcpy) e `adb` disponíveis no `PATH` — no Windows, o scrcpy também pode ficar em `tools/scrcpy/`;
-- Um Android com Depuração USB ou Depuração sem fio ativada.
+- Python 3.12 ou superior.
+- [scrcpy](https://github.com/Genymobile/scrcpy) e ADB instalados.
+- Android com depuração USB ou sem fio ativada.
 
-## Instalação
+## Preparação
 
-Na raiz do projeto, crie um ambiente virtual e instale as dependências:
+Execute os comandos na raiz do projeto, no PowerShell:
 
 ```powershell
 py -3.12 -m venv .venv
+```
+
+Cria o ambiente Python do projeto.
+
+```powershell
 .\.venv\Scripts\Activate.ps1
+```
+
+Ativa o ambiente. Repita ao abrir um novo terminal. No Linux ou macOS, crie o ambiente com `python3 -m venv .venv` e ative com `source .venv/bin/activate`.
+
+```powershell
 python -m pip install -r requirements.txt
 ```
 
-No Linux ou macOS, ative o ambiente com:
-
-```bash
-source .venv/bin/activate
-```
-
-### scrcpy e ADB
-
-No Windows, o projeto oferece um instalador do scrcpy:
+Instala as dependências para executar o bot.
 
 ```powershell
 .\tools\install_scrcpy.ps1
 ```
 
-Ele instala em `tools/scrcpy/`, local encontrado automaticamente pelo projeto. Em outros sistemas, instale o scrcpy pela forma recomendada pela sua distribuição e confirme que `scrcpy` e `adb` estão no `PATH`:
+Instala o scrcpy e o ADB no Windows e os adiciona ao `PATH`. Em outros sistemas, instale-os pelo gerenciador de pacotes disponível.
 
-```bash
-scrcpy --version
-adb version
-```
+No Ubuntu, instale `scrcpy`, `scrcpy-server` e `adb` pelo apt. O bot encontra o servidor junto ao executável ou no diretório `share/scrcpy` ou `lib/scrcpy` da instalação, sem copiar o JAR para o projeto. A versão é detectada automaticamente, com suporte a scrcpy 1.23 ou superior; arquivos avulsos em `tools/scrcpy` continuam usando a versão configurada em `SCRCPY_SERVER_VERSION`.
 
-### Preparar o Android
+No Linux sem `DISPLAY` ou `WAYLAND_DISPLAY`, as janelas são desativadas automaticamente para execução em servidor.
 
-1. Abra **Configurações > Sobre o telefone** e toque sete vezes em **Número da versão**. Em alguns aparelhos, a opção está em **Informações do software**.
-2. Volte para Configurações e abra **Opções do desenvolvedor**.
-3. Ative **Depuração USB**. Para usar Wi-Fi no Android 11 ou posterior, ative também **Depuração sem fio**.
+## Conectar o Android
 
-## Conectar o dispositivo
-
-### USB
-
-Conecte o dispositivo por cabo e aceite a autorização de depuração exibida no Android. Para confirmar a conexão:
+Ative a **Depuração USB** nas **Opções do desenvolvedor**, conecte o cabo e aceite a autorização no celular.
 
 ```bash
 adb devices
 ```
 
-O dispositivo deve aparecer com o estado `device`, e não `unauthorized` ou `offline`.
+Lista os dispositivos conectados. O celular deve aparecer com o estado `device`.
 
-### Wi-Fi: Android 11 ou posterior
-
-Computador e celular devem estar na mesma rede. Em **Opções do desenvolvedor > Depuração sem fio**, toque em **Parear dispositivo com código de pareamento** e execute:
+Para usar Wi-Fi no Android 11 ou posterior, mantenha computador e celular na mesma rede. Ative **Depuração sem fio** e abra **Parear dispositivo com código de pareamento**.
 
 ```bash
 adb pair IP:PORTA_DE_PAREAMENTO
 ```
 
-Informe o código exibido pelo Android. Em seguida, na tela principal de **Depuração sem fio**, use o IP e a porta de conexão (ela pode ser diferente da porta de pareamento):
+Pareia o celular com o computador. Informe o código exibido no Android.
 
 ```bash
 adb connect IP:PORTA_DE_CONEXAO
-adb devices
 ```
 
-### Wi-Fi: Android 10 ou anterior
+Conecta ao celular pareado. Use o endereço da tela principal de **Depuração sem fio**; a porta pode ser diferente da usada no pareamento.
 
-Primeiro conecte e autorize o dispositivo por USB. Com os dois aparelhos na mesma rede Wi-Fi, execute:
+Para Android 10 ou anterior, conecte e autorize primeiro por USB:
 
 ```bash
 adb tcpip 5555
 adb connect IP_DO_CELULAR:5555
-adb devices
 ```
 
-O IP do celular aparece nos detalhes da rede Wi-Fi. Depois de confirmar o estado `device`, o cabo pode ser removido. Uma reinicialização do Android normalmente exige repetir a conexão USB e o `adb tcpip 5555`.
+Habilita a conexão pela mesma rede Wi-Fi. Confirme com `adb devices` antes de remover o cabo.
 
-## Uso
+## Comandos para rodar
 
-Mantenha o jogo aberto, desbloqueado e com a tela ligada. Antes de permitir toques, confira a captura:
-
-```bash
-python src/test_main.py
-```
-
-Feche a janela com `Esc` e inicie o bot:
+Mantenha o EatVenture aberto, com a tela ligada e desbloqueada.
 
 ```bash
 python src/main.py
 ```
 
-Se houver mais de um dispositivo conectado, o programa pergunta qual usar. Para escolher um diretamente:
+Inicia o bot com toques automáticos. Também aprende e atualiza templates para a resolução do dispositivo durante o uso.
+
+Por padrão, as mensagens aparecem somente no terminal. Para salvar o log completo em arquivo:
+
+```bash
+py src/main.py --log
+```
+
+Com `--log`, cada execução salva um arquivo UTF-8 em `logs/eatventure_<data>_<hora>_<microssegundos>_<pid>.log`, sem sobrescrever os anteriores. O arquivo inclui os logs desde `DEBUG`, as saídas de texto e erros do Python, além da saída do scrcpy e do treino automático. `LOG_LEVEL` controla somente o console; `LOG_DIR`, em `src/core/config.py`, define a pasta dos arquivos.
+
+```bash
+python src/test_main.py
+```
+
+Mostra a captura do celular, sem realizar toques. Use para conferir a imagem antes de iniciar o bot.
 
 ```bash
 python src/main.py --device SERIAL_DO_DISPOSITIVO
 ```
 
-Também é possível definir `DEVICE_SERIAL` em [src/core/config.py](src/core/config.py). O mesmo `--device` funciona nos utilitários que usam o Android.
-
-`Esc` encerra o bot somente quando `SHOW_AI_VISION` está ativado; em qualquer configuração, `Ctrl+C` encerra pelo terminal.
-
-## Configuração
-
-As opções do bot ficam em [src/core/config.py](src/core/config.py). As mais úteis são:
-
-| Opção | Finalidade |
-|---|---|
-| `SHOW_AI_VISION` | Mostra a janela com detecções e status. |
-| `SHOW_SCRCPY` | Abre o espelho interativo do scrcpy. Não é necessário para o bot funcionar. |
-| `VISION_FILTER_BY_STATE` | Pesquisa somente as categorias relevantes ao estado atual. |
-| `SHOW_DETECTION_LABELS`, `SHOW_FPS`, `SHOW_DETECTION_LAG` | Controlam informações exibidas na janela de visão. |
-| `DEVICE_SERIAL` | Define o dispositivo ADB padrão. |
-
-O bot usa o stream direto do scrcpy-server; a janela do scrcpy é apenas um espelho para acompanhamento ou intervenção manual.
-
-Para interagir manualmente com o jogo, ative `SHOW_SCRCPY`. A janela de visão (`SHOW_AI_VISION`) é apenas informativa e não recebe toques.
-
-### Templates por resolução
-
-Por padrão, o detector aprende templates específicos para a resolução do dispositivo enquanto usa os templates padrão. Para executar o bot somente com esses templates específicos, mantenha o atualizador aberto em um terminal:
+Escolhe o dispositivo pelo serial exibido em `adb devices`. Sem um dispositivo definido pela opção ou pela configuração, o programa pergunta quando há mais de um conectado. Os demais comandos abaixo e o visualizador de captura também aceitam `--device`.
 
 ```bash
-python src/main_layouts.py --device SERIAL_DO_DISPOSITIVO
+python src/main_layouts.py
 ```
 
-E, em outro terminal, execute:
+Aprende e atualiza templates da resolução atual, sem realizar toques. Os elementos precisam estar visíveis no jogo para serem reconhecidos.
 
 ```bash
-python src/main.py --layout-only --device SERIAL_DO_DISPOSITIVO
+python src/main.py --layout-only
 ```
 
-Use `--layout-only` apenas depois que houver templates aprendidos para a resolução; sem eles, as categorias correspondentes não serão detectadas.
-
-## Templates
-
-Quando um elemento não for detectado corretamente, registre um template novo:
-
-```bash
-python tools/template_selector.py
-```
-
-Arraste para selecionar a área e pressione `Enter` para salvar. Use `R` ou `F5` para capturar a tela novamente.
-
-Para verificar e compactar a numeração dos templates:
-
-```bash
-python tools/renumerar.py
-python tools/renumerar.py --aplicar
-```
-
-O primeiro comando apenas mostra as alterações; `--aplicar` renomeia os arquivos.
-
-## Dataset e IA
-
-Para gravar dados durante uma sessão, use:
+Executa o bot usando somente os templates já aprendidos para a resolução atual. Categorias sem esses templates não serão detectadas.
 
 ```bash
 python src/main.py --ai-collect
 ```
 
-Ou ative `DATASET_SAVE` na configuração. O banco PostgreSQL é opcional; detalhes do formato e da importação estão em [docs/dataset.md](docs/dataset.md).
+Executa o bot por templates e coleta imagens e registros em `dataset/data/<resolução>/`. A cada 10 mil registros novos, somando as resoluções, treina a IA e salva um relatório JSON por execução. Durante o treino, mantém os processos e janelas abertos, pausa as ações e a coleta e retoma automaticamente ao terminar ou falhar. Após o sucesso, remove os registros e imagens aproveitados, preservando o cache de treinamento. Veja os [comandos da IA](IA/README.md) para treinar manualmente e usar o modelo atualizado.
 
-A coleta grava imagens no diretório `dataset/`. Verifique o espaço disponível antes de ativá-la; o limite padrão é 20 GB (`DATASET_MAX_DISK_MB`).
-
-O fluxo de treino e de execução do modelo está documentado em [IA/README.md](IA/README.md). O plano para substituir templates por detector treinado está em [docs/detector-ia.md](docs/detector-ia.md).
-
-## Testes
-
-Os testes são scripts Python e não exigem dispositivo:
+Para continuar jogando e coletando durante o treino automático, defina `AI_PAUSE_BOT_WHILE_TRAINING = False` em [src/core/config.py](src/core/config.py).
 
 ```bash
-python tests/test_detection.py
-python tests/test_state_machine.py
-python tests/test_pipeline.py
-python tests/test_renumerar.py
-python tests/test_selector_layout.py
-python tests/test_devices.py
-python tests/test_ciclo.py
-python tests/test_dataset.py
-python tests/test_ia.py
+python tools/template_selector.py
 ```
 
-Após alterar templates ou limiares, valide a regressão de detecção:
+Permite cadastrar um template manualmente. Arraste para selecionar a área e pressione `Enter` para escolher a categoria e salvar. Use `r` ou `F5` para atualizar a captura e `Esc` para sair.
 
-```bash
-python tests/test_detection.py
-```
+Para encerrar pelo terminal, use `Ctrl+C`. No visualizador de captura, use `Esc`. No bot e no atualizador, `Esc` também encerra quando a janela de visão está habilitada.
 
-`python tests/test_detection.py --update` altera os resultados esperados; use-o somente para aceitar uma mudança intencional e revise o diff antes de salvar.
+As opções de exibição ficam em [src/core/config.py](src/core/config.py): `SHOW_AI_VISION` mostra as detecções; `SHOW_SCRCPY` abre o espelho que permite interagir manualmente com o jogo.
 
-## Estrutura
+## Planejamento futuro
 
-| Caminho | Responsabilidade |
+Ampliar a coleta e validar o funcionamento nas resoluções abaixo. Os valores estão em **lado menor × lado maior**, em pixels, e representam metas de cobertura ainda sujeitas a validação.
+
+| Dispositivos | Resoluções previstas |
 |---|---|
-| [src/capture/screen.py](src/capture/screen.py) | Stream de vídeo do scrcpy-server. |
-| [src/vision/detector.py](src/vision/detector.py) | Detecção por templates. |
-| [src/vision/worker.py](src/vision/worker.py) | Processamento de visão em segundo plano. |
-| [src/core/state_machine.py](src/core/state_machine.py) | Prioridades e transições de estado. |
-| [src/actions/](src/actions) | Toques e comandos ADB. |
-| [src/core/config.py](src/core/config.py) | Configuração central. |
-| [tools/](tools) | Utilitários para templates, dataset e manutenção. |
+| Celulares | 720 × 1600, 1080 × 2340, 1080 × 2400, 1220 × 2712, 1440 × 3120 |
+| Tablets | 800 × 1340, 1200 × 1920, 1600 × 2560, 2136 × 3200 |
+
+- Validar posteriormente 1080 × 1920 e telas internas de celulares dobráveis.
+- Implementar a continuação do treinamento a partir do modelo anterior, mantendo o desempenho nas resoluções já aprendidas.
+- Aprimorar e validar o detector experimental de IA para reduzir a dependência de templates.

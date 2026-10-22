@@ -208,6 +208,12 @@ def test_sugere_o_primeiro_quando_todos_wifi():
 
     assert devices.padrao(fichas) == 1
 
+    assert devices.escolher(
+        [ficha[0] for ficha in fichas],
+        perguntar=_responde(""),
+        fichas=fichas,
+    ) == fichas[0][0]
+
 
 def test_marca_o_mesmo_aparelho():
     """Duas entradas com o MESMO ro.serialno são o mesmo celular."""

@@ -122,6 +122,9 @@ def padrao(fichas):
         if not wifi:
             return indice
 
+    return 1
+
+
 def escolher(seriais, pedido=None, perguntar=None, fichas=None):
     """
     Devolve o serial a usar.

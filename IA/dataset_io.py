@@ -49,9 +49,15 @@ def _read_shard(raiz, rotulo):
 
                 continue
 
+            if not isinstance(registro, dict):
+
+                invalidas += 1
+
+                continue
+
             relativo = registro.get("image")
 
-            if not relativo:
+            if not isinstance(relativo, str) or not relativo:
 
                 sem_imagem += 1
 
@@ -59,7 +65,7 @@ def _read_shard(raiz, rotulo):
 
             imagem = raiz / relativo
 
-            if not imagem.exists():
+            if not imagem.is_file():
 
                 sem_imagem += 1
 
@@ -210,10 +216,10 @@ def split_groups(registros, train_ratio=0.8, mode="phash", seed=42):
 
     random.Random(seed).shuffle(chaves)
 
-    corte = max(1, int(round(len(chaves) * train_ratio)))
-
-    if corte >= len(chaves):
-        corte = len(chaves) - 1
+    corte = min(
+        max(1, int(round(len(chaves) * train_ratio))),
+        max(0, len(chaves) - 1),
+    )
 
     treino = [r for chave in chaves[:corte] for r in grupos[chave]]
     teste = [r for chave in chaves[corte:] for r in grupos[chave]]

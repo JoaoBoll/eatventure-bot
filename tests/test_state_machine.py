@@ -20,6 +20,7 @@ from core.config import (                         # noqa: E402
     DISMISS_ATTEMPTS_BEFORE_SCROLL,
     EXPLORATION_DELAY,
     EXPLORATION_DELAY_AFTER_ACTION,
+    FOOD_MAX_ATTEMPTS,
     MAX_DETECTION_AGE,
     REPEATED_ACTION_WARNING,
     STATE_ENTRY_SETTLE,
@@ -1029,6 +1030,83 @@ def test_primeira_acao_nao_precisa_esperar():
     machine.update([detection("gray_max")], 1.0)
 
     assert actions.actions == ["gray_max"], actions.actions
+
+
+def test_timestamp_original_impede_reusar_frame_antigo():
+
+    machine, actions, clock = build()
+    captura = clock.now
+
+    machine.update([detection("gray_max")], frame_time=captura)
+    clock.advance(ACTION_COOLDOWN + ACTION_SETTLE + 0.1)
+
+    machine.update([detection("gray_max")], lag=0.0, frame_time=captura)
+
+    assert actions.actions == ["gray_max"], actions.actions
+    assert machine._frame_time == captura
+
+
+def test_timestamp_original_define_idade_da_deteccao():
+
+    machine, actions, clock = build()
+    captura = clock.now - MAX_DETECTION_AGE - 1.0
+
+    machine.update([detection("box")], lag=0.0, frame_time=captura)
+
+    assert not actions.calls, actions.calls
+    assert machine._lag > MAX_DETECTION_AGE
+
+
+def test_aprendizado_recebe_frame_sem_gravador():
+
+    machine, actions, _ = build()
+    frame = object()
+    alvo = detection("box")
+    aprendidos = []
+
+    class DetectorFalso:
+
+        def learn_action(self, imagem, deteccao):
+            aprendidos.append((imagem, deteccao))
+
+    machine.detector = DetectorFalso()
+    machine.update([alvo], frame=frame)
+
+    assert actions.actions == ["open_box"], actions.actions
+    assert aprendidos == [(frame, alvo)], aprendidos
+
+
+def test_acao_recusada_nao_avanca_escada_de_dispensa():
+
+    machine, actions, _ = build()
+    machine._dismiss_attempts = DISMISS_ATTEMPTS_BEFORE_SCROLL
+    machine._dismiss_rounds = 2
+    actions.execute = lambda action, detection: False
+
+    machine.update([detection("gray_max")])
+
+    assert machine._dismiss_attempts == DISMISS_ATTEMPTS_BEFORE_SCROLL
+    assert machine._dismiss_rounds == 2
+    assert not machine.action_counts
+
+
+def test_food_que_nunca_abre_upgrade_e_ignorado_apos_limite():
+
+    machine, actions, clock = build()
+    machine.exploration_delay = 1_000.0
+    alvo = detection("food")
+
+    for _ in range(FOOD_MAX_ATTEMPTS):
+        machine.update([alvo])
+        assert machine.state == sm.FOOD
+        clock.advance(STATE_TIMEOUTS[sm.FOOD] + 0.1)
+        machine.update([])
+        assert machine.state == sm.NORMAL
+
+    machine.update([alvo])
+
+    assert actions.actions == ["food"] * FOOD_MAX_ATTEMPTS
+    assert machine._find([alvo], "food") is None
 
 
 def test_a_guarda_vale_para_todo_caminho_de_acao():
