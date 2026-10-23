@@ -44,21 +44,25 @@ class WebCliTests(unittest.TestCase):
         self.assertEqual(arguments["state_root"], self.state)
         self.assertFalse(arguments.get("require_token", False))
         self.run_server.assert_called_once_with(
-            self.app, host="127.0.0.1", port=8765, workers=1, access_log=False,
+            self.app, host="0.0.0.0", port=8765, workers=1, access_log=False,
         )
+        self.assertIn("Painel: http://localhost:8765", self.output.getvalue())
+        self.assertIn("Na rede: http://IP_DO_SERVIDOR:8765", self.output.getvalue())
         self.assertNotIn("dashboard.token", self.output.getvalue())
         self.assertFalse(self.state.exists())
 
     def test_require_token_is_explicit_and_preserves_custom_host_port(self):
         self.app.state.auth_required = True
         web.main([
-            "--state-dir", str(self.state), "--host", "0.0.0.0", "--port", "9000", "--require-token",
+            "--state-dir", str(self.state), "--host", "127.0.0.1", "--port", "9000", "--require-token",
         ])
 
         self.assertTrue(self.create_app.call_args.kwargs["require_token"])
         self.run_server.assert_called_once_with(
-            self.app, host="0.0.0.0", port=9000, workers=1, access_log=False,
+            self.app, host="127.0.0.1", port=9000, workers=1, access_log=False,
         )
+        self.assertIn("Painel: http://127.0.0.1:9000", self.output.getvalue())
+        self.assertNotIn("Na rede:", self.output.getvalue())
         self.assertFalse(self.state.exists())
 
     def test_environment_token_does_not_need_requirement_flag_or_appear_in_output(self):

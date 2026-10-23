@@ -8,15 +8,17 @@ Na raiz do projeto, com o ambiente virtual ativado e as dependências do bot ins
 
 ```bash
 python -m pip install -r requirements-web.txt
-python src/web.py --host 0.0.0.0 --port 8765
+python src/web.py
 ```
 
-Abra `http://IP_DO_SERVIDOR:8765` no navegador do seu computador ou celular. Para acesso somente no próprio computador, use `python src/web.py`, que escuta em `127.0.0.1`.
+Por padrão, o painel escuta em todas as interfaces (`0.0.0.0`). No próprio computador, abra `http://localhost:8765`; em outro computador ou celular na mesma rede, abra `http://IP_DO_SERVIDOR:8765`, substituindo `IP_DO_SERVIDOR` pelo IP do computador que executa o painel.
+
+Para permitir acesso somente no próprio computador, use `python src/web.py --host 127.0.0.1`. A opção `--port` permite alterar a porta padrão `8765`.
 
 Por padrão, o painel abre diretamente, sem token. Para exigir autenticação, inicie com:
 
 ```bash
-python src/web.py --host 0.0.0.0 --require-token
+python src/web.py --require-token
 ```
 
 Nesse modo, o primeiro início cria um token de acesso. Leia-o em outro terminal:

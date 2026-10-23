@@ -1,4 +1,4 @@
-"""Painel opcional: python src/web.py --host 0.0.0.0."""
+"""Painel opcional: python src/web.py."""
 
 import argparse
 import os
@@ -7,7 +7,7 @@ from pathlib import Path
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Painel web do EatVenture")
-    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--require-token", action="store_true", help="Exige um token para acessar o painel")
     parser.add_argument("--state-dir", type=Path, default=Path(__file__).resolve().parents[1] / "local")
@@ -20,7 +20,10 @@ def main(argv=None):
     except ImportError as error:
         raise SystemExit("Instale a interface opcional: python -m pip install -r requirements-web.txt") from error
     app = create_app(state_root=args.state_dir, require_token=args.require_token)
-    print(f"Painel: http://{args.host}:{args.port}", flush=True)
+    display_host = "localhost" if args.host == "0.0.0.0" else args.host
+    print(f"Painel: http://{display_host}:{args.port}", flush=True)
+    if args.host == "0.0.0.0":
+        print(f"Na rede: http://IP_DO_SERVIDOR:{args.port}", flush=True)
     if app.state.auth_required and not os.environ.get("EATVENTURE_WEB_TOKEN"):
         print(f"Token de acesso salvo em: {args.state_dir.resolve() / 'dashboard.token'}", flush=True)
     # Um processo gerencia o catálogo e os filhos; múltiplos workers duplicariam esse estado.
