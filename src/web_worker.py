@@ -10,7 +10,7 @@ def main():
         raise SystemExit("Este processo deve ser iniciado pelo painel web.")
     from core import config
     from core.runtime import RuntimeControl
-    for name in ("DEVICE_TEMPLATE_DIR", "DATASET_DIR", "AI_DEVICE_MODEL_DIR", "LOG_DIR"):
+    for name in ("DEVICE_TEMPLATE_DIR", "AI_DEVICE_MODEL_DIR"):
         directory = getattr(config, name, None)
         if directory is not None:
             Path(directory).mkdir(parents=True, exist_ok=True)

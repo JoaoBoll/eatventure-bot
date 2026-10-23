@@ -270,7 +270,6 @@ def apply_environment_profile(namespace):
         device_root = Path(state_root).expanduser().resolve() / "device-data" / digest
         namespace.update(
             DEVICE_TEMPLATE_DIR=device_root / "templates",
-            DATASET_DIR=device_root / "dataset",
             AI_DEVICE_MODEL_DIR=device_root / "models",
             LOG_DIR=device_root / "logs",
         )

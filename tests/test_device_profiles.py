@@ -144,11 +144,12 @@ class DeviceProfilesTests(unittest.TestCase):
                 apply_environment_profile(defaults)
         self.assertEqual(defaults["SHAPE_THRESHOLD"], 0.8)
 
-    def test_device_training_and_learning_directories_are_isolated(self):
-        paths = []
+    def test_dataset_is_shared_while_device_learning_directories_are_isolated(self):
+        shared_dataset = self.root / "shared_dataset"
+        device_paths = []
         for device_id in ("phone-a", "phone-b"):
             self.store.save(device_id, {})
-            namespace = {}
+            namespace = {"DATASET_DIR": shared_dataset}
             with patch.dict(os.environ, {
                 "EATVENTURE_PROFILE": str(self.store.path_for(device_id)),
                 "EATVENTURE_DEVICE_ID": device_id,
@@ -157,11 +158,14 @@ class DeviceProfilesTests(unittest.TestCase):
                 apply_environment_profile(namespace)
             self.assertEqual(namespace["DEVICE_TEMPLATE_DIR"].name, "templates")
             self.assertEqual(namespace["AI_DEVICE_MODEL_DIR"].name, "models")
-            self.assertEqual(namespace["DATASET_DIR"].name, "dataset")
+            self.assertEqual(namespace["DATASET_DIR"], shared_dataset)
             self.assertEqual(namespace["LOG_DIR"].name, "logs")
-            self.assertEqual(namespace["DEVICE_TEMPLATE_DIR"].parent, namespace["DATASET_DIR"].parent)
-            paths.append(namespace["DATASET_DIR"])
-        self.assertNotEqual(paths[0], paths[1])
+            device_paths.append((
+                namespace["DEVICE_TEMPLATE_DIR"],
+                namespace["AI_DEVICE_MODEL_DIR"],
+                namespace["LOG_DIR"],
+            ))
+        self.assertNotEqual(device_paths[0], device_paths[1])
         self.assertFalse((self.root / "state").exists())
 
 
