@@ -61,7 +61,8 @@ qualquer bot com treino automático habilitado, inclusive para processar lotes
 acumulados em execuções anteriores. O modelo e o ponteiro ficam em
 `IA/models/<RESOLUÇÃO>/` e são versionáveis no Git. Durante o treino no painel,
 os bots em execução são encerrados e iniciados novamente, inclusive quando o
-treino falha.
+treino falha. O ajuste da floresta usa todos os núcleos disponíveis (até 64);
+a extração das features das imagens continua sequencial.
 
 No terminal, o bot permanece aberto, mas pausa ações e coleta por padrão
 durante o treino. Defina `AI_PAUSE_BOT_WHILE_TRAINING = False` para continuar
