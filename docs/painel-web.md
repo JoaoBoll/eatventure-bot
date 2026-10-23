@@ -13,7 +13,13 @@ python src/web.py --host 0.0.0.0 --port 8765
 
 Abra `http://IP_DO_SERVIDOR:8765` no navegador do seu computador ou celular. Para acesso somente no próprio computador, use `python src/web.py`, que escuta em `127.0.0.1`.
 
-No primeiro início é criado um token de acesso. Leia-o em outro terminal:
+Por padrão, o painel abre diretamente, sem token. Para exigir autenticação, inicie com:
+
+```bash
+python src/web.py --host 0.0.0.0 --require-token
+```
+
+Nesse modo, o primeiro início cria um token de acesso. Leia-o em outro terminal:
 
 ```bash
 cat local/dashboard.token
@@ -29,10 +35,29 @@ O painel permite controlar os dispositivos autorizados no ADB desse servidor. Us
 - **Conectar Android** permite informar endereço e porta da depuração Wi-Fi. O pareamento tem endereço/porta e código próprios, diferentes da porta de conexão.
 - Selecione um ou vários aparelhos e use **Iniciar**, **Parar** ou **Reiniciar**. Cada aparelho possui processo, logs e métricas separados.
 - USB e Wi-Fi do mesmo aparelho são agrupados pelo identificador físico quando o Android o disponibiliza. USB é preferido para executar. Se esse identificador não estiver disponível, o perfil usa o serial da conexão ADB.
-- Os cards mostram estado, voos, reformas, ações, templates carregados, FPS e bateria. Valores ainda indisponíveis aparecem como `—`.
-- Os logs recentes ficam em memória, limitados a 2.000 linhas por dispositivo, e podem ser baixados. A opção **Salvar arquivo de log** mantém também o log completo no disco.
+- Os cards mostram estado, voos, reformas, ações, templates carregados, FPS e bateria, atualizados a cada segundo sem aguardar a descoberta do ADB. Valores ainda indisponíveis aparecem como `—`.
+- Os logs recentes são limitados a 500 linhas por dispositivo e 1 MiB de texto no servidor. O navegador retém até 500 linhas e 512 KiB, e cada linha tem no máximo 4 KiB. As entradas mais antigas são descartadas; o download contém somente o trecho retido. A opção **Salvar arquivo de log** mantém também o log completo no disco.
 
 O painel só gerencia processos que ele iniciou. Ao encerrar o servidor web, solicita a parada desses bots e dos treinos filhos. Fechar somente a aba do navegador mantém os bots ativos. Não inicie outra instância do bot pelo terminal para o mesmo aparelho simultaneamente.
+
+## Visão IA no navegador
+
+Clique no card do dispositivo para abrir diretamente a **Visão IA**; com o bot em execução, a transmissão começa automaticamente. A engrenagem continua abrindo as configurações. A prévia mostra a tela com as detecções e métricas desenhadas pelo bot, sem abrir janelas no servidor, tanto no Windows quanto no Linux. A transmissão usa uma conexão HTTP contínua (MJPEG), com até 20 imagens por segundo, conforme a captura e a conexão.
+
+Desenho, redução e compressão das imagens rodam em uma thread exclusiva da prévia de cada dispositivo. Ela sempre usa o quadro mais recente e descarta os pendentes antigos, sem formar uma fila de vídeo atrasado nem fazer esse trabalho no loop de ações do bot.
+
+A transmissão é opcional: só prepara imagens enquanto a aba de visão estiver aberta. Trocar de aba, fechar o dispositivo ou ocultar o navegador interrompe a transmissão; o bot continua ativo. Se a conexão cair, a solicitação expira automaticamente. Apenas o quadro mais recente fica temporariamente em `local/runtime/`, sem criar um histórico de imagens.
+
+Após atualizar o código do painel, reinicie o servidor web e os bots pelo painel para carregar as alterações. Recarregue também a página do navegador.
+
+Para continuar usando somente o terminal, os comandos permanecem os mesmos:
+
+```bash
+python src/main.py --device SERIAL
+python src/main.py --device SERIAL --ai-collect --log
+```
+
+O terminal não depende das bibliotecas do painel. A gravação de log em arquivo continua opcional com `--log`.
 
 ## Configurações locais por aparelho
 
@@ -50,9 +75,10 @@ Os arquivos ficam em:
 
 ```text
 local/
-  dashboard.token
+  dashboard.token                    # somente com --require-token
   devices/<hash-do-aparelho>.json
   runtime/<hash>.status.json
+  runtime/<hash>.vision.*             # prévia temporária sob demanda
   device-data/<hash>/
     templates/
     dataset/
@@ -93,5 +119,6 @@ Os testes do painel usam ADB, processos e HTTP simulados, sem servidor de rede o
 
 ```bash
 python -m pip install pytest httpx
-python -m pytest -q tests/test_device_profiles.py tests/test_dashboard_supervisor.py tests/test_dashboard_api.py tests/test_web_runtime.py
+python -m pytest -q tests/test_device_profiles.py tests/test_dashboard_supervisor.py tests/test_dashboard_api.py tests/test_dashboard_stream.py tests/test_dashboard_logs.py tests/test_web_runtime.py tests/test_web_preview.py tests/test_web_worker.py tests/test_dashboard_runtime_flow.py tests/test_web_cli.py
+node --test tests/dashboard_ui.test.cjs
 ```

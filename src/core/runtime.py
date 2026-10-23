@@ -8,6 +8,8 @@ import tempfile
 import threading
 import time
 
+from core.preview import FramePreview
+
 
 class RuntimeControl:
     def __init__(self, device_id, status_file, stop_file, session_id=""):
@@ -15,6 +17,7 @@ class RuntimeControl:
         self.status_file = Path(status_file)
         self.stop_file = Path(stop_file)
         self.session_id = session_id
+        self.preview = FramePreview(self.status_file, session_id)
         self.stopped = threading.Event()
         self.last_update = 0.0
 

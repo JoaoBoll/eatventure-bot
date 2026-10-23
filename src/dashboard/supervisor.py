@@ -13,14 +13,20 @@ import re
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
+
+from core.preview import FramePreview, preview_paths
 
 
 _ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _HOSTNAME = re.compile(r"(?=.{1,253}\Z)[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?\Z")
 _MAX_STATUS_BYTES = 128 * 1024
+MAX_LOG_LINES = 500
+MAX_LOG_BYTES = 1024 * 1024
+MAX_LOG_LINE_BYTES = 4096
 
 
 def _iso_time(value):
@@ -204,14 +210,18 @@ class _Run:
     serial: str
     status_file: Path
     stop_file: Path
-    lines: deque = field(default_factory=lambda: deque(maxlen=2000))
+    lines: deque = field(default_factory=deque)
     cursor: int = 0
+    log_bytes: int = 0
+    log_dropped: int = 0
+    log_truncated: int = 0
     stopping: bool = False
     stop_requested: bool = False
     exit_code: object = None
     reader: object = None
     watcher: object = None
     group_cleaned: bool = False
+    worker_pid: object = None
 
 
 class BotSupervisor:
@@ -227,6 +237,7 @@ class BotSupervisor:
         self._lock = threading.RLock()
         self._operation_locks = {}
         self._runs = {}
+        self._device_cache = {}
         self._closing = False
 
     def _operation_lock(self, device_id):
@@ -248,6 +259,7 @@ class BotSupervisor:
                     "connection": "wifi" if _wifi(run.serial) else "usb",
                     "adb_state": "disconnected", "aliases": [run.serial], "connected": False,
                 })
+            self._device_cache = {key: dict(device) for key, device in catalog.items()}
         return catalog
 
     def _resolve(self, device_id, refresh=False):
@@ -260,6 +272,24 @@ class BotSupervisor:
             if device_id in device["aliases"]:
                 return device
         raise KeyError(device_id)
+
+    def _runtime_device_id(self, device_id):
+        with self._lock:
+            if device_id in self._runs:
+                return device_id
+            for identifier, run in self._runs.items():
+                aliases = self._device_cache.get(identifier, {}).get("aliases", [])
+                if device_id == run.serial or device_id in aliases:
+                    return identifier
+        return self._resolve(device_id)["id"]
+
+    def require_device(self, device_id):
+        if not isinstance(device_id, str) or not device_id or len(device_id) > 512:
+            raise KeyError(device_id)
+        with self._lock:
+            if device_id in self._runs or device_id in self._device_cache:
+                return
+        self._resolve(device_id)
 
     def _metrics(self, device_id, run):
         if run is None or run.process.poll() is not None:
@@ -274,12 +304,19 @@ class BotSupervisor:
                 return {}
             updated_at = float(status.get("updated_at", 0))
             now = time.time()
-            if (status.get("pid") != run.process.pid
+            worker_pid = status.get("pid")
+            if (type(worker_pid) is not int or worker_pid <= 0
                     or status.get("device_id") != device_id
                     or status.get("session_id") != run.session_id
                     or updated_at < run.started_at
                     or not -2 <= now - updated_at <= 15):
                 return {}
+            with self._lock:
+                # O launcher da venv no Windows pode ter outro PID; a sessão identifica o worker.
+                if run.worker_pid is None:
+                    run.worker_pid = worker_pid
+                if run.worker_pid != worker_pid:
+                    return {}
             return status
         except (OSError, ValueError, TypeError):
             return {}
@@ -315,13 +352,45 @@ class BotSupervisor:
     def list_devices(self, refresh=False):
         return [self._describe(device) for device in self._catalog(refresh).values()]
 
+    def runtime_state(self):
+        with self._lock:
+            catalog = {key: dict(device) for key, device in self._device_cache.items()}
+            for device_id, run in self._runs.items():
+                catalog.setdefault(device_id, {
+                    "id": device_id, "serial": run.serial, "model": None,
+                    "connection": "wifi" if _wifi(run.serial) else "usb",
+                    "adb_state": "device" if run.process.poll() is None else "disconnected",
+                    "aliases": [run.serial], "connected": run.process.poll() is None,
+                })
+        return {
+            "devices": [self._describe(device) for device in catalog.values()],
+            "error": self.devices.last_error,
+        }
+
     def _append_log(self, run, text):
         text = _ANSI.sub("", text).replace("\x00", "").strip("\r\n")
         if not text:
             return
+        encoded = text.encode("utf-8", errors="replace")
+        truncated = len(encoded) > MAX_LOG_LINE_BYTES
+        if truncated:
+            text = encoded[:MAX_LOG_LINE_BYTES - 3].decode("utf-8", errors="ignore") + "…"
+            encoded = text.encode("utf-8")
+        else:
+            text = encoded.decode("utf-8")
         with self._lock:
             run.cursor += 1
             run.lines.append({"id": run.cursor, "time": _iso_time(time.time()), "text": text})
+            run.log_bytes += len(encoded)
+            run.log_truncated += int(truncated)
+            self._trim_logs(run)
+
+    @staticmethod
+    def _trim_logs(run):
+        while run.lines and (len(run.lines) > MAX_LOG_LINES or run.log_bytes > MAX_LOG_BYTES):
+            removed = run.lines.popleft()
+            run.log_bytes -= len(removed["text"].encode("utf-8"))
+            run.log_dropped += 1
 
     def _read_output(self, run):
         try:
@@ -342,6 +411,7 @@ class BotSupervisor:
         self._cleanup_group(run)
 
     def _cleanup_group(self, run):
+        FramePreview(run.status_file, run.session_id).clear()
         if os.name != "nt":
             with self._lock:
                 if run.group_cleaned:
@@ -421,6 +491,10 @@ class BotSupervisor:
                 if previous:
                     run.lines.extend(previous.lines)
                     run.cursor = previous.cursor
+                    run.log_bytes = previous.log_bytes
+                    run.log_dropped = previous.log_dropped
+                    run.log_truncated = previous.log_truncated
+                    self._trim_logs(run)
                 self._runs[device_id] = run
             self._append_log(run, f"Bot iniciado (PID {process.pid}).")
             run.reader = threading.Thread(target=self._read_output, args=(run,), name=f"bot-log-{process.pid}", daemon=True)
@@ -503,17 +577,149 @@ class BotSupervisor:
             self.stop(device["id"])
             return self.start(device["id"])
 
+    def request_vision(self, device_id, enabled):
+        device_id = self._runtime_device_id(device_id)
+        with self._operation_lock(device_id):
+            with self._lock:
+                run = self._runs.get(device_id)
+                if run is None or run.process.poll() is not None:
+                    if enabled:
+                        raise RuntimeError("Inicie o bot para abrir a visão IA.")
+                    if run is not None:
+                        FramePreview(run.status_file, run.session_id).clear()
+                    return {"enabled": False}
+            path = preview_paths(run.status_file)["request"]
+            request = {"session_id": run.session_id, "expires_at": time.time() + 8 if enabled else 0}
+            temporary = None
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, prefix=".vision-request-", delete=False) as output:
+                    temporary = Path(output.name)
+                    json.dump(request, output, allow_nan=False)
+                os.replace(temporary, path)
+            except OSError as error:
+                raise RuntimeError("Não foi possível alterar a visualização IA.") from error
+            finally:
+                if temporary is not None:
+                    temporary.unlink(missing_ok=True)
+            if not enabled:
+                FramePreview(run.status_file, run.session_id).clear()
+            return {"enabled": enabled}
+
+    def vision_frame(self, device_id):
+        device_id = self._runtime_device_id(device_id)
+        self.request_vision(device_id, True)
+        with self._lock:
+            run = self._runs[device_id]
+        self._metrics(device_id, run)
+        paths = preview_paths(run.status_file)
+        try:
+            with paths["metadata"].open("r", encoding="utf-8") as stream:
+                metadata = json.loads(stream.read(4097))
+            updated_at = float(metadata.get("updated_at", 0))
+            stat = paths["image"].stat()
+            if (run.process.poll() is not None
+                    or metadata.get("session_id") != run.session_id
+                    or metadata.get("pid") != (run.worker_pid or run.process.pid)
+                    or updated_at < run.started_at
+                    or not -2 <= time.time() - updated_at <= 5
+                    or not 0 < stat.st_size <= 5_000_000):
+                raise ValueError("Prévia indisponível.")
+            return paths["image"]
+        except (OSError, ValueError, TypeError, AttributeError) as error:
+            raise RuntimeError("Aguardando frame da visão IA.") from error
+
+    def open_vision_stream(self, device_id):
+        if not isinstance(device_id, str) or not device_id or len(device_id) > 512:
+            raise KeyError(device_id)
+        with self._lock:
+            identifier = device_id if device_id in self._runs else None
+            if identifier is None:
+                for candidate, run in self._runs.items():
+                    aliases = self._device_cache.get(candidate, {}).get("aliases", [])
+                    if device_id == run.serial or device_id in aliases:
+                        identifier = candidate
+                        break
+            known = device_id in self._device_cache or any(
+                device_id in device.get("aliases", []) for device in self._device_cache.values()
+            )
+        if identifier is None:
+            if known or self.store.path_for(device_id).is_file():
+                raise RuntimeError("Inicie o bot para abrir a visão IA.")
+            raise KeyError(device_id)
+        with self._operation_lock(identifier):
+            with self._lock:
+                run = self._runs.get(identifier)
+                if run is None or run.process.poll() is not None:
+                    raise RuntimeError("Inicie o bot para abrir a visão IA.")
+                session_id = run.session_id
+            self.request_vision(identifier, True)
+            return {"device_id": identifier, "session_id": session_id}
+
+    def next_vision_frame(self, device_id, session_id, after=None, renew=False):
+        def current_run():
+            with self._lock:
+                run = self._runs.get(device_id)
+                if run is None or run.session_id != session_id or run.process.poll() is not None:
+                    raise RuntimeError("A sessão da visão IA foi encerrada.")
+                return run
+
+        run = current_run()
+        if renew:
+            with self._operation_lock(device_id):
+                run = current_run()
+                self.request_vision(device_id, True)
+        if run.worker_pid is None:
+            self._metrics(device_id, run)
+        paths = preview_paths(run.status_file)
+        try:
+            with paths["metadata"].open("r", encoding="utf-8") as source:
+                raw = source.read(4097)
+            if len(raw) > 4096:
+                return None
+            metadata = json.loads(raw)
+            updated_at = float(metadata.get("updated_at", 0))
+            worker_pid = run.worker_pid or run.process.pid
+            if (metadata.get("session_id") != session_id
+                    or metadata.get("pid") != worker_pid
+                    or updated_at < run.started_at
+                    or not -2 <= time.time() - updated_at <= 5):
+                return None
+            with paths["image"].open("rb") as image:
+                stat = os.fstat(image.fileno())
+                if not 0 < stat.st_size <= 5_000_000:
+                    return None
+                signature = (session_id, worker_pid, updated_at, stat.st_mtime_ns, stat.st_size)
+                if after and signature[:2] == after[:2] and signature[3:] == after[3:]:
+                    return None
+                content = image.read(5_000_001)
+            if len(content) != stat.st_size:
+                return None
+        except (OSError, ValueError, TypeError, AttributeError):
+            return None
+        if current_run() is not run:
+            raise RuntimeError("A sessão da visão IA foi encerrada.")
+        return {"signature": signature, "content": content}
+
     def logs(self, device_id, after=0, limit=200):
-        device = self._resolve(device_id)
+        device_id = self._runtime_device_id(device_id)
         try:
             after = max(0, int(after))
             limit = min(1000, max(1, int(limit)))
         except (ValueError, TypeError) as exc:
             raise ValueError("Cursor e limite dos logs devem ser números inteiros.") from exc
         with self._lock:
-            run = self._runs.get(device["id"])
+            run = self._runs.get(device_id)
             lines = [dict(line) for line in run.lines if line["id"] > after][:limit] if run else []
-        return {"lines": lines, "cursor": lines[-1]["id"] if lines else after}
+            retention = {
+                "max_lines": MAX_LOG_LINES, "max_bytes": MAX_LOG_BYTES,
+                "max_line_bytes": MAX_LOG_LINE_BYTES,
+                "buffer_lines": len(run.lines) if run else 0,
+                "buffer_bytes": run.log_bytes if run else 0,
+                "dropped": run.log_dropped if run else 0,
+                "truncated": run.log_truncated if run else 0,
+            }
+        return {"lines": lines, "cursor": lines[-1]["id"] if lines else after, "retention": retention}
 
     def connect(self, address):
         message = self.devices.connect(address)

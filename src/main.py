@@ -1,6 +1,7 @@
 """EatVenture AI — ponto de entrada (python src/main.py)."""
 
 import argparse
+from functools import partial
 import subprocess
 import sys
 import time
@@ -192,6 +193,20 @@ def read_detections(vision):
     return detections, lag, frame, frame_time
 
 
+def render_ai_frame(frame, detector, detections, stats):
+    height, width = frame.shape[:2]
+    scale = min(WINDOW_WIDTH / width, WINDOW_HEIGHT / height, 1.0)
+    if scale < 1.0:
+        output = cv2.resize(
+            frame, (int(round(width * scale)), int(round(height * scale))),
+            interpolation=cv2.INTER_AREA,
+        )
+    else:
+        output = frame.copy()
+    stats = {**stats, "coverage": detector.template_coverage()}
+    return detector.draw(output, detections, stats, scale=scale)
+
+
 def run_loop(
     capture,
     vision,
@@ -235,8 +250,10 @@ def run_loop(
 
     while True:
 
-        if runtime is not None and runtime.should_stop():
-            break
+        if runtime is not None:
+            if runtime.should_stop():
+                break
+            runtime.preview.requested()
 
         paused = auto_trainer is not None and auto_trainer.pause_requested
         # Timeout curto para a janela do OpenCV continuar respondendo
@@ -325,80 +342,41 @@ def run_loop(
 
         update_panel()
 
-        # Sem janela, não há cópia nem desenho do frame.
-        if not SHOW_AI_VISION:
+        web_vision = runtime is not None and runtime.preview.requested()
+        if not SHOW_AI_VISION and not web_vision:
             continue
 
-        # Reduz antes de desenhar: `resize` já substitui a cópia e o
-        # desenho toca só a resolução da janela (bem menor que o frame).
-        # As detecções são convertidas pelo mesmo fator dentro do `draw`.
-        escala_janela = min(
-            WINDOW_WIDTH / largura_frame,
-            WINDOW_HEIGHT / altura_frame,
-            1.0,
-        )
+        stats = {
+            "capture_fps": capture.get_fps(),
+            "detect_fps": vision.get_fps(),
+            "detect_ms": vision.get_duration() * 1000,
+            "lag": lag,
 
-        if escala_janela < 1.0:
+            # Leitura em memória: dumpsys custa ~56 ms e não pode entrar aqui.
+            "battery": battery.get(),
+            "cycle": state_machine.cycle_stats(),
+            "state": "PAUSADO PARA TREINO" if paused else state_machine.state,
+            "searched": detector.last_searched,
+            "searchable": detector.last_total,
+            "detections": len(detections),
+            "waiting_settle": vision.waiting_settle,
+            "vision_error": (
+                None if vision.is_alive()
+                else vision.last_error or "thread da visão parada"
+            ),
+        }
 
-            ai_frame = cv2.resize(
-                frame,
-                (
-                    int(round(largura_frame * escala_janela)),
-                    int(round(altura_frame * escala_janela)),
-                ),
-                interpolation=cv2.INTER_AREA,
+        if web_vision:
+            runtime.preview.submit(
+                frame, partial(render_ai_frame, detector=detector, detections=detections, stats=stats),
             )
 
-        else:
-
-            # Frame já pequeno: cópia necessária porque `draw` escreve
-            # no array recebido, e este é o buffer da captura.
-            ai_frame = frame.copy()
-
-        ai_frame = detector.draw(
-            ai_frame,
-            detections,
-            {
-                "capture_fps": capture.get_fps(),
-                "detect_fps": vision.get_fps(),
-                "detect_ms": vision.get_duration() * 1000,
-                "lag": lag,
-
-                # Leitura em memória: dumpsys custa ~56 ms e não pode entrar aqui.
-                "battery": battery.get(),
-
-                "cycle": state_machine.cycle_stats(),
-
-                # Sem isto, overlay vazio não diz se o problema é
-                # template, threshold ou estado errado.
-                "state": "PAUSADO PARA TREINO" if paused else state_machine.state,
-                "searched": detector.last_searched,
-                "searchable": detector.last_total,
-                "detections": len(detections),
-
-                # Cobertura da pasta da resolução sobre o default.
-                "coverage": detector.template_coverage(),
-
-                # Overlay parado após uma ação é ESPERADO (worker
-                # pulando frames de antes do efeito assentar), não defeito.
-                "waiting_settle": vision.waiting_settle,
-                "vision_error": (
-                    None
-                    if vision.is_alive()
-                    else (
-                        vision.last_error
-                        or "thread da visão parada"
-                    )
-                ),
-            },
-            scale=escala_janela,
-        )
-
-        cv2.imshow(AI_WINDOW_NAME, ai_frame)
-
-        # ESC só chega aqui, é esta janela que recebe teclas.
-        if cv2.waitKey(1) & 0xFF == 27:
-            break
+        if SHOW_AI_VISION:
+            ai_frame = render_ai_frame(frame, detector, detections, stats)
+            cv2.imshow(AI_WINDOW_NAME, ai_frame)
+            # ESC só chega aqui, é esta janela que recebe teclas.
+            if cv2.waitKey(1) & 0xFF == 27:
+                break
 
 
 def main(argv=None, runtime=None):
@@ -508,6 +486,9 @@ def main(argv=None, runtime=None):
         logger.info("Interrompido pelo usuário.")
 
     finally:
+
+        if runtime is not None:
+            runtime.preview.stop()
 
         if panel is not None:
             try:

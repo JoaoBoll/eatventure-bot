@@ -14,16 +14,46 @@ import time
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from core import config
 from core.device_profiles import ProfileStore, settings_schema, template_key
+from core.preview import MIN_FRAME_INTERVAL
 from dashboard.supervisor import BotSupervisor
 
 
 STATIC = Path(__file__).resolve().parent / "static"
 MAX_BODY = 300_000
+
+
+async def vision_stream_frames(request, supervisor, device_id, session_id):
+    from starlette.concurrency import run_in_threadpool
+
+    previous = None
+    renewed_at = time.monotonic()
+    while not await request.is_disconnected():
+        started_at = time.monotonic()
+        renew = started_at - renewed_at >= 2
+        try:
+            frame = await run_in_threadpool(
+                supervisor.next_vision_frame, device_id, session_id, previous, renew,
+            )
+        except (KeyError, RuntimeError):
+            return
+        if renew:
+            renewed_at = started_at
+        if frame is not None and frame["signature"] != previous:
+            previous = frame["signature"]
+            content = frame["content"]
+            yield (
+                b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: "
+                + str(len(content)).encode("ascii") + b"\r\n\r\n"
+            )
+            yield content
+            yield b"\r\n"
+            del content, frame
+        await asyncio.sleep(max(0, MIN_FRAME_INTERVAL - (time.monotonic() - started_at)))
 
 
 def access_token(state_root):
@@ -94,12 +124,16 @@ def template_catalog(root, state_root, store):
     }
 
 
-def create_app(root=None, state_root=None, token=None, supervisor=None):
+def create_app(root=None, state_root=None, token=None, supervisor=None, require_token=False):
     root = Path(root or config.PROJECT_ROOT).resolve()
     state_root = Path(state_root or root / "local").resolve()
     store = supervisor.store if supervisor is not None else ProfileStore(state_root / "devices")
     supervisor = supervisor or BotSupervisor(root, state_root=state_root, store=store)
-    token = token or access_token(state_root)
+    token = token if token is not None else os.environ.get("EATVENTURE_WEB_TOKEN")
+    if not token:
+        token = access_token(state_root) if require_token else None
+    if token is not None and not 24 <= len(token) <= 512:
+        raise ValueError("O token deve ter entre 24 e 512 caracteres.")
     catalog_lock = threading.Lock()
     catalog_cache = {"at": 0.0, "value": None}
 
@@ -120,13 +154,19 @@ def create_app(root=None, state_root=None, token=None, supervisor=None):
 
     app = FastAPI(title="EatVenture Control", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.supervisor = supervisor
+    app.state.auth_required = token is not None
+
+    def authenticated(request):
+        if token is None:
+            return True
+        authorization = request.headers.get("authorization", "")
+        presented = authorization[7:] if authorization.startswith("Bearer ") else ""
+        return len(presented) <= 512 and hmac.compare_digest(presented.encode(), token.encode())
 
     @app.middleware("http")
     async def authorize(request, call_next):
         if request.url.path.startswith("/api/"):
-            authorization = request.headers.get("authorization", "")
-            presented = authorization[7:] if authorization.startswith("Bearer ") else ""
-            if len(presented) > 512 or not hmac.compare_digest(presented.encode(), token.encode()):
+            if request.url.path != "/api/session" and not authenticated(request):
                 return JSONResponse({"detail": "Token de acesso inválido."}, status_code=401)
             origin = request.headers.get("origin")
             if origin:
@@ -150,7 +190,7 @@ def create_app(root=None, state_root=None, token=None, supervisor=None):
             "X-Content-Type-Options": "nosniff",
             "Referrer-Policy": "no-referrer",
             "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self'; "
-                "img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; "
+                "img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'none'; "
                 "base-uri 'none'; object-src 'none'; form-action 'self'",
         })
         return response
@@ -168,8 +208,7 @@ def create_app(root=None, state_root=None, token=None, supervisor=None):
         return JSONResponse({"detail": str(error)}, status_code=409)
 
     def known(device_id):
-        if not any(item["id"] == device_id for item in supervisor.list_devices()):
-            raise KeyError(device_id)
+        supervisor.require_device(device_id)
 
     async def body(request):
         raw = bytearray()
@@ -186,8 +225,8 @@ def create_app(root=None, state_root=None, token=None, supervisor=None):
         return value
 
     @app.get("/api/session")
-    def session():
-        return {"authenticated": True}
+    def session(request: Request):
+        return {"authenticated": authenticated(request), "auth_required": app.state.auth_required}
 
     @app.get("/api/state")
     def state(refresh: bool = False):
@@ -202,6 +241,10 @@ def create_app(root=None, state_root=None, token=None, supervisor=None):
     @app.get("/api/templates")
     def templates():
         return catalog()
+
+    @app.get("/api/runtime")
+    def runtime():
+        return supervisor.runtime_state()
 
     @app.get("/api/devices/{device_id}/profile")
     def profile(device_id: str):
@@ -218,6 +261,34 @@ def create_app(root=None, state_root=None, token=None, supervisor=None):
     def reset_profile(device_id: str):
         known(device_id)
         return store.reset(device_id)
+
+    @app.post("/api/devices/{device_id}/vision")
+    async def request_vision(device_id: str, request: Request):
+        from starlette.concurrency import run_in_threadpool
+        data = await body(request)
+        if type(data.get("enabled")) is not bool:
+            raise ValueError("Informe enabled como verdadeiro ou falso.")
+        return await run_in_threadpool(supervisor.request_vision, device_id, data["enabled"])
+
+    @app.get("/api/devices/{device_id}/vision")
+    def vision_frame(device_id: str):
+        path = supervisor.vision_frame(device_id)
+        try:
+            content = path.read_bytes()
+        except OSError as error:
+            raise RuntimeError("Aguardando frame da visão IA.") from error
+        return Response(content, media_type="image/jpeg")
+
+    @app.get("/api/devices/{device_id}/vision/stream")
+    async def vision_stream(device_id: str, request: Request):
+        from starlette.concurrency import run_in_threadpool
+
+        stream = await run_in_threadpool(supervisor.open_vision_stream, device_id)
+        return StreamingResponse(
+            vision_stream_frames(request, supervisor, stream["device_id"], stream["session_id"]),
+            media_type="multipart/x-mixed-replace; boundary=frame",
+            headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+        )
 
     @app.post("/api/devices/{device_id}/{action}")
     def device_action(device_id: str, action: str):

@@ -20,11 +20,12 @@ def main():
     )
     runtime.install_signals()
     runtime.publish({"estado": "iniciando"}, force=True)
-    import main as bot
     try:
+        import main as bot
         if not runtime.should_stop():
             return bot.main(runtime=runtime)
     finally:
+        runtime.preview.stop()
         runtime.publish({"estado": "encerrado"}, force=True)
 
 

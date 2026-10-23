@@ -8,7 +8,9 @@ const selected = new Set();
 const busyDevices = new Set();
 let token = readToken();
 let authenticated = false;
+let authRequired = true;
 let stateLoading = false;
+let runtimeLoading = false;
 let profileLoading = false;
 let detailId = null;
 let draft = null;
@@ -18,9 +20,25 @@ let saving = false;
 let logPaused = false;
 let logCursor = 0;
 let logLines = [];
+let logBytes = 0;
 let logLoading = false;
 let logGeneration = 0;
 let detailSession = null;
+let visionWanted = false;
+let visionDevice = null;
+let visionGeneration = 0;
+let visionController = null;
+let visionStream = null;
+let visionUrl = null;
+let visionMode = "off";
+let visionResume = false;
+let sessionLoading = false;
+const visionReleases = new Map();
+const MAX_VISION_FRAME_BYTES = 5 * 1024 * 1024;
+const MAX_VISION_HEADER_BYTES = 8 * 1024;
+const MAX_LOG_LINES = 500;
+const MAX_LOG_BYTES = 512 * 1024;
+const MAX_LOG_LINE_BYTES = 4 * 1024;
 
 function readToken() {
   try { return sessionStorage.getItem(sessionKey) || ""; } catch { return ""; }
@@ -61,16 +79,19 @@ function showError(id, message) {
 }
 
 function logout(expired = false) {
+  stopVision();
   authenticated = false;
   rememberToken("");
   selected.clear();
   detailId = null;
   draft = null;
-  logGeneration += 1;
+  resetLogs();
   $("device-dialog").close();
   $("connect-dialog").close();
   $("app").hidden = true;
   $("login").hidden = false;
+  $("session-loading").hidden = true;
+  $("login-form").hidden = false;
   $("token").value = "";
   $("login-error").textContent = expired ? "Sessão expirada ou token inválido. Entre novamente." : "";
   $("token").focus();
@@ -82,7 +103,7 @@ async function api(path, options = {}) {
   try {
     const response = await fetch(path, {
       ...options,
-      headers: { Accept: "application/json", Authorization: `Bearer ${token}`, ...(options.body ? { "Content-Type": "application/json" } : {}), ...options.headers },
+      headers: { Accept: "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(options.body ? { "Content-Type": "application/json" } : {}), ...options.headers },
       signal: controller.signal,
       cache: "no-store"
     });
@@ -113,16 +134,51 @@ async function login(event) {
   $("token").disabled = true;
   $("login-error").textContent = "";
   try {
-    await api("/api/session");
-    authenticated = true;
-    $("token").value = "";
-    $("login").hidden = true;
-    $("app").hidden = false;
-    await refreshState(true);
+    const session = await api("/api/session");
+    if (!session.authenticated) throw new Error("Token de acesso inválido.");
+    await enterApp(session);
   } catch (error) {
     rememberToken("");
     $("login-error").textContent = error.message;
   } finally { submit.disabled = false; $("token").disabled = false; }
+}
+
+async function enterApp(session) {
+  authRequired = session.auth_required !== false;
+  if (!authRequired) rememberToken("");
+  authenticated = true;
+  $("token").value = "";
+  $("login").hidden = true;
+  $("app").hidden = false;
+  $("logout").hidden = !authRequired;
+  await refreshState(true);
+}
+
+async function bootstrapSession() {
+  if (sessionLoading) return;
+  sessionLoading = true;
+  $("login").hidden = false;
+  $("login-form").hidden = true;
+  $("session-loading").hidden = false;
+  $("session-spinner").hidden = false;
+  $("session-retry").hidden = true;
+  $("session-status").textContent = "Conectando ao servidor…";
+  try {
+    const session = await api("/api/session");
+    if (session.authenticated || session.auth_required === false) await enterApp(session);
+    else {
+      const invalid = !!token;
+      rememberToken("");
+      $("session-loading").hidden = true;
+      $("login-form").hidden = false;
+      $("login-error").textContent = invalid ? "Token de acesso inválido. Entre novamente." : "";
+      $("token").focus();
+    }
+  } catch (error) {
+    $("session-status").textContent = error.message;
+    $("session-spinner").hidden = true;
+    $("session-retry").hidden = false;
+  } finally { sessionLoading = false; }
 }
 
 function deviceById(id) { return state.devices.find((device) => device.id === id); }
@@ -175,6 +231,33 @@ function visibleDevices() {
   });
 }
 
+function deviceLayout(device) {
+  return [device.id, device.serial, device.name, device.model, device.connected, device.running, device.status, device.adb_state, device.exit_code, device.profile];
+}
+
+async function refreshRuntime() {
+  if (!authenticated || runtimeLoading) return;
+  runtimeLoading = true;
+  try {
+    const result = await api("/api/runtime");
+    if (!authenticated || !Array.isArray(result.devices)) return;
+    const changed = JSON.stringify(state.devices.map(deviceLayout)) !== JSON.stringify(result.devices.map(deviceLayout));
+    state.devices = result.devices;
+    for (const id of selected) if (!deviceById(id)) selected.delete(id);
+    $("last-update").textContent = `Atualizado ${new Date().toLocaleTimeString("pt-BR")}`;
+    if (changed) renderDevices();
+    else {
+      renderSummary(visibleDevices());
+      for (const card of $("devices").children) {
+        const device = deviceById(card.dataset.deviceId);
+        if (device) updateDeviceMetrics(card, device);
+      }
+    }
+    renderDetailStatus();
+  } catch (error) { if (authenticated) showError("state-error", error.message); }
+  finally { runtimeLoading = false; }
+}
+
 async function refreshState(force = false) {
   if (!authenticated || stateLoading) return;
   stateLoading = true;
@@ -189,7 +272,7 @@ async function refreshState(force = false) {
     $("server-status").textContent = "Servidor online";
     $("server-detail").textContent = result.server?.hostname || result.server?.host || "Conexão autenticada";
     $("server-dot").className = "server-dot green";
-    $("last-update").textContent = `Atualizado ${new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}`;
+    $("last-update").textContent = `Atualizado ${new Date().toLocaleTimeString("pt-BR")}`;
     showError("state-error", result.error || "");
     renderDevices();
     renderDetailStatus();
@@ -211,8 +294,7 @@ function renderEmpty(title, message, symbol = "▤") {
   $("devices").replaceChildren(empty);
 }
 
-function renderDevices() {
-  const visible = visibleDevices();
+function renderSummary(visible) {
   const running = state.devices.filter((device) => device.running).length;
   $("nav-count").textContent = state.devices.length;
   $("kpi-running").textContent = count(running);
@@ -222,6 +304,11 @@ function renderDevices() {
   $("kpi-templates").textContent = count(state.templates.total);
   $("kpi-templates-detail").textContent = `${count(state.templates.categories?.length || 0)} categorias de reconhecimento`;
   $("device-count").textContent = `${visible.length} ${visible.length === 1 ? "dispositivo" : "dispositivos"}`;
+}
+
+function renderDevices() {
+  const visible = visibleDevices();
+  renderSummary(visible);
   if (!visible.length) {
     renderEmpty(state.devices.length ? "Nenhum resultado" : "Seu primeiro dispositivo começa aqui", state.devices.length ? "Ajuste a busca ou o filtro de status." : "Conecte um Android por USB ou pelo botão Conectar Android.");
   } else {
@@ -240,13 +327,18 @@ function renderDevices() {
 function renderDevice(device) {
   const card = node("article", `device-card${device.running ? " running" : ""}${selected.has(device.id) ? " selected" : ""}`);
   card.dataset.deviceId = device.id;
+  const open = button("", "card-open-button", () => openDetails(device.id, "vision"), "Abrir visão IA");
+  open.dataset.role = "vision";
+  open.setAttribute("aria-label", `Abrir visão IA de ${deviceName(device)}`);
+  open.setAttribute("aria-haspopup", "dialog");
+  card.append(open);
   const header = node("div", "device-card-header");
   const identity = node("div", "device-identity");
   const title = node("h3", "", deviceName(device));
   title.title = deviceName(device);
   const serial = node("p", "mono", device.serial || device.id);
   serial.title = device.serial || device.id;
-  identity.append(title, serial);
+  identity.append(title, serial, node("span", "card-open-hint", "Ver visão IA ↗"));
   const checkbox = node("input");
   checkbox.type = "checkbox";
   checkbox.checked = selected.has(device.id);
@@ -261,16 +353,11 @@ function renderDevice(device) {
   const status = node("div", "device-status-row");
   status.append(badge(device), node("span", "device-runtime", runtime(device)));
   const metrics = node("dl", "device-metrics");
-  const battery = metric(device, "battery");
-  const batteryLevel = numeric(typeof battery === "object" && battery ? battery.level : battery);
-  const fps = numeric(metric(device, "fps") ?? metric(device, "capture_fps"));
-  const values = [
-    ["Voou", count(metric(device, "voos"))], ["Renovou", count(metric(device, "reformas"))], ["Ações", count(metric(device, "acoes"))],
-    ["Templates", count(metric(device, "templates") ?? state.templates.total)], ["FPS", fps === null ? "—" : fps.toLocaleString("pt-BR", { maximumFractionDigits: 1 })], ["Bateria", batteryLevel === null ? "—" : `${batteryLevel}%${battery?.charging ? " ↯" : ""}`]
-  ];
-  for (const [label, value] of values) {
+  for (const [key, label, value] of metricValues(device)) {
     const item = node("div", "device-metric");
-    item.append(node("dt", "", label), node("dd", label === "Templates" ? "accent" : "", value));
+    const output = node("dd", key === "templates" ? "accent" : "", value);
+    output.dataset.metric = key;
+    item.append(node("dt", "", label), output);
     metrics.append(item);
   }
   const footer = node("div", "device-card-footer");
@@ -282,17 +369,43 @@ function renderDevice(device) {
   restart.setAttribute("aria-label", `Reiniciar ${deviceName(device)}`);
   restart.dataset.role = "restart";
   restart.disabled = busy || !device.running || !connected(device);
-  const settings = button("⚙", "button ghost settings-button", () => openDetails(device.id), "Configurações, itens e logs");
+  const settings = button("⚙", "button ghost settings-button", () => openDetails(device.id, "settings"), "Configurações, itens e logs");
   settings.setAttribute("aria-label", `Configurar ${deviceName(device)}`);
   settings.dataset.role = "settings";
   footer.append(start, restart, settings);
   card.append(header, status);
-  const botState = metric(device, "state") || metric(device, "estado");
-  if (botState && device.running) card.append(node("p", "bot-state", `Estado · ${botState}`));
+  card.append(node("p", "bot-state"), node("p", "metrics-freshness"));
   card.append(metrics, footer);
   const profile = device.profile;
   if (profile && (Object.keys(profile.settings || {}).length || Object.keys(profile.category_thresholds || {}).length || Object.keys(profile.item_thresholds || {}).length)) card.append(node("div", "profile-indicator", "◉ Perfil personalizado"));
+  updateDeviceMetrics(card, device);
   return card;
+}
+
+function metricValues(device) {
+  const battery = metric(device, "battery");
+  const level = numeric(typeof battery === "object" && battery ? battery.level : battery);
+  const fps = numeric(metric(device, "fps") ?? metric(device, "capture_fps"));
+  return [
+    ["voos", "Voou", count(metric(device, "voos"))], ["reformas", "Renovou", count(metric(device, "reformas"))], ["acoes", "Ações", count(metric(device, "acoes"))],
+    ["templates", "Templates", count(metric(device, "templates") ?? state.templates.total)],
+    ["fps", "FPS", fps === null ? "—" : fps.toLocaleString("pt-BR", { maximumFractionDigits: 1 })],
+    ["battery", "Bateria", level === null ? "—" : `${level}%${battery?.charging ? " ↯" : ""}`]
+  ];
+}
+
+function updateDeviceMetrics(card, device) {
+  for (const [key, , value] of metricValues(device)) card.querySelector(`[data-metric="${key}"]`).textContent = value;
+  card.querySelector(".device-runtime").textContent = runtime(device);
+  const botState = metric(device, "state") || metric(device, "estado");
+  const stateLabel = card.querySelector(".bot-state");
+  stateLabel.textContent = botState ? `Estado · ${botState}` : "";
+  stateLabel.hidden = !botState || !device.running;
+  const updatedAt = numeric(metric(device, "updated_at"));
+  const age = updatedAt === null ? null : Math.max(0, Math.floor(Date.now() / 1000 - updatedAt));
+  const freshness = card.querySelector(".metrics-freshness");
+  freshness.textContent = !device.running ? "" : age === null ? "Aguardando métricas do bot" : age > 10 ? `Métricas sem atualização há ${age}s` : "";
+  freshness.hidden = !freshness.textContent;
 }
 
 function updateSelection() {
@@ -364,7 +477,7 @@ function updatePending() {
   $("item-search").disabled = saving;
 }
 
-async function openDetails(id) {
+async function openDetails(id, tab = "vision") {
   if (profileLoading || !await closeDetails()) return;
   profileLoading = true;
   detailId = id;
@@ -381,10 +494,10 @@ async function openDetails(id) {
     renderItems();
     resetLogs();
     detailSession = deviceById(id)?.started_at || null;
-    setTab("settings");
-    renderDetailStatus();
     updatePending();
     $("device-dialog").showModal();
+    setTab(tab);
+    renderDetailStatus();
   } catch (error) { detailId = null; if (authenticated) toast(error.message, true); }
   finally { profileLoading = false; }
 }
@@ -392,12 +505,13 @@ async function openDetails(id) {
 async function closeDetails() {
   if (saving) return false;
   if (changeCount() && !confirm("Descartar os ajustes que ainda não foram salvos?")) return false;
+  stopVision();
   $("device-dialog").close();
   draft = null;
   savedProfile = null;
   detailId = null;
   detailSession = null;
-  logGeneration += 1;
+  resetLogs();
   return true;
 }
 
@@ -405,10 +519,13 @@ function renderDetailStatus() {
   if (!detailId) return;
   const device = deviceById(detailId);
   if (!device) return;
+  if (visionWanted && !device.running) stopVision({ mode: "stopped", message: "O bot foi encerrado. Inicie-o para acompanhar as detecções." });
+  else renderVisionControls();
   if (detailSession !== (device.started_at || null)) {
     detailSession = device.started_at || null;
     resetLogs();
     pollLogs();
+    if (visionWanted && activeTab === "vision" && device.running) { stopVision(); startVision(); }
   }
   const status = metric(device, "state") || metric(device, "estado");
   $("detail-status").replaceChildren(badge(device), node("span", "muted", [device.model, device.running ? status : null, device.running ? runtime(device) : null].filter(Boolean).join(" · ")));
@@ -670,16 +787,308 @@ async function resetProfile() {
   finally { saving = false; updatePending(); }
 }
 
+function renderVisionControls() {
+  const device = detailId ? deviceById(detailId) : null;
+  $("vision-toggle").textContent = visionWanted ? "Encerrar visão" : visionMode === "error" ? "Tentar novamente" : "Ver visão";
+  $("vision-toggle").disabled = visionMode === "starting" || (!visionWanted && (!device?.running || document.hidden));
+}
+
+function renderVision(mode, message = "") {
+  visionMode = mode;
+  const descriptions = {
+    off: ["Transmissão desligada", "Ative a visão para acompanhar as detecções deste dispositivo.", "◎"],
+    starting: ["Ativando visão", "Solicitando a transmissão ao bot em execução…", "◎"],
+    waiting: ["Aguardando primeiro frame", "O bot está preparando a imagem com as detecções da IA.", "◎"],
+    live: ["Ao vivo", "", "◎"],
+    paused: ["Transmissão pausada", "A visão será retomada quando esta aba do navegador estiver visível.", "Ⅱ"],
+    stopped: ["Bot parado", "Inicie o bot deste dispositivo para acompanhar as detecções.", "□"],
+    error: ["Não foi possível exibir a visão", "Tente ativar a transmissão novamente.", "!"]
+  };
+  const [title, description, symbol] = descriptions[mode] || descriptions.off;
+  $("vision-status").textContent = mode === "live" ? `Ao vivo · ${new Date().toLocaleTimeString("pt-BR")}` : title;
+  $("vision-placeholder-title").textContent = title;
+  $("vision-placeholder-message").textContent = message || description;
+  $("vision-symbol").textContent = symbol;
+  $("vision-stage").classList.toggle("vision-error", mode === "error");
+  $("vision-stage").classList.toggle("vision-live", mode === "live");
+  $("vision-image").hidden = mode !== "live";
+  $("vision-placeholder").hidden = mode === "live";
+  renderVisionControls();
+}
+
+function releaseVision(id) {
+  if (!id) return;
+  const headers = { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) };
+  const pending = (visionReleases.get(id) || Promise.resolve()).then(() => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+    return fetch(`/api/devices/${encodeURIComponent(id)}/vision`, {
+      method: "POST", headers,
+      body: JSON.stringify({ enabled: false }),
+      keepalive: true,
+      signal: controller.signal
+    }).catch(() => {}).finally(() => clearTimeout(timeout));
+  });
+  visionReleases.set(id, pending);
+  pending.finally(() => { if (visionReleases.get(id) === pending) visionReleases.delete(id); });
+  return pending;
+}
+
+function clearVisionImage() {
+  $("vision-image").onload = null;
+  $("vision-image").onerror = null;
+  $("vision-image").removeAttribute("src");
+  if (visionUrl) URL.revokeObjectURL(visionUrl);
+  visionUrl = null;
+}
+
+function stopVision({ mode = "off", message = "", pause = false } = {}) {
+  const id = visionDevice;
+  visionResume = pause && (visionWanted || visionResume);
+  visionWanted = false;
+  visionDevice = null;
+  visionGeneration += 1;
+  const stream = visionStream;
+  visionStream = null;
+  if (stream) {
+    clearTimeout(stream.idleTimer);
+    stream.pending = null;
+    try { Promise.resolve(stream.reader?.cancel()).catch(() => {}); } catch {}
+  }
+  visionController?.abort();
+  visionController = null;
+  clearVisionImage();
+  releaseVision(id);
+  renderVision(mode, message);
+}
+
+async function startVision() {
+  if (!authenticated || !detailId || !$("device-dialog").open || activeTab !== "vision") return;
+  const device = deviceById(detailId);
+  if (!device?.running) { stopVision({ mode: "stopped" }); return; }
+  if (document.hidden) { visionResume = true; renderVision("paused"); return; }
+  if (visionWanted && visionDevice === detailId) return;
+  visionResume = false;
+  visionWanted = true;
+  const id = detailId;
+  visionDevice = id;
+  const generation = ++visionGeneration;
+  renderVision("starting");
+  try {
+    await visionReleases.get(id);
+    if (generation !== visionGeneration) return;
+    const result = await api(`/api/devices/${encodeURIComponent(id)}/vision`, { method: "POST", body: JSON.stringify({ enabled: true }) });
+    if (generation !== visionGeneration) {
+      if (!visionWanted || visionDevice !== id) releaseVision(id);
+      return;
+    }
+    if (result.enabled === false) throw new Error("O servidor não ativou a transmissão.");
+    renderVision("waiting");
+    streamVision(generation);
+  } catch (error) {
+    if (generation === visionGeneration && authenticated) stopVision({ mode: "error", message: error.message });
+  }
+}
+
+function loadVisionFrame(blob, generation, signal) {
+  const image = $("vision-image");
+  const previousUrl = visionUrl;
+  const url = URL.createObjectURL(blob);
+  visionUrl = url;
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const timeout = setTimeout(() => finish(new Error("A imagem demorou para carregar. Tente novamente.")), 10000);
+    const finish = (error, loaded = false) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      signal.removeEventListener("abort", abort);
+      if (image.onload === loadedFrame) image.onload = null;
+      if (image.onerror === failedFrame) image.onerror = null;
+      if (previousUrl) URL.revokeObjectURL(previousUrl);
+      if (!loaded) {
+        URL.revokeObjectURL(url);
+        if (visionUrl === url) visionUrl = null;
+      }
+      if (error) reject(error); else resolve(loaded);
+    };
+    const abort = () => finish(null);
+    const loadedFrame = () => {
+      if (generation !== visionGeneration || !visionWanted) { finish(null); return; }
+      renderVision("live");
+      finish(null, true);
+    };
+    const failedFrame = () => finish(new Error("Não foi possível carregar a imagem recebida do bot."));
+    signal.addEventListener("abort", abort, { once: true });
+    if (signal.aborted) { finish(null); return; }
+    image.onload = loadedFrame;
+    image.onerror = failedFrame;
+    image.src = url;
+  });
+}
+
+async function* jpegFrames(body, { boundary = "frame", signal, onReader } = {}) {
+  if (!body || typeof body.getReader !== "function") throw new Error("O navegador não recebeu uma transmissão válida.");
+  if (!/^[a-zA-Z0-9'()+_,./:=?-]{1,70}$/.test(boundary)) throw new Error("Separador da transmissão inválido.");
+  const reader = body.getReader();
+  onReader?.(reader);
+  const decoder = new TextDecoder();
+  const lineBuffer = new Uint8Array(MAX_VISION_HEADER_BYTES);
+  let lineLength = 0;
+  let headerBytes = 0;
+  let headers = new Map();
+  let phase = "boundary";
+  let frame = null;
+  let frameOffset = 0;
+  try {
+    while (!signal?.aborted) {
+      const { value, done } = await reader.read();
+      if (done) {
+        if (phase !== "boundary" || lineLength) throw new Error("A transmissão foi interrompida durante um frame.");
+        return;
+      }
+      const bytes = value instanceof Uint8Array ? value : new Uint8Array(value);
+      let offset = 0;
+      while (offset < bytes.length) {
+        if (signal?.aborted) return;
+        if (phase === "body") {
+          const length = Math.min(frame.length - frameOffset, bytes.length - offset);
+          frame.set(bytes.subarray(offset, offset + length), frameOffset);
+          frameOffset += length;
+          offset += length;
+          if (frameOffset === frame.length) {
+            const completed = frame;
+            frame = null;
+            frameOffset = 0;
+            phase = "separator";
+            yield completed;
+          }
+          continue;
+        }
+        const newline = bytes.indexOf(10, offset);
+        const end = newline < 0 ? bytes.length : newline + 1;
+        const length = end - offset;
+        if (lineLength + length > MAX_VISION_HEADER_BYTES) throw new Error("Cabeçalhos da transmissão excedem 8 KiB.");
+        lineBuffer.set(bytes.subarray(offset, end), lineLength);
+        lineLength += length;
+        offset = end;
+        if (newline < 0) continue;
+        if (lineLength < 2 || lineBuffer[lineLength - 2] !== 13) throw new Error("Formato da transmissão inválido.");
+        const lineBytes = lineLength;
+        const line = decoder.decode(lineBuffer.subarray(0, lineLength - 2));
+        lineLength = 0;
+        if (phase === "boundary") {
+          if (line === `--${boundary}--`) return;
+          if (line !== `--${boundary}`) throw new Error("Separador de frame inválido.");
+          phase = "headers";
+          headerBytes = 0;
+          headers = new Map();
+        } else if (phase === "headers") {
+          headerBytes += lineBytes;
+          if (headerBytes > MAX_VISION_HEADER_BYTES) throw new Error("Cabeçalhos da transmissão excedem 8 KiB.");
+          if (line) {
+            const match = line.match(/^([a-zA-Z0-9-]+):[ \t]*(.*)$/);
+            if (!match || headers.has(match[1].toLowerCase())) throw new Error("Cabeçalho de frame inválido.");
+            headers.set(match[1].toLowerCase(), match[2].trim());
+          } else {
+            const length = headers.get("content-length") || "";
+            if (!/^\d+$/.test(length) || !Number.isSafeInteger(Number(length)) || Number(length) < 1 || Number(length) > MAX_VISION_FRAME_BYTES) throw new Error("O frame deve ter até 5 MiB e tamanho informado.");
+            if (!/^image\/jpeg(?:\s*;.*)?$/i.test(headers.get("content-type") || "")) throw new Error("O servidor não enviou um frame JPEG válido.");
+            frame = new Uint8Array(Number(length));
+            phase = "body";
+          }
+        } else {
+          if (line !== "") throw new Error("Fim de frame inválido.");
+          phase = "boundary";
+        }
+      }
+    }
+  } finally {
+    try { await reader.cancel(); } catch {}
+    reader.releaseLock();
+  }
+}
+
+function queueVisionFrame(frame, stream) {
+  stream.pending = frame;
+  if (stream.rendering) return;
+  stream.rendering = true;
+  (async () => {
+    try {
+      while (stream.pending && visionStream === stream && stream.generation === visionGeneration && visionWanted) {
+        const latest = stream.pending;
+        stream.pending = null;
+        await loadVisionFrame(new Blob([latest], { type: "image/jpeg" }), stream.generation, stream.controller.signal);
+      }
+    } catch (error) {
+      if (visionStream === stream && visionWanted) stopVision({ mode: "error", message: error.message });
+    } finally {
+      stream.rendering = false;
+      stream.pending = null;
+    }
+  })();
+}
+
+function renewVisionTimeout(stream) {
+  clearTimeout(stream.idleTimer);
+  stream.idleTimer = setTimeout(() => {
+    if (visionStream === stream && visionWanted) stopVision({ mode: "error", message: "Nenhum frame recebido há 10 segundos. Tente novamente." });
+  }, 10000);
+}
+
+async function streamVision(generation) {
+  if (generation !== visionGeneration || !visionWanted || !authenticated || document.hidden || activeTab !== "vision" || detailId !== visionDevice || !$("device-dialog").open || visionController) return;
+  if (!deviceById(visionDevice)?.running) { stopVision({ mode: "stopped" }); return; }
+  const controller = new AbortController();
+  visionController = controller;
+  const stream = { generation, controller, reader: null, pending: null, rendering: false, idleTimer: null };
+  visionStream = stream;
+  renewVisionTimeout(stream);
+  try {
+    const response = await fetch(`/api/devices/${encodeURIComponent(visionDevice)}/vision/stream`, {
+      headers: { Accept: "multipart/x-mixed-replace", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      signal: controller.signal,
+      cache: "no-store"
+    });
+    if (generation !== visionGeneration) return;
+    if (response.status === 401) { logout(true); return; }
+    if (!response.ok) {
+      const result = await response.json().catch(() => ({}));
+      if (generation !== visionGeneration) return;
+      const detail = typeof result.detail === "string" ? result.detail : "O servidor não disponibilizou a imagem.";
+      if (response.status === 409 && !deviceById(visionDevice)?.running) { stopVision({ mode: "stopped" }); return; }
+      throw new Error(detail);
+    }
+    const contentType = response.headers.get("Content-Type") || "";
+    const boundary = contentType.match(/\bboundary=(?:"([^"]+)"|([^;\s]+))/i);
+    if (!/^multipart\/x-mixed-replace\b/i.test(contentType) || !boundary) throw new Error("O servidor não enviou uma transmissão JPEG válida.");
+    for await (const frame of jpegFrames(response.body, { boundary: boundary[1] || boundary[2], signal: controller.signal, onReader: (reader) => { stream.reader = reader; } })) {
+      if (generation !== visionGeneration || !visionWanted) return;
+      renewVisionTimeout(stream);
+      queueVisionFrame(frame, stream);
+    }
+    if (generation === visionGeneration && visionWanted) throw new Error("A transmissão foi encerrada pelo servidor. Tente novamente.");
+  } catch (error) {
+    if (generation === visionGeneration && visionWanted) stopVision({ mode: "error", message: error.name === "AbortError" ? "A transmissão foi interrompida. Tente novamente." : error.message });
+  } finally {
+    clearTimeout(stream.idleTimer);
+    if (visionController === controller) visionController = null;
+    if (visionStream === stream) visionStream = null;
+  }
+}
+
 function setTab(tab) {
+  if (activeTab === "vision" && tab !== "vision") stopVision();
   activeTab = tab;
   if (tab === "items") { renderItems(); updatePending(); }
-  for (const key of ["settings", "items", "logs"]) {
+  for (const key of ["settings", "items", "vision", "logs"]) {
     const active = key === tab;
     $(`tab-${key}`).classList.toggle("active", active);
     $(`tab-${key}`).setAttribute("aria-selected", String(active));
     $(`tab-${key}`).tabIndex = active ? 0 : -1;
     $(`panel-${key}`).hidden = !active;
   }
+  if (tab === "vision") startVision();
   if (tab === "logs") pollLogs();
 }
 
@@ -687,11 +1096,38 @@ function resetLogs() {
   logGeneration += 1;
   logCursor = 0;
   logLines = [];
+  logBytes = 0;
   logPaused = false;
   $("log-output").replaceChildren();
   $("log-status").textContent = "Aguardando logs.";
   $("log-pause").textContent = "Pausar";
   $("log-download").disabled = true;
+}
+
+function appendLogLines(lines) {
+  const encoder = new TextEncoder();
+  for (const line of lines) {
+    const original = String(line.text ?? "");
+    const clipped = original.slice(0, MAX_LOG_LINE_BYTES);
+    const bytes = encoder.encode(clipped);
+    const text = bytes.length > MAX_LOG_LINE_BYTES || clipped.length < original.length
+      ? new TextDecoder().decode(bytes.subarray(0, MAX_LOG_LINE_BYTES - 3), { stream: true }) + "…"
+      : clipped;
+    const size = encoder.encode(text).length + 1;
+    logLines.push({ id: numeric(line.id), text, bytes: size });
+    logBytes += size;
+    while (logLines.length > MAX_LOG_LINES || logBytes > MAX_LOG_BYTES) logBytes -= logLines.shift().bytes;
+  }
+}
+
+function renderLogLines() {
+  const output = $("log-output");
+  const scrollTop = output.scrollTop;
+  output.replaceChildren(...logLines.map((line) => {
+    const style = /(?:\bERROR\b|\b E \[|Traceback|Exception:)/.test(line.text) ? "error-line" : /(?:\bWARNING\b|\b W \[)/.test(line.text) ? "warning-line" : "";
+    return node("div", style, line.text);
+  }));
+  output.scrollTop = $("log-autoscroll").checked ? output.scrollHeight : scrollTop;
 }
 
 async function pollLogs() {
@@ -703,19 +1139,13 @@ async function pollLogs() {
     if (generation !== logGeneration || !authenticated) return;
     const lines = Array.isArray(result.lines) ? result.lines : [];
     const cursor = numeric(result.cursor);
-    if (cursor !== null && cursor < logCursor) { logLines = []; $("log-output").replaceChildren(); }
-    logLines.push(...lines);
-    logLines = logLines.slice(-2000);
-    for (const line of lines.slice(-2000)) {
-      const text = String(line.text ?? "");
-      const style = /(?:\bERROR\b|\b E \[|Traceback|Exception:)/.test(text) ? "error-line" : /(?:\bWARNING\b|\b W \[)/.test(text) ? "warning-line" : "";
-      $("log-output").append(node("div", style, text));
-    }
-    while ($("log-output").childElementCount > 2000) $("log-output").firstElementChild.remove();
+    const reset = cursor !== null && cursor < logCursor;
+    if (reset) { logLines = []; logBytes = 0; }
+    appendLogLines(lines);
+    if (reset || lines.length) renderLogLines();
     $("log-download").disabled = !logLines.length;
     if (cursor !== null) logCursor = cursor;
-    $("log-status").textContent = logLines.length ? `${count(logLines.length)} linhas em memória · atualizado às ${new Date().toLocaleTimeString("pt-BR")}` : "Nenhum log disponível. Inicie o bot para acompanhar a saída.";
-    if ($("log-autoscroll").checked && lines.length) $("log-output").scrollTop = $("log-output").scrollHeight;
+    $("log-status").textContent = logLines.length ? `${count(logLines.length)} linhas retidas · ${(logBytes / 1024).toLocaleString("pt-BR", { maximumFractionDigits: 1 })} KiB · atualizado às ${new Date().toLocaleTimeString("pt-BR")}` : "Nenhum log disponível. Inicie o bot para acompanhar a saída.";
   } catch (error) { if (generation === logGeneration && authenticated) $("log-status").textContent = error.message; }
   finally { logLoading = false; }
 }
@@ -765,6 +1195,7 @@ async function pairAndroid() {
 }
 
 $("login-form").addEventListener("submit", login);
+$("session-retry").addEventListener("click", bootstrapSession);
 $("logout").addEventListener("click", () => logout());
 $("refresh").addEventListener("click", () => refreshState(true));
 $("search").addEventListener("input", renderDevices);
@@ -789,7 +1220,7 @@ $("item-search").addEventListener("input", renderItems);
 for (const tab of document.querySelectorAll("[data-tab]")) {
   tab.addEventListener("click", () => setTab(tab.dataset.tab));
   tab.addEventListener("keydown", (event) => {
-    const tabs = ["settings", "items", "logs"];
+    const tabs = ["settings", "items", "vision", "logs"];
     let index = tabs.indexOf(activeTab);
     if (event.key === "ArrowRight") index = (index + 1) % tabs.length;
     else if (event.key === "ArrowLeft") index = (index + tabs.length - 1) % tabs.length;
@@ -803,12 +1234,23 @@ for (const tab of document.querySelectorAll("[data-tab]")) {
 }
 $("log-pause").addEventListener("click", () => { logPaused = !logPaused; $("log-pause").textContent = logPaused ? "Retomar" : "Pausar"; if (!logPaused) pollLogs(); });
 $("log-download").addEventListener("click", downloadLogs);
+$("vision-toggle").addEventListener("click", () => { if (visionWanted) stopVision(); else startVision(); });
 $("connect-open").addEventListener("click", () => { $("connect-result").textContent = ""; $("connect-dialog").showModal(); });
 $("connect-close").addEventListener("click", () => $("connect-dialog").close());
 $("connect-form").addEventListener("submit", connectAndroid);
 $("pair-submit").addEventListener("click", pairAndroid);
 window.addEventListener("beforeunload", (event) => { if (changeCount()) { event.preventDefault(); event.returnValue = ""; } });
 setInterval(() => { if (!document.hidden) refreshState(); }, 5000);
+setInterval(() => { if (!document.hidden) refreshRuntime(); }, 1000);
 setInterval(() => { if (!document.hidden) pollLogs(); }, 1500);
-document.addEventListener("visibilitychange", () => { if (!document.hidden) { refreshState(); pollLogs(); } });
-if (token) login();
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    if (visionWanted) stopVision({ mode: "paused", pause: true });
+  } else {
+    refreshState();
+    pollLogs();
+    if (visionResume && activeTab === "vision") startVision();
+  }
+});
+window.addEventListener("pagehide", () => stopVision());
+bootstrapSession();
