@@ -55,14 +55,14 @@ Grava em `dataset/data/<resolucao>/`. Sem a flag, usa `DATASET_SAVE` do
 `src/core/config.py`.
 
 Com `AI_AUTO_TRAIN = True`, a cada 10 mil registros novos de uma mesma
-resolução inicia um treino automático independente. O modelo e o ponteiro
-ficam em `IA/models/<RESOLUÇÃO>/` e são versionáveis no Git. Os processos e
-janelas continuam abertos, mas as ações do bot e a coleta ficam pausadas.
-Ambos retomam automaticamente quando o treino termina ou falha.
+resolução inicia um treino automático independente. O modelo e o ponteiro ficam em
+`IA/models/<RESOLUÇÃO>/` e são versionáveis no Git. No painel web, os bots que
+estão coletando são encerrados para liberar o dispositivo; após o treino, eles
+são iniciados novamente, inclusive quando o treino falha.
 
-A pausa vem ativada por padrão em `src/core/config.py`. Para continuar
-jogando e coletando em paralelo ao treino automático, defina
-`AI_PAUSE_BOT_WHILE_TRAINING = False`.
+No terminal, o bot permanece aberto, mas pausa ações e coleta por padrão
+durante o treino. Defina `AI_PAUSE_BOT_WHILE_TRAINING = False` para continuar
+jogando e coletando em paralelo.
 
 ### Treinar
 

@@ -267,6 +267,25 @@ def test_stop_writes_session_request_and_only_waits_for_selected_process(tmp_pat
     other.send_signal.assert_not_called()
 
 
+def test_auto_training_stops_collecting_bots_and_restarts_them(tmp_path):
+    supervisor = _supervisor(tmp_path)
+    supervisor.store.save("hardware-1", {"run": {"ai_collect": True}})
+    process = Mock(pid=12345)
+    process.poll.return_value = None
+    supervisor._runs["hardware-1"] = _Run(
+        process, time.time(), "session-1", "usb-1",
+        tmp_path / "status", tmp_path / "stop",
+    )
+    with (
+        patch.object(supervisor, "stop") as stop,
+        patch.object(supervisor, "start") as start,
+    ):
+        with supervisor._training_session("1080x2400"):
+            stop.assert_called_once_with("hardware-1")
+            start.assert_not_called()
+        start.assert_called_once_with("hardware-1")
+
+
 def test_shutdown_blocks_new_starts(tmp_path):
     supervisor = _supervisor(tmp_path)
     supervisor.shutdown()

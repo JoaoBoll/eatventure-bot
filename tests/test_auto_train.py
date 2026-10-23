@@ -102,11 +102,14 @@ class AutoTrainerTests(unittest.TestCase):
     def test_stop_after_readiness_check_prevents_process_start(self):
         def ready_then_stop():
             self.trainer.stop()
-            return True
+            return ["1080x2400"]
 
         self.trainer.notify()
         with (
-            patch.object(self.trainer, "_ready", side_effect=ready_then_stop),
+            patch.object(
+                self.trainer, "_ready_resolutions",
+                side_effect=ready_then_stop,
+            ),
             patch("dataset.auto_train.subprocess.Popen") as start_process,
         ):
             self.trainer._run()

@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 import queue
 import threading
 import time
@@ -94,7 +95,9 @@ class DatasetRecorder:
 
         self.enabled = enabled
         self.auto_trainer = None
-        enable_auto_train = AI_AUTO_TRAIN if auto_train is None else auto_train
+        enable_auto_train = (
+            AI_AUTO_TRAIN if auto_train is None else auto_train
+        ) and os.environ.get("EATVENTURE_AUTO_TRAIN_EXTERNAL") != "1"
         if enable_auto_train:
             from dataset.auto_train import AutoTrainer
 

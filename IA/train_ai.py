@@ -7,8 +7,8 @@ import json
 import re
 import sys
 import time
-from copy import copy
 from collections import Counter, defaultdict
+from copy import copy
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -574,11 +574,8 @@ def _train_one_resolution(args):
 
 
 def train(args):
-    if args.resolution is not None or args.combine_resolutions:
+    if args.resolution is not None or args.combine_resolutions or args.model_out is not None:
         return _train_one_resolution(args)
-
-    if args.model_out is not None:
-        raise ValueError("Use --resolution ou --combine-resolutions junto com --model-out.")
 
     from dataset.layout import record_resolution
     from dataset.training_files import snapshot_records
@@ -996,8 +993,6 @@ def parse_args(argv=None):
     args = parser.parse_args(argv)
     if args.resolution is not None and args.combine_resolutions:
         parser.error("--resolution e --combine-resolutions são incompatíveis.")
-    if args.model_out is not None and args.resolution is None and not args.combine_resolutions:
-        parser.error("--model-out exige --resolution ou --combine-resolutions.")
     return args
 
 

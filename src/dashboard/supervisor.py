@@ -2,6 +2,7 @@
 
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import hashlib
@@ -18,9 +19,11 @@ import threading
 import time
 import uuid
 
+from core import log
 from core.preview import FramePreview, preview_paths
 
 
+logger = log.get("dashboard.supervisor")
 _ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _HOSTNAME = re.compile(r"(?=.{1,253}\Z)[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?\Z")
 _MAX_STATUS_BYTES = 128 * 1024
@@ -386,9 +389,11 @@ class BotSupervisor:
         self.store = store
         self.devices = devices or DeviceManager()
         self._lock = threading.RLock()
+        self._auto_training_lock = threading.RLock()
         self._operation_locks = {}
         self._runs = {}
         self._device_cache = {}
+        self._auto_trainer = None
         self._closing = False
 
     def _operation_lock(self, device_id):
@@ -441,6 +446,73 @@ class BotSupervisor:
             if device_id in self._runs or device_id in self._device_cache:
                 return
         self._resolve(device_id)
+
+    def _ensure_auto_trainer(self):
+        from core import config
+
+        with self._lock:
+            if self._closing or self._auto_trainer is not None:
+                return
+            enabled = False
+            for device_id, run in self._runs.items():
+                if run.process.poll() is not None:
+                    continue
+                profile = self.store.load(device_id)
+                if (
+                    profile["run"]["ai_collect"]
+                    and profile["settings"].get("ai_auto_train", config.AI_AUTO_TRAIN)
+                ):
+                    enabled = True
+                    break
+            if not enabled:
+                return
+            from dataset.auto_train import AutoTrainer
+
+            trainer = AutoTrainer(
+                config.DATASET_DIR,
+                batch_size=config.AI_TRAIN_BATCH_SIZE,
+                interval=config.AI_TRAIN_CHECK_INTERVAL,
+                jobs=config.AI_TRAIN_JOBS,
+                pause_bot=False,
+                training_session=self._training_session,
+            )
+            self._auto_trainer = trainer
+        trainer.start()
+
+    @contextmanager
+    def _training_session(self, resolution):
+        with self._auto_training_lock:
+            with self._lock:
+                device_ids = [
+                    device_id for device_id, run in self._runs.items()
+                    if run.process.poll() is None
+                    and self.store.load(device_id)["run"]["ai_collect"]
+                ]
+            restart_ids = []
+            for device_id in device_ids:
+                try:
+                    self.stop(device_id)
+                    restart_ids.append(device_id)
+                except (KeyError, RuntimeError, OSError):
+                    logger.exception(
+                        "Não foi possível parar o bot %s antes do treino da resolução %s.",
+                        device_id, resolution,
+                    )
+                    for stopped_id in restart_ids:
+                        try:
+                            self.start(stopped_id)
+                        except (KeyError, RuntimeError, OSError):
+                            logger.exception("Não foi possível retomar o bot %s.", stopped_id)
+                    raise
+            try:
+                yield
+            finally:
+                if not self._closing:
+                    for device_id in restart_ids:
+                        try:
+                            self.start(device_id)
+                        except (KeyError, RuntimeError, OSError):
+                            logger.exception("Não foi possível retomar o bot %s após o treino.", device_id)
 
     def _metrics(self, device_id, run):
         if run is None or run.process.poll() is not None:
@@ -572,6 +644,10 @@ class BotSupervisor:
             self._signal(run, signal.SIGKILL)
 
     def start(self, device_id):
+        with self._auto_training_lock:
+            return self._start(device_id)
+
+    def _start(self, device_id):
         device = self._resolve(device_id)
         device_id = device["id"]
         with self._operation_lock(device_id):
@@ -608,6 +684,7 @@ class BotSupervisor:
                 "EATVENTURE_STATUS_FILE": str(status_file),
                 "EATVENTURE_STOP_FILE": str(stop_file),
                 "EATVENTURE_SESSION_ID": session_id,
+                "EATVENTURE_AUTO_TRAIN_EXTERNAL": "1",
             })
             command = [sys.executable, "-u", str(self.root / "src" / "web_worker.py"), "--device", device["serial"]]
             options = profile.get("run", {})
@@ -652,6 +729,7 @@ class BotSupervisor:
             run.watcher = threading.Thread(target=self._watch_process, args=(run,), name=f"bot-wait-{process.pid}", daemon=True)
             run.reader.start()
             run.watcher.start()
+            self._ensure_auto_trainer()
             return self._describe(device)
 
     def _signal(self, run, value):
@@ -684,6 +762,10 @@ class BotSupervisor:
             raise RuntimeError("Não foi possível encerrar o processo do bot.") from exc
 
     def stop(self, device_id):
+        with self._auto_training_lock:
+            return self._stop(device_id)
+
+    def _stop(self, device_id):
         device = self._resolve(device_id)
         device_id = device["id"]
         with self._operation_lock(device_id):
@@ -723,10 +805,11 @@ class BotSupervisor:
             return self._describe(device)
 
     def restart(self, device_id):
-        device = self._resolve(device_id)
-        with self._operation_lock(device["id"]):
-            self.stop(device["id"])
-            return self.start(device["id"])
+        with self._auto_training_lock:
+            device = self._resolve(device_id)
+            with self._operation_lock(device["id"]):
+                self.stop(device["id"])
+                return self.start(device["id"])
 
     def request_vision(self, device_id, enabled):
         device_id = self._runtime_device_id(device_id)
@@ -887,6 +970,10 @@ class BotSupervisor:
     def shutdown(self):
         with self._lock:
             self._closing = True
+            auto_trainer = self._auto_trainer
+        if auto_trainer is not None:
+            auto_trainer.stop()
+        with self._lock:
             device_ids = [device_id for device_id, run in self._runs.items() if run.process.poll() is None]
         if device_ids:
             with ThreadPoolExecutor(max_workers=min(8, len(device_ids))) as pool:

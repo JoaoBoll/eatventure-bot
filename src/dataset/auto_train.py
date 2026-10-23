@@ -6,6 +6,7 @@ import subprocess
 import sys
 import threading
 from collections import defaultdict
+from contextlib import nullcontext
 from pathlib import Path
 
 from core import log
@@ -18,12 +19,16 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class AutoTrainer:
-    def __init__(self, directory, batch_size=10_000, interval=5.0, jobs=1, pause_bot=True):
+    def __init__(
+        self, directory, batch_size=10_000, interval=5.0, jobs=1,
+        pause_bot=True, training_session=None,
+    ):
         self.directory = Path(directory)
         self.batch_size = batch_size
         self.interval = interval
         self.jobs = jobs
         self.pause_bot = pause_bot
+        self.training_session = training_session or (lambda resolution: nullcontext())
         self._pause_requested = threading.Event()
         self._pause_ready = threading.Event()
         self._stop = threading.Event()
@@ -101,10 +106,19 @@ class AutoTrainer:
         registros, _ = snapshot_records(self.directory)
         treinados = trained_sample_ids(self.directory)
         novos = defaultdict(set)
+        totais = defaultdict(set)
         for record in registros:
             key = f"{record.get('_shard') or '.'}/{record.get('id') or record['_path'].stem}"
+            resolution = record_resolution(record)
+            totais[resolution].add(key)
             if key not in treinados:
-                novos[record_resolution(record)].add(key)
+                novos[resolution].add(key)
+        for resolution, records in sorted(totais.items()):
+            logger.info(
+                "Treino automático: resolução %s tem %d amostras válidas, %d novas (%d já processadas); limite %d.",
+                resolution, len(records), len(novos[resolution]),
+                len(records) - len(novos[resolution]), self.batch_size,
+            )
         return sorted(
             resolution for resolution, records in novos.items()
             if len(records) >= self.batch_size
@@ -142,25 +156,29 @@ class AutoTrainer:
         process = None
         returncode = None
         try:
-            if not self._request_pause():
-                return
-            with self._lock:
-                if self._stop.is_set():
+            with self.training_session(resolution):
+                if not self._request_pause():
                     return
-                logger.info("Lote de %d registros disponível; iniciando treino automático.", self.batch_size)
-                process = subprocess.Popen(
-                    command, cwd=ROOT, stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT, text=True,
-                    encoding="utf-8", errors="replace",
-                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
-                )
-                self._process = process
-            output_thread = log.start_process_output(process, "train")
-            returncode = process.wait()
-            if output_thread is not None:
-                output_thread.join(timeout=5)
-            if not self._stop.is_set() and returncode:
-                logger.warning("Treino automático não concluído (código %d); dados preservados.", returncode)
+                with self._lock:
+                    if self._stop.is_set():
+                        return
+                    logger.info(
+                        "Lote de %d registros da resolução %s disponível; iniciando treino automático.",
+                        self.batch_size, resolution,
+                    )
+                    process = subprocess.Popen(
+                        command, cwd=ROOT, stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT, text=True,
+                        encoding="utf-8", errors="replace",
+                        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+                    )
+                    self._process = process
+                output_thread = log.start_process_output(process, "train")
+                returncode = process.wait()
+                if output_thread is not None:
+                    output_thread.join(timeout=5)
+                if not self._stop.is_set() and returncode:
+                    logger.warning("Treino automático não concluído (código %d); dados preservados.", returncode)
         finally:
             with self._lock:
                 if process is not None:

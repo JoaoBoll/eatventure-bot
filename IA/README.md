@@ -21,7 +21,7 @@ Instala as dependências do projeto.
 python src/main.py --ai-collect
 ```
 
-Coleta dados usando o bot por templates. Com `AI_AUTO_TRAIN = True`, a cada **10 mil registros novos de uma mesma resolução** inicia um treino independente. O modelo publicado fica em `IA/models/<RESOLUÇÃO>/`; diferentes resoluções não são combinadas. Durante o treino, mantém os processos e janelas abertos, mas pausa as ações do bot e a coleta. A execução retoma automaticamente quando o treino termina ou falha.
+Coleta dados usando o bot por templates. Com `AI_AUTO_TRAIN = True`, a cada **10 mil registros novos de uma mesma resolução** inicia um treino independente. O modelo publicado fica em `IA/models/<RESOLUÇÃO>/`; diferentes resoluções não são combinadas. No painel web, os bots que estão coletando são encerrados durante o treino e reiniciados ao final, mesmo se o treino falhar.
 
 ```powershell
 python IA/train_ai.py
@@ -61,7 +61,7 @@ Cada treino gera um JSON próprio em `IA/training_reports/`, com data, duração
 
 A limpeza só ocorre depois de salvar o modelo e o relatório com sucesso. Remove apenas os registros e imagens aproveitados; dados novos ou não aproveitados permanecem. Se a limpeza for interrompida, ela é retomada na próxima verificação da coleta ou no próximo treino.
 
-O automático funciona enquanto a coleta está ligada. `AI_AUTO_TRAIN` e `AI_TRAIN_BATCH_SIZE`, em [config.py](../src/core/config.py), controlam sua ativação e o tamanho do lote por resolução. A pausa durante o treino vem ativada por padrão; use `AI_PAUSE_BOT_WHILE_TRAINING = False` para continuar jogando e coletando em paralelo. Ao encerrar a coleta, um treino automático ainda em andamento é interrompido; os dados não consumidos permanecem para a próxima execução. Os modelos e ponteiros publicados em `IA/models/` não são ignorados pelo Git.
+O automático funciona enquanto a coleta está ligada. `AI_AUTO_TRAIN` e `AI_TRAIN_BATCH_SIZE`, em [config.py](../src/core/config.py), controlam sua ativação e o tamanho do lote por resolução. A pausa durante o treino no terminal vem ativada por padrão; use `AI_PAUSE_BOT_WHILE_TRAINING = False` para continuar jogando e coletando em paralelo. Ao encerrar a coleta, um treino automático ainda em andamento é interrompido; os dados não consumidos permanecem para a próxima execução. Os modelos e ponteiros publicados em `IA/models/` não são ignorados pelo Git.
 
 ## Planejamento futuro
 
