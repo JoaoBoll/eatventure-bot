@@ -103,6 +103,29 @@ def test_mdns_reconnects_changed_wifi_port_and_uses_stable_device_name():
     assert "192.168.1.4:42000" in second[0]["aliases"]
 
 
+def test_discovery_merges_old_wifi_port_into_current_connection():
+    def adb(_, args, timeout=8):
+        if args == ["mdns", "services"]:
+            return "List of discovered mdns services\n"
+        if args == ["devices", "-l"]:
+            return (
+                "List of devices attached\n"
+                "192.168.1.4:42819 offline model:Android\n"
+                "192.168.1.4:5555 device model:Android\n"
+            )
+        if args[-1] in {"ro.serialno", "ro.boot.serialno"}:
+            return "unknown"
+        return "Android"
+
+    with patch("dashboard.supervisor._adb_run", side_effect=adb):
+        devices = DeviceManager(adb_path="adb").list()
+
+    assert len(devices) == 1
+    assert devices[0]["serial"] == "192.168.1.4:5555"
+    assert devices[0]["connected"]
+    assert set(devices[0]["aliases"]) == {"192.168.1.4:42819", "192.168.1.4:5555"}
+
+
 @pytest.mark.parametrize("address", ["host:0", "host:65536", "-host:5555", "host;echo:5555", "host:5555\nattack", "host", "[invalid]:5555"])
 def test_adb_addresses_are_validated_before_execution(address):
     with patch("dashboard.supervisor._adb_run") as run:

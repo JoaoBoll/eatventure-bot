@@ -94,6 +94,7 @@ class DeviceManager:
         self._refresh_lock = threading.Lock()
         self._devices = []
         self._properties = {}
+        self._network_ids = {}
         self._updated_at = 0.0
         self.last_error = None
 
@@ -153,6 +154,17 @@ class DeviceManager:
             service["address"], service["instance"],
             f"{service['instance']}.{service['type']}",
         }
+
+    @staticmethod
+    def _network_host(serial):
+        if serial.startswith("["):
+            closing = serial.find("]:")
+            return serial[1:closing] if closing > 0 and serial[closing + 2:].isdigit() else None
+        if ":" in serial:
+            host, port = serial.rsplit(":", 1)
+            if host and port.isdigit():
+                return host
+        return None
 
     def _mdns_services(self):
         try:
@@ -216,12 +228,28 @@ class DeviceManager:
                     for service in services
                     for alias in self._mdns_aliases(service)
                 }
+                network_ids = dict(self._network_ids)
+                for serial in online:
+                    host = self._network_host(serial)
+                    if not host:
+                        continue
+                    hardware = properties.get(serial, {}).get("hardware")
+                    service = mdns_by_alias.get(serial)
+                    if hardware:
+                        network_ids[host] = hardware
+                    elif service is not None:
+                        network_ids.setdefault(host, service["instance"])
+                    else:
+                        network_ids.setdefault(host, f"wifi:{host}")
                 for row in rows:
                     serial = row["serial"]
                     info = properties.get(serial, known.get(serial, {}))
                     service = mdns_by_alias.get(serial)
+                    host = self._network_host(serial) if _wifi(serial) else None
                     if info.get("hardware"):
                         device_id = info["hardware"]
+                    elif host:
+                        device_id = network_ids[host]
                     elif service is not None:
                         device_id = service["instance"]
                     else:
@@ -241,7 +269,15 @@ class DeviceManager:
                         grouped[device_id] = row
                     else:
                         aliases = list(dict.fromkeys(previous["aliases"] + row["aliases"]))
-                        if (row["connected"], row["connection"] == "usb") > (previous["connected"], previous["connection"] == "usb"):
+                        if (
+                            row["connected"],
+                            row["connection"] == "usb",
+                            row["serial"].endswith(":5555"),
+                        ) > (
+                            previous["connected"],
+                            previous["connection"] == "usb",
+                            previous["serial"].endswith(":5555"),
+                        ):
                             grouped[device_id] = row
                         grouped[device_id]["aliases"] = aliases
                 devices = sorted(grouped.values(), key=lambda device: (not device["connected"], device["model"] or device["id"]))
@@ -250,6 +286,7 @@ class DeviceManager:
                 devices = []
                 error = str(exc)
             with self._lock:
+                self._network_ids = network_ids if error is None else self._network_ids
                 self._devices = devices
                 self._updated_at = time.monotonic()
                 self.last_error = error
