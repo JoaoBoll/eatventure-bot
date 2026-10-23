@@ -105,7 +105,6 @@ class AutoTrainerTests(unittest.TestCase):
             self.trainer.stop()
             return ["1080x2400"]
 
-        self.trainer.notify()
         with (
             patch.object(
                 self.trainer, "_ready_resolutions",

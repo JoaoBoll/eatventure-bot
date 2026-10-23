@@ -589,9 +589,6 @@ class DatasetRecorder:
             ) as arquivo:
                 arquivo.write(json.dumps(registro, ensure_ascii=False) + "\n")
 
-        if self.auto_trainer is not None:
-            self.auto_trainer.notify()
-
         self.saved += 1
 
         tamanho = caminho.stat().st_size

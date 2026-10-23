@@ -32,7 +32,6 @@ class AutoTrainer:
         self._pause_requested = threading.Event()
         self._pause_ready = threading.Event()
         self._stop = threading.Event()
-        self._check = threading.Event()
         self._lock = threading.Lock()
         self._process = None
         self.thread = None
@@ -41,14 +40,10 @@ class AutoTrainer:
         if self.thread is not None and self.thread.is_alive():
             return
         self._stop.clear()
-        self._check.set()
         self.thread = threading.Thread(
             target=self._run, name="auto-train", daemon=True,
         )
         self.thread.start()
-
-    def notify(self):
-        self._check.set()
 
     @property
     def pause_requested(self):
@@ -73,7 +68,6 @@ class AutoTrainer:
 
     def stop(self):
         self._stop.set()
-        self._check.set()
         with self._lock:
             process = self._process
             if process is not None:
@@ -84,8 +78,6 @@ class AutoTrainer:
 
     def _run(self):
         while not self._stop.is_set():
-            self._check.wait(timeout=self.interval)
-            self._check.clear()
             if self._stop.is_set():
                 break
             try:
@@ -95,7 +87,6 @@ class AutoTrainer:
                     self._train(resolution)
             except Exception:
                 logger.exception("Não foi possível agendar o treino automático; coleta preservada.")
-            # Agrupa notificações para não reler o índice a cada imagem salva.
             if self._stop.wait(self.interval):
                 break
 

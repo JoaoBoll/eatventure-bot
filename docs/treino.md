@@ -54,8 +54,9 @@ python src/main.py --ai-collect
 Grava em `dataset/data/<resolucao>/`. Sem a flag, usa `DATASET_SAVE` do
 `src/core/config.py`.
 
-Com `AI_AUTO_TRAIN = True`, quando há pelo menos 10 mil registros novos de uma
-mesma resolução, o treino automático usa todos os registros novos disponíveis
+Com `AI_AUTO_TRAIN = True`, o treinador verifica o dataset ao iniciar e a cada
+10 minutos (`AI_TRAIN_CHECK_INTERVAL`). Quando há pelo menos 10 mil registros
+novos de uma mesma resolução, usa todos os registros novos disponíveis
 daquela resolução. No painel web, o treinador verifica o dataset ao iniciar
 qualquer bot com treino automático habilitado, inclusive para processar lotes
 acumulados em execuções anteriores. O modelo e o ponteiro ficam em
