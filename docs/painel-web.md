@@ -33,10 +33,11 @@ O painel permite controlar os dispositivos autorizados no ADB desse servidor. Us
 
 ## Dispositivos e execução
 
-- **Atualizar** busca os aparelhos no ADB. Estados offline e não autorizado aparecem no painel; a autorização USB deve ser aceita no Android.
+- **Atualizar** busca os aparelhos conectados e os serviços de depuração Wi-Fi anunciados por mDNS. Para um aparelho já pareado, o painel tenta reconectar usando o endereço e a porta atuais, mesmo que tenham mudado. O perfil é associado ao serial físico ou ao nome mDNS estável, não ao IP:porta.
 - **Conectar Android** permite informar endereço e porta da depuração Wi-Fi. O pareamento tem endereço/porta e código próprios, diferentes da porta de conexão.
+- A reconexão automática requer que a Depuração sem fio continue ativada, que o pareamento não tenha sido revogado e que o servidor consiga descobrir mDNS na mesma rede. Para conferir a descoberta, execute `adb mdns services`; se o aparelho não aparecer, verifique a rede local/multicast e a configuração mDNS do ADB. Estados offline e não autorizado também aparecem no painel; a autorização USB deve ser aceita no Android.
 - Selecione um ou vários aparelhos e use **Iniciar**, **Parar** ou **Reiniciar**. Cada aparelho possui processo, logs e métricas separados.
-- USB e Wi-Fi do mesmo aparelho são agrupados pelo identificador físico quando o Android o disponibiliza. USB é preferido para executar. Se esse identificador não estiver disponível, o perfil usa o serial da conexão ADB.
+- USB e Wi-Fi do mesmo aparelho são agrupados pelo identificador físico quando o Android o disponibiliza. USB é preferido para executar. Se esse identificador não estiver disponível, o perfil usa o nome mDNS estável no Wi-Fi ou o serial ADB no USB.
 - Os cards mostram estado, voos, reformas, ações, templates carregados, FPS e bateria, atualizados a cada segundo sem aguardar a descoberta do ADB. Valores ainda indisponíveis aparecem como `—`.
 - Os logs recentes são limitados a 500 linhas por dispositivo e 1 MiB de texto no servidor. O navegador retém até 500 linhas e 512 KiB, e cada linha tem no máximo 4 KiB. As entradas mais antigas são descartadas; o download contém somente o trecho retido. A opção **Salvar arquivo de log** mantém também o log completo no disco.
 

@@ -65,6 +65,44 @@ def test_discovery_groups_usb_and_wifi_and_preserves_unauthorized():
     assert next(device for device in devices if device["id"] == "usb-2")["adb_state"] == "unauthorized"
 
 
+def test_mdns_reconnects_changed_wifi_port_and_uses_stable_device_name():
+    current_port = [41000]
+    device_queries = [0]
+    connections = []
+    service_name = "adb-e2615705-2D2Z90"
+
+    def adb(_, args, timeout=8):
+        if args == ["mdns", "services"]:
+            return (
+                "List of discovered mdns services\n"
+                f"{service_name}._adb-tls-connect._tcp _adb-tls-connect._tcp 192.168.1.4:{current_port[0]}\n"
+            )
+        if args == ["devices", "-l"]:
+            query = device_queries[0]
+            device_queries[0] += 1
+            if query % 2 == 0:
+                return "List of devices attached\n192.168.1.4:39015 offline model:Android\n"
+            return f"List of devices attached\n192.168.1.4:{current_port[0]} device model:Android\n"
+        if args[0] == "connect":
+            connections.append(args[1])
+            return f"connected to {args[1]}"
+        if args[-1] in {"ro.serialno", "ro.boot.serialno"}:
+            return "unknown"
+        return "Android Phone"
+
+    with patch("dashboard.supervisor._adb_run", side_effect=adb):
+        manager = DeviceManager(adb_path="adb", cache_seconds=0)
+        first = manager.list()
+        current_port[0] = 42000
+        second = manager.list(refresh=True)
+
+    assert connections == ["192.168.1.4:41000", "192.168.1.4:42000"]
+    assert first[0]["id"] == second[0]["id"] == service_name
+    assert first[0]["serial"] == "192.168.1.4:41000"
+    assert second[0]["serial"] == "192.168.1.4:42000"
+    assert "192.168.1.4:42000" in second[0]["aliases"]
+
+
 @pytest.mark.parametrize("address", ["host:0", "host:65536", "-host:5555", "host;echo:5555", "host:5555\nattack", "host", "[invalid]:5555"])
 def test_adb_addresses_are_validated_before_execution(address):
     with patch("dashboard.supervisor._adb_run") as run:

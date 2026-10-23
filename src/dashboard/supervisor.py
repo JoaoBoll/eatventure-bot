@@ -114,12 +114,17 @@ class DeviceManager:
             if cached and time.monotonic() - cached["updated_at"] < 60:
                 return cached.copy()
         values = {}
-        for key, prop in (("model", "ro.product.model"), ("hardware", "ro.serialno")):
-            try:
-                value = _adb_run(self._executable(), ["-s", serial, "shell", "getprop", prop], timeout=2).strip()
-            except RuntimeError:
-                value = ""
-            values[key] = value if value and value.lower() not in {"unknown", "null"} else None
+        for key, props in (("model", ("ro.product.model",)), ("hardware", ("ro.serialno", "ro.boot.serialno"))):
+            value = None
+            for prop in props:
+                try:
+                    candidate = _adb_run(self._executable(), ["-s", serial, "shell", "getprop", prop], timeout=2).strip()
+                except RuntimeError:
+                    continue
+                if candidate and candidate.lower() not in {"unknown", "null"}:
+                    value = candidate
+                    break
+            values[key] = value
         values["updated_at"] = time.monotonic()
         with self._lock:
             previous = self._properties.get(serial, {})
@@ -127,6 +132,53 @@ class DeviceManager:
                 values[key] = values[key] or previous.get(key)
             self._properties[serial] = values
         return values.copy()
+
+    @staticmethod
+    def _parse_devices(output):
+        rows = []
+        for line in output.splitlines():
+            fields = line.split()
+            if len(fields) < 2 or fields[0] in {"List", "*"}:
+                continue
+            serial, state = fields[:2]
+            if state not in {"device", "offline", "unauthorized", "no"}:
+                continue
+            details = dict(field.split(":", 1) for field in fields[2:] if ":" in field)
+            rows.append({"serial": serial, "adb_state": state, "model": details.get("model", "").replace("_", " ")})
+        return rows
+
+    @staticmethod
+    def _mdns_aliases(service):
+        return {
+            service["address"], service["instance"],
+            f"{service['instance']}.{service['type']}",
+        }
+
+    def _mdns_services(self):
+        try:
+            output = _adb_run(self._executable(), ["mdns", "services"], timeout=5)
+        except RuntimeError:
+            return []
+        services = []
+        for line in output.splitlines():
+            fields = line.split()
+            if len(fields) < 3 or fields[1] != "_adb-tls-connect._tcp":
+                continue
+            try:
+                address = _network_address(fields[2])
+            except ValueError:
+                continue
+            instance = fields[0].removesuffix(f".{fields[1]}")
+            if instance:
+                services.append({"instance": instance, "type": fields[1], "address": address})
+        return services
+
+    def _connect_mdns_service(self, service):
+        try:
+            _adb_run(self._executable(), ["connect", service["address"]], timeout=8)
+            return True
+        except RuntimeError:
+            return False
 
     def list(self, refresh=False):
         with self._lock:
@@ -137,39 +189,53 @@ class DeviceManager:
                 if not refresh and self._updated_at and time.monotonic() - self._updated_at < self.cache_seconds:
                     return [dict(device, aliases=list(device["aliases"])) for device in self._devices]
             try:
-                output = _adb_run(self._executable(), ["devices", "-l"])
-                rows = []
-                for line in output.splitlines():
-                    fields = line.split()
-                    if len(fields) < 2 or fields[0] in {"List", "*"}:
-                        continue
-                    serial, state = fields[:2]
-                    if state not in {"device", "offline", "unauthorized", "no"}:
-                        continue
-                    details = dict(field.split(":", 1) for field in fields[2:] if ":" in field)
-                    rows.append({"serial": serial, "adb_state": state, "model": details.get("model", "").replace("_", " ")})
+                services = self._mdns_services()
+                rows = self._parse_devices(_adb_run(self._executable(), ["devices", "-l"]))
+                online = {row["serial"] for row in rows if row["adb_state"] == "device"}
+                missing_services = [
+                    service for service in services
+                    if not online.intersection(self._mdns_aliases(service))
+                ]
+                with ThreadPoolExecutor(max_workers=min(8, len(missing_services) or 1)) as pool:
+                    reconnecting = any(pool.map(self._connect_mdns_service, missing_services))
+                if reconnecting:
+                    rows = self._parse_devices(_adb_run(self._executable(), ["devices", "-l"]))
                 online = [row["serial"] for row in rows if row["adb_state"] == "device"]
                 with ThreadPoolExecutor(max_workers=min(8, len(online) or 1)) as pool:
                     properties = dict(zip(online, pool.map(self._properties_for, online)))
                 grouped = {}
                 with self._lock:
                     known = dict(self._properties)
+                mdns_by_alias = {
+                    alias: service
+                    for service in services
+                    for alias in self._mdns_aliases(service)
+                }
                 for row in rows:
                     serial = row["serial"]
                     info = properties.get(serial, known.get(serial, {}))
-                    device_id = info.get("hardware") or serial
+                    service = mdns_by_alias.get(serial)
+                    if info.get("hardware"):
+                        device_id = info["hardware"]
+                    elif service is not None:
+                        device_id = service["instance"]
+                    else:
+                        device_id = serial
+                    aliases = [serial]
+                    if service is not None:
+                        aliases.extend(self._mdns_aliases(service))
                     row.update({
                         "id": device_id,
                         "model": info.get("model") or row["model"] or None,
                         "connection": "wifi" if _wifi(serial) else "usb",
                         "connected": row["adb_state"] == "device",
-                        "aliases": [serial],
+                        "aliases": list(dict.fromkeys(aliases)),
                     })
                     previous = grouped.get(device_id)
                     if previous is None:
                         grouped[device_id] = row
                     else:
-                        aliases = previous["aliases"] + [serial]
+                        aliases = list(dict.fromkeys(previous["aliases"] + row["aliases"]))
                         if (row["connected"], row["connection"] == "usb") > (previous["connected"], previous["connection"] == "usb"):
                             grouped[device_id] = row
                         grouped[device_id]["aliases"] = aliases
