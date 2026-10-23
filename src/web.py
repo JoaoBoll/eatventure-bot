@@ -19,6 +19,9 @@ def main(argv=None):
         from dashboard.server import create_app
     except ImportError as error:
         raise SystemExit("Instale a interface opcional: python -m pip install -r requirements-web.txt") from error
+    from core import config, log
+
+    log.setup(config.LOG_LEVEL)
     app = create_app(state_root=args.state_dir, require_token=args.require_token)
     display_host = "localhost" if args.host == "0.0.0.0" else args.host
     print(f"Painel: http://{display_host}:{args.port}", flush=True)

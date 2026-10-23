@@ -458,10 +458,7 @@ class BotSupervisor:
                 if run.process.poll() is not None:
                     continue
                 profile = self.store.load(device_id)
-                if (
-                    profile["run"]["ai_collect"]
-                    and profile["settings"].get("ai_auto_train", config.AI_AUTO_TRAIN)
-                ):
+                if profile["settings"].get("ai_auto_train", config.AI_AUTO_TRAIN):
                     enabled = True
                     break
             if not enabled:
@@ -486,7 +483,6 @@ class BotSupervisor:
                 device_ids = [
                     device_id for device_id, run in self._runs.items()
                     if run.process.poll() is None
-                    and self.store.load(device_id)["run"]["ai_collect"]
                 ]
             restart_ids = []
             for device_id in device_ids:

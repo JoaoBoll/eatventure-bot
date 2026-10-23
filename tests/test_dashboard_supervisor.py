@@ -267,9 +267,9 @@ def test_stop_writes_session_request_and_only_waits_for_selected_process(tmp_pat
     other.send_signal.assert_not_called()
 
 
-def test_auto_training_stops_collecting_bots_and_restarts_them(tmp_path):
+def test_auto_training_stops_running_bots_and_restarts_them(tmp_path):
     supervisor = _supervisor(tmp_path)
-    supervisor.store.save("hardware-1", {"run": {"ai_collect": True}})
+    supervisor.store.save("hardware-1", {"run": {"ai_collect": False}})
     process = Mock(pid=12345)
     process.poll.return_value = None
     supervisor._runs["hardware-1"] = _Run(
@@ -284,6 +284,23 @@ def test_auto_training_stops_collecting_bots_and_restarts_them(tmp_path):
             stop.assert_called_once_with("hardware-1")
             start.assert_not_called()
         start.assert_called_once_with("hardware-1")
+
+
+def test_auto_training_starts_for_existing_samples_without_collection(tmp_path):
+    supervisor = _supervisor(tmp_path)
+    supervisor.store.save(
+        "hardware-1",
+        {"run": {"ai_collect": False}, "settings": {"ai_auto_train": True}},
+    )
+    process = Mock(pid=12345)
+    process.poll.return_value = None
+    supervisor._runs["hardware-1"] = _Run(
+        process, time.time(), "session-1", "usb-1",
+        tmp_path / "status", tmp_path / "stop",
+    )
+    with patch("dataset.auto_train.AutoTrainer") as trainer_class:
+        supervisor._ensure_auto_trainer()
+    trainer_class.return_value.start.assert_called_once_with()
 
 
 def test_shutdown_blocks_new_starts(tmp_path):
