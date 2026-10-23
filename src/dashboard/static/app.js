@@ -2,6 +2,7 @@
 
 const $ = (id) => document.getElementById(id);
 const sessionKey = "eatventure.dashboard.token";
+const adbAddressKey = "eatventure.dashboard.adbAddress";
 const numberFormat = new Intl.NumberFormat("pt-BR");
 const state = { devices: [], schema: [], templates: { total: 0, categories: [] } };
 const selected = new Set();
@@ -50,6 +51,20 @@ function rememberToken(value) {
     if (value) sessionStorage.setItem(sessionKey, value);
     else sessionStorage.removeItem(sessionKey);
   } catch { /* A sessão continua em memória se o armazenamento estiver indisponível. */ }
+}
+
+function rememberAdbAddress(value) {
+  try {
+    if (value) localStorage.setItem(adbAddressKey, value);
+  } catch { /* A conexão continua disponível sem armazenamento local. */ }
+}
+
+function lastAdbAddress() {
+  try {
+    const saved = localStorage.getItem(adbAddressKey);
+    if (saved) return saved;
+  } catch { /* Usa o endereço disponível no estado atual. */ }
+  return state.devices.find((device) => device.connected && device.connection === "wifi" && device.serial)?.serial || "";
 }
 
 function node(tag, className, text) {
@@ -1170,6 +1185,7 @@ async function connectAndroid(event) {
   $("connect-result").textContent = "Conectando…";
   try {
     const result = await api("/api/adb/connect", { method: "POST", body: JSON.stringify({ address: $("connect-address").value.trim() }) });
+    rememberAdbAddress(result.address);
     $("connect-result").textContent = "";
     $("connect-dialog").close();
     toast(result.message || result.output || "Conexão solicitada. Confira o dispositivo no painel.");
@@ -1189,7 +1205,7 @@ async function pairAndroid() {
   try {
     const result = await api("/api/adb/pair", { method: "POST", body: JSON.stringify({ address, code }) });
     $("pair-code").value = "";
-    $("connect-result").textContent = result.message || result.output || "Pareamento concluído. Informe a porta de conexão e clique em Conectar Android.";
+    $("connect-result").textContent = result.message || result.output || "Pareamento concluído. Informe o IP e a porta atual; o painel tentará mudar para 5555.";
   } catch (error) { if (authenticated) $("connect-result").textContent = error.message; }
   finally { $("pair-submit").disabled = false; $("connect-form").inert = false; }
 }
@@ -1236,6 +1252,12 @@ $("log-pause").addEventListener("click", () => { logPaused = !logPaused; $("log-
 $("log-download").addEventListener("click", downloadLogs);
 $("vision-toggle").addEventListener("click", () => { if (visionWanted) stopVision(); else startVision(); });
 $("connect-open").addEventListener("click", () => { $("connect-result").textContent = ""; $("connect-dialog").showModal(); });
+$("reconnect-open").addEventListener("click", () => {
+  $("connect-result").textContent = "";
+  $("connect-address").value = lastAdbAddress();
+  $("connect-dialog").showModal();
+  $("connect-address").focus();
+});
 $("connect-close").addEventListener("click", () => $("connect-dialog").close());
 $("connect-form").addEventListener("submit", connectAndroid);
 $("pair-submit").addEventListener("click", pairAndroid);

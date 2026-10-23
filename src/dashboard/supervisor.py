@@ -195,6 +195,11 @@ class DeviceManager:
                 missing_services = [
                     service for service in services
                     if not online.intersection(self._mdns_aliases(service))
+                    and not any(
+                        _wifi(serial)
+                        and serial.rsplit(":", 1)[0] == service["address"].rsplit(":", 1)[0]
+                        for serial in online
+                    )
                 ]
                 with ThreadPoolExecutor(max_workers=min(8, len(missing_services) or 1)) as pool:
                     reconnecting = any(pool.map(self._connect_mdns_service, missing_services))
@@ -251,11 +256,54 @@ class DeviceManager:
                 return [dict(device, aliases=list(device["aliases"])) for device in devices]
 
     def connect(self, address):
-        output = _adb_run(self._executable(), ["connect", _network_address(address)], timeout=12).strip()
+        message, _ = self.connect_with_address(address)
+        return message
+
+    def connect_with_address(self, address):
+        address = _network_address(address)
+        output = _adb_run(self._executable(), ["connect", address], timeout=12).strip()
         if not any(text in output.lower() for text in ("connected to", "already connected")):
             raise RuntimeError(output or "O ADB não confirmou a conexão.")
+        target_address = address
+        if address.rsplit(":", 1)[1] != "5555":
+            try:
+                tcpip_output = _adb_run(
+                    self._executable(), ["-s", address, "tcpip", "5555"], timeout=12
+                ).strip()
+            except RuntimeError as error:
+                output = (
+                    f"{output}\nNão foi possível aplicar a porta 5555; "
+                    f"a conexão continua em {address}. {error}"
+                )
+            else:
+                target_address = f"{address.rsplit(':', 1)[0]}:5555"
+                reconnect_output = ""
+                reconnect_error = None
+                for attempt in range(5):
+                    try:
+                        reconnect_output = _adb_run(
+                            self._executable(), ["connect", target_address], timeout=8
+                        ).strip()
+                        reconnect_error = None
+                    except RuntimeError as error:
+                        reconnect_output = ""
+                        reconnect_error = str(error)
+                    if any(
+                        text in reconnect_output.lower()
+                        for text in ("connected to", "already connected")
+                    ):
+                        break
+                    if attempt < 4:
+                        time.sleep(1)
+                else:
+                    detail = reconnect_output or reconnect_error or tcpip_output
+                    raise RuntimeError(
+                        f"O ADB aplicou a porta 5555, mas não reconectou em "
+                        f"{target_address}. {detail}"
+                    )
+                output = f"{output}\n{tcpip_output}\n{reconnect_output}".strip()
         self.invalidate()
-        return output
+        return output, target_address
 
     def pair(self, address, code):
         address = _network_address(address)
@@ -788,8 +836,12 @@ class BotSupervisor:
         return {"lines": lines, "cursor": lines[-1]["id"] if lines else after, "retention": retention}
 
     def connect(self, address):
-        message = self.devices.connect(address)
-        return {"message": message, "devices": self.list_devices(refresh=True)}
+        message, address = self.devices.connect_with_address(address)
+        return {
+            "message": message,
+            "address": address,
+            "devices": self.list_devices(refresh=True),
+        }
 
     def pair(self, address, code):
         message = self.devices.pair(address, code)
