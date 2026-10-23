@@ -146,7 +146,6 @@ class AutoTrainer:
             "--dataset-root", str(self.directory.resolve()),
             "--resolution", resolution,
             "--automatic", "--min-samples", str(self.batch_size),
-            "--batch-size", str(self.batch_size),
             "--cleanup", "--jobs", str(self.jobs),
         ]
         command.extend((

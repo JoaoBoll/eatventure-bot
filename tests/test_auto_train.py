@@ -74,6 +74,7 @@ class AutoTrainerTests(unittest.TestCase):
 
         command = start_process.call_args.args[0]
         self.assertEqual(command[command.index("--resolution") + 1], "1080x2400")
+        self.assertNotIn("--batch-size", command)
         self.assertEqual(
             Path(command[command.index("--model-out") + 1]),
             ROOT / "IA" / "models" / "1080x2400" / "category.joblib",

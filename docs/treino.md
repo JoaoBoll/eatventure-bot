@@ -54,13 +54,14 @@ python src/main.py --ai-collect
 Grava em `dataset/data/<resolucao>/`. Sem a flag, usa `DATASET_SAVE` do
 `src/core/config.py`.
 
-Com `AI_AUTO_TRAIN = True`, a cada 10 mil registros novos de uma mesma
-resolução inicia um treino automático independente. No painel web, o treinador
-verifica o dataset ao iniciar qualquer bot com treino automático habilitado,
-inclusive para processar lotes acumulados em execuções anteriores. O modelo e o
-ponteiro ficam em `IA/models/<RESOLUÇÃO>/` e são versionáveis no Git. Durante o
-treino no painel, os bots em execução são encerrados e iniciados novamente,
-inclusive quando o treino falha.
+Com `AI_AUTO_TRAIN = True`, quando há pelo menos 10 mil registros novos de uma
+mesma resolução, o treino automático usa todos os registros novos disponíveis
+daquela resolução. No painel web, o treinador verifica o dataset ao iniciar
+qualquer bot com treino automático habilitado, inclusive para processar lotes
+acumulados em execuções anteriores. O modelo e o ponteiro ficam em
+`IA/models/<RESOLUÇÃO>/` e são versionáveis no Git. Durante o treino no painel,
+os bots em execução são encerrados e iniciados novamente, inclusive quando o
+treino falha.
 
 No terminal, o bot permanece aberto, mas pausa ações e coleta por padrão
 durante o treino. Defina `AI_PAUSE_BOT_WHILE_TRAINING = False` para continuar

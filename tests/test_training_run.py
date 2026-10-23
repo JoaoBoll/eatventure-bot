@@ -56,10 +56,10 @@ class AutomaticThresholdTests(unittest.TestCase):
         trained_records = train_snapshot.call_args.args[2]
         self.assertEqual([record["_shard"] for record in trained_records], ["1080x2400"])
 
-    def test_only_ten_thousand_new_records_start_training(self):
+    def test_all_new_records_are_trained_once_minimum_is_reached(self):
         root = Path("unused-dataset")
         args = train_ai.parse_args(["--automatic", "--dataset-root", str(root)])
-        for count in (9999, 10000):
+        for count in (9999, 10000, 14438):
             with self.subTest(count=count):
                 records = [sample(index, root) for index in range(count)]
                 with (
@@ -72,7 +72,22 @@ class AutomaticThresholdTests(unittest.TestCase):
                 if count == 9999:
                     train_snapshot.assert_not_called()
                 else:
-                    self.assertEqual(len(train_snapshot.call_args.args[2]), 10000)
+                    self.assertEqual(len(train_snapshot.call_args.args[2]), count)
+
+    def test_explicit_batch_size_caps_automatic_training(self):
+        root = Path("unused-dataset")
+        args = train_ai.parse_args([
+            "--automatic", "--dataset-root", str(root), "--batch-size", "10000",
+        ])
+        records = [sample(index, root) for index in range(14438)]
+        with (
+            patch("dataset.training_files.training_lock", return_value=nullcontext()),
+            patch("dataset.training_files.snapshot_records", return_value=(records, {})),
+            patch("training_run.trained_sample_ids", return_value=set()),
+            patch("train_ai._train_snapshot", return_value=0) as train_snapshot,
+        ):
+            self.assertEqual(train_ai.train(args), 0)
+        self.assertEqual(len(train_snapshot.call_args.args[2]), 10000)
 
     def test_records_already_fitted_do_not_complete_the_threshold(self):
         root = Path("unused-dataset")

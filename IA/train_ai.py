@@ -562,7 +562,9 @@ def _train_one_resolution(args):
                 if len(registros) < minimo:
                     print(f"Treino automático aguardando: {len(registros)}/{minimo} amostras novas.")
                     return 0
-                registros = registros[:getattr(args, "batch_size", 10000)]
+                batch_size = getattr(args, "batch_size", None)
+                if batch_size is not None:
+                    registros = registros[:batch_size]
             if args.limit:
                 registros = registros[:args.limit]
             return _train_snapshot(args, raiz, registros, snapshot, aviso)
@@ -646,7 +648,11 @@ def _fit_snapshot(args, raiz, registros, snapshot, aviso, execucao):
     if automatico and args.limit is not None:
         raise ValueError("Use --batch-size para limitar lotes automáticos; --limit é apenas manual.")
     limpar = compativel_limpeza if pedido_limpeza is None else pedido_limpeza
-    if getattr(args, "min_samples", 10000) <= 0 or getattr(args, "batch_size", 10000) <= 0:
+    batch_size = getattr(args, "batch_size", None)
+    if (
+        getattr(args, "min_samples", 10000) <= 0
+        or (batch_size is not None and batch_size <= 0)
+    ):
         raise ValueError("--min-samples e --batch-size devem ser positivos.")
     if args.kind == "action" and Path(args.model_out).resolve() == DEFAULT_MODEL.resolve():
         raise ValueError("--kind action exige --model-out alternativo para preservar o modelo do bot.")
@@ -903,7 +909,7 @@ def parse_args(argv=None):
 
     parser.add_argument(
         "--automatic", action="store_true",
-        help="treina apenas quando há amostras novas suficientes, em lotes",
+        help="treina apenas quando há amostras novas suficientes",
     )
     parser.add_argument(
         "--resolution",
@@ -921,8 +927,8 @@ def parse_args(argv=None):
         help="mínimo de frames novos para iniciar treino automático (padrão: 10000)",
     )
     parser.add_argument(
-        "--batch-size", type=int, default=10000,
-        help="máximo de frames novos por lote automático (padrão: 10000)",
+        "--batch-size", type=int, default=None,
+        help="máximo opcional de frames novos por lote automático (padrão: sem limite)",
     )
     limpeza = parser.add_mutually_exclusive_group()
     limpeza.add_argument(
