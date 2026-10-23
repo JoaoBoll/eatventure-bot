@@ -2,8 +2,8 @@
 
 ## Como o dado fica em disco
 
-A coleta separa por resolução. A resolução serve **só para organizar o dado** —
-para o treino ela não significa nada, ele junta todas.
+A coleta e os treinos automáticos são separados por resolução. Cada modelo usa
+somente amostras da própria resolução.
 
 ```
 dataset/
@@ -54,10 +54,11 @@ python src/main.py --ai-collect
 Grava em `dataset/data/<resolucao>/`. Sem a flag, usa `DATASET_SAVE` do
 `src/core/config.py`.
 
-A cada 10 mil registros novos, somando as resoluções, inicia um treino
-automático. Os processos e janelas continuam abertos, mas as ações do bot e
-a coleta ficam pausadas. Ambos retomam automaticamente quando o treino
-termina ou falha.
+Com `AI_AUTO_TRAIN = True`, a cada 10 mil registros novos de uma mesma
+resolução inicia um treino automático independente. O modelo e o ponteiro
+ficam em `IA/models/<RESOLUÇÃO>/` e são versionáveis no Git. Os processos e
+janelas continuam abertos, mas as ações do bot e a coleta ficam pausadas.
+Ambos retomam automaticamente quando o treino termina ou falha.
 
 A pausa vem ativada por padrão em `src/core/config.py`. Para continuar
 jogando e coletando em paralelo ao treino automático, defina
@@ -69,8 +70,16 @@ jogando e coletando em paralelo ao treino automático, defina
 python IA/train_ai.py
 ```
 
-Treina manualmente sem esperar 10 mil registros. Junta as resoluções e o
-cache, publica uma versão em `IA/models/` e atualiza `IA/model.current.json`.
+Treina manualmente sem esperar 10 mil registros, criando um modelo para cada
+resolução com amostras. Para treinar somente uma:
+
+```bash
+python IA/train_ai.py --resolution 1080x2400 --model-out IA/models/1080x2400/category.joblib
+```
+
+Use `--combine-resolutions` explicitamente para criar um modelo misturando as
+resoluções.
+
 Cada execução gera seu próprio JSON em `IA/training_reports/`, com contagens
 do lote atual, dados reaproveitados e métricas de validação separados.
 
@@ -82,7 +91,9 @@ os dados brutos no treino manual. Dados novos e não aproveitados permanecem.
 |---|---|---|
 | `--kind category\|action` | `category` | `category`: recorte → categoria (é o que o bot usa). `action`: tela inteira → ação, só para comparação |
 | `--dataset-root PASTA` | `dataset/` | raiz da coleta; todas as resoluções dentro dela |
-| `--model-out ARQUIVO` | `IA/model.joblib` | referência do modelo; publica a versão em `models/` e um ponteiro `*.current.json` ao lado |
+| `--resolution LARGURAxALTURA` | todas | limita o treino à resolução indicada; `legacy` seleciona amostras sem resolução identificável |
+| `--model-out ARQUIVO` | `IA/models/<RESOLUÇÃO>/category.joblib` | referência do modelo da resolução selecionada |
+| `--combine-resolutions` | desligado | opta por treinar todas as resoluções juntas |
 | `--split phash\|session` | `phash` | agrupamento do split. `phash`: quadros visualmente iguais ficam do mesmo lado. `session`: partida inteira de um lado só |
 | `--test-ratio FRACAO` | `0.2` | fração de **grupos** para teste |
 | `--negatives N` | `2` | recortes de fundo por frame. Muda a assinatura do cache |

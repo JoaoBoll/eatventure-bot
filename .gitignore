@@ -32,10 +32,7 @@ tests/capture/
 /dataset/.training.lock
 /dataset/.cleanup/
 
-# Modelo treinado: derivado do cache, regenerado a cada `train_ai.py` local.
-/IA/*.joblib
-/IA/models/
-/IA/*.current.json
+# Relatórios de treino são locais; os modelos e seus ponteiros são versionados.
 /IA/training_reports/
 
 

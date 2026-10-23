@@ -6,7 +6,7 @@ Treino e execução do modelo de visão experimental do bot.
 
 - Execute os comandos na pasta principal do projeto.
 - Para treinar ou avaliar, é necessário ter amostras coletadas em `dataset/`. Veja [como coletar](../docs/dataset.md).
-- Para usar a IA, execute um treino primeiro. As versões ficam em `IA/models/`, e o bot encontra a versão atual automaticamente.
+- Para usar a IA, execute um treino primeiro. As versões ficam em `IA/models/<RESOLUÇÃO>/`; selecione o modelo da resolução do aparelho com `--model`.
 - Para acompanhar ou controlar o jogo ao vivo, configure o Android, o ADB, o scrcpy e os templates conforme o [README principal](../README.pt-BR.md).
 
 ## Comandos para rodar
@@ -21,7 +21,7 @@ Instala as dependências do projeto.
 python src/main.py --ai-collect
 ```
 
-Coleta dados usando o bot por templates. A cada **10 mil registros novos**, somando todas as resoluções, inicia um treino automático. Durante o treino, mantém os processos e janelas abertos, mas pausa as ações do bot e a coleta. A execução retoma automaticamente quando o treino termina ou falha.
+Coleta dados usando o bot por templates. Com `AI_AUTO_TRAIN = True`, a cada **10 mil registros novos de uma mesma resolução** inicia um treino independente. O modelo publicado fica em `IA/models/<RESOLUÇÃO>/`; diferentes resoluções não são combinadas. Durante o treino, mantém os processos e janelas abertos, mas pausa as ações do bot e a coleta. A execução retoma automaticamente quando o treino termina ou falha.
 
 ```powershell
 python IA/train_ai.py
@@ -42,7 +42,7 @@ python IA/bot_ai.py --demo --demo-limit 30
 Avalia o modelo em até 30 imagens coletadas, sem precisar conectar um aparelho.
 
 ```powershell
-python IA/bot_ai.py
+python IA/bot_ai.py --model IA/models/1080x2400/category.joblib
 ```
 
 Mostra as detecções da IA no jogo ao vivo, sem enviar comandos ao aparelho. Por padrão, usa os templates para localizar os elementos que o modelo vai reconhecer.
@@ -61,7 +61,7 @@ Cada treino gera um JSON próprio em `IA/training_reports/`, com data, duração
 
 A limpeza só ocorre depois de salvar o modelo e o relatório com sucesso. Remove apenas os registros e imagens aproveitados; dados novos ou não aproveitados permanecem. Se a limpeza for interrompida, ela é retomada na próxima verificação da coleta ou no próximo treino.
 
-O automático funciona enquanto a coleta está ligada. `AI_AUTO_TRAIN` e `AI_TRAIN_BATCH_SIZE`, em [config.py](../src/core/config.py), controlam sua ativação e o tamanho do lote. A pausa durante o treino vem ativada por padrão; use `AI_PAUSE_BOT_WHILE_TRAINING = False` para continuar jogando e coletando em paralelo. Ao encerrar a coleta, um treino automático ainda em andamento é interrompido; os dados não consumidos permanecem para a próxima execução.
+O automático funciona enquanto a coleta está ligada. `AI_AUTO_TRAIN` e `AI_TRAIN_BATCH_SIZE`, em [config.py](../src/core/config.py), controlam sua ativação e o tamanho do lote por resolução. A pausa durante o treino vem ativada por padrão; use `AI_PAUSE_BOT_WHILE_TRAINING = False` para continuar jogando e coletando em paralelo. Ao encerrar a coleta, um treino automático ainda em andamento é interrompido; os dados não consumidos permanecem para a próxima execução. Os modelos e ponteiros publicados em `IA/models/` não são ignorados pelo Git.
 
 ## Planejamento futuro
 

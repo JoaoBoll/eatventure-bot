@@ -1,12 +1,15 @@
 """Agenda o treino em outro processo quando há um lote completo na coleta."""
 
 import os
+import re
 import subprocess
 import sys
 import threading
+from collections import defaultdict
 from pathlib import Path
 
-from core import config, log
+from core import log
+from dataset.layout import record_resolution
 from dataset.training_files import snapshot_records, trained_sample_ids
 
 
@@ -81,8 +84,10 @@ class AutoTrainer:
             if self._stop.is_set():
                 break
             try:
-                if self._ready():
-                    self._train()
+                for resolution in self._ready_resolutions():
+                    if self._stop.is_set():
+                        break
+                    self._train(resolution)
             except Exception:
                 logger.exception("Não foi possível agendar o treino automático; coleta preservada.")
             # Agrupa notificações para não reler o índice a cada imagem salva.
@@ -90,13 +95,20 @@ class AutoTrainer:
                 break
 
     def _ready(self):
+        return bool(self._ready_resolutions())
+
+    def _ready_resolutions(self):
         registros, _ = snapshot_records(self.directory)
         treinados = trained_sample_ids(self.directory)
-        novos = {
-            f"{r.get('_shard') or '.'}/{r.get('id') or r['_path'].stem}"
-            for r in registros
-        } - treinados
-        return len(novos) >= self.batch_size
+        novos = defaultdict(set)
+        for record in registros:
+            key = f"{record.get('_shard') or '.'}/{record.get('id') or record['_path'].stem}"
+            if key not in treinados:
+                novos[record_resolution(record)].add(key)
+        return sorted(
+            resolution for resolution, records in novos.items()
+            if len(records) >= self.batch_size
+        )
 
     def _terminate(self, process):
         try:
@@ -112,16 +124,21 @@ class AutoTrainer:
                 self._stop.set()
                 logger.warning("Não foi possível encerrar o processo de treino.", exc_info=True)
 
-    def _train(self):
+    def _train(self, resolution="legacy"):
+        if not re.fullmatch(r"(?:[1-9]\d*x[1-9]\d*|legacy)", resolution):
+            raise ValueError(f"Resolução inválida para treino: {resolution}")
         command = [
             sys.executable, "-u", str(ROOT / "IA" / "train_ai.py"),
             "--dataset-root", str(self.directory.resolve()),
+            "--resolution", resolution,
             "--automatic", "--min-samples", str(self.batch_size),
             "--batch-size", str(self.batch_size),
             "--cleanup", "--jobs", str(self.jobs),
         ]
-        if config.AI_DEVICE_MODEL_DIR is not None:
-            command.extend(("--model-out", str(Path(config.AI_DEVICE_MODEL_DIR) / "category.joblib")))
+        command.extend((
+            "--model-out",
+            str(ROOT / "IA" / "models" / resolution / "category.joblib"),
+        ))
         process = None
         returncode = None
         try:

@@ -248,7 +248,6 @@ def apply_environment_profile(namespace):
     namespace.setdefault("ITEM_THRESHOLDS", {})
     namespace.setdefault("DEVICE_PROFILE_ID", None)
     namespace.setdefault("DEVICE_TEMPLATE_DIR", None)
-    namespace.setdefault("AI_DEVICE_MODEL_DIR", None)
     profile_path = os.environ.get("EATVENTURE_PROFILE")
     if not profile_path:
         return
@@ -270,7 +269,6 @@ def apply_environment_profile(namespace):
         device_root = Path(state_root).expanduser().resolve() / "device-data" / digest
         namespace.update(
             DEVICE_TEMPLATE_DIR=device_root / "templates",
-            AI_DEVICE_MODEL_DIR=device_root / "models",
             LOG_DIR=device_root / "logs",
         )
     namespace.update(SHOW_AI_VISION=False, SHOW_SCRCPY=False, STATUS_PANEL=False)

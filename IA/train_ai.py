@@ -4,8 +4,10 @@
 import argparse
 import hashlib
 import json
+import re
 import sys
 import time
+from copy import copy
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -23,6 +25,14 @@ DEFAULT_MODEL = ROOT / "IA" / "model.joblib"
 # dataset (414x141 vs 95x94 da mediana), então some fácil num --limit ou
 # --outcome apertado sem que a acurácia agregada avise.
 CATEGORIAS_CRITICAS = ("renovate", "fly")
+
+
+def _parse_resolution(value):
+    if value == "legacy" or re.fullmatch(r"[1-9]\d*x[1-9]\d*", value):
+        return value
+    raise argparse.ArgumentTypeError(
+        "Informe a resolução como LARGURAxALTURA ou use legacy."
+    )
 
 
 def check_dependencies():
@@ -521,17 +531,29 @@ def _report_criticas(y_teste, y_treino, previsto):
     print()
 
 
-def train(args):
+def _train_one_resolution(args):
     from dataset.training_files import snapshot_records, training_lock
+    from dataset.layout import record_resolution
     from dataset_io import filter_by_outcome
     from training_run import record_key, trained_sample_ids
 
+    if args.model_out is None:
+        args.model_out = (
+            ROOT / "IA" / "models" / args.resolution / "category.joblib"
+            if args.resolution is not None
+            else DEFAULT_MODEL
+        )
     raiz = Path(args.dataset_root).expanduser().resolve()
     automatico = getattr(args, "automatic", False)
     try:
         with training_lock(raiz):
             snapshot, aviso = snapshot_records(raiz)
             registros = filter_by_outcome(snapshot, args.outcome)
+            if args.resolution is not None:
+                registros = [
+                    record for record in registros
+                    if record_resolution(record) == args.resolution
+                ]
             registros = list({record_key(r): r for r in registros}.values())
             if automatico:
                 treinados = trained_sample_ids(raiz, args.cache_root)
@@ -549,6 +571,34 @@ def train(args):
         return 0 if automatico else 1
     except (Exception, SystemExit, KeyboardInterrupt) as error:
         return _failed_training(args, error)
+
+
+def train(args):
+    if args.resolution is not None or args.combine_resolutions:
+        return _train_one_resolution(args)
+
+    if args.model_out is not None:
+        raise ValueError("Use --resolution ou --combine-resolutions junto com --model-out.")
+
+    from dataset.layout import record_resolution
+    from dataset.training_files import snapshot_records
+
+    records, _ = snapshot_records(args.dataset_root)
+    resolutions = sorted({record_resolution(record) for record in records})
+    if not resolutions:
+        return 0 if args.automatic else _train_one_resolution(args)
+
+    result = 0
+    for resolution in resolutions:
+        resolution_args = copy(args)
+        resolution_args.resolution = resolution
+        resolution_args.model_out = (
+            ROOT / "IA" / "models" / resolution / "category.joblib"
+        )
+        status = _train_one_resolution(resolution_args)
+        if status and not result:
+            result = status
+    return result
 
 
 def _failed_training(args, error, execucao=None):
@@ -813,8 +863,8 @@ def parse_args(argv=None):
 
     parser = argparse.ArgumentParser(
         description=(
-            "Treina o modelo de visão juntando todas as "
-            "resoluções em dataset/data/."
+            "Treina modelos independentes por resolução; "
+            "use --combine-resolutions para juntá-las."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -859,6 +909,17 @@ def parse_args(argv=None):
         help="treina apenas quando há amostras novas suficientes, em lotes",
     )
     parser.add_argument(
+        "--resolution",
+        type=_parse_resolution,
+        default=None,
+        help="treina somente os registros desta resolução (ex.: 1080x2400)",
+    )
+    parser.add_argument(
+        "--combine-resolutions",
+        action="store_true",
+        help="opta por treinar registros de todas as resoluções em um único modelo",
+    )
+    parser.add_argument(
         "--min-samples", type=int, default=10000,
         help="mínimo de frames novos para iniciar treino automático (padrão: 10000)",
     )
@@ -878,7 +939,7 @@ def parse_args(argv=None):
 
     parser.add_argument(
         "--model-out",
-        default=str(DEFAULT_MODEL),
+        default=None,
         help="nome de referência do modelo; publica versão em models/ e ponteiro .current.json",
     )
 
@@ -932,7 +993,12 @@ def parse_args(argv=None):
         help="semente (padrão: 42)",
     )
 
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.resolution is not None and args.combine_resolutions:
+        parser.error("--resolution e --combine-resolutions são incompatíveis.")
+    if args.model_out is not None and args.resolution is None and not args.combine_resolutions:
+        parser.error("--model-out exige --resolution ou --combine-resolutions.")
+    return args
 
 
 def main(argv=None):

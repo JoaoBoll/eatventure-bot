@@ -37,6 +37,25 @@ def sample(index, root):
 
 
 class AutomaticThresholdTests(unittest.TestCase):
+    def test_resolution_argument_filters_manual_training(self):
+        root = Path("unused-dataset")
+        args = train_ai.parse_args([
+            "--dataset-root", str(root), "--resolution", "1080x2400",
+        ])
+        records = [
+            sample(1, root),
+            {**sample(2, root), "_shard": "720x1600"},
+        ]
+        with (
+            patch("dataset.training_files.training_lock", return_value=nullcontext()),
+            patch("dataset.training_files.snapshot_records", return_value=(records, {})),
+            patch("train_ai._train_snapshot", return_value=0) as train_snapshot,
+        ):
+            self.assertEqual(train_ai.train(args), 0)
+
+        trained_records = train_snapshot.call_args.args[2]
+        self.assertEqual([record["_shard"] for record in trained_records], ["1080x2400"])
+
     def test_only_ten_thousand_new_records_start_training(self):
         root = Path("unused-dataset")
         args = train_ai.parse_args(["--automatic", "--dataset-root", str(root)])

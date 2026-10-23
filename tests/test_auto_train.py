@@ -36,9 +36,23 @@ class AutoTrainerTests(unittest.TestCase):
         self.assertFalse(self.ready(records(9_999)))
         self.assertTrue(self.ready(records(10_000)))
 
-    def test_sums_resolutions_with_independent_ids(self):
+    def test_each_resolution_must_reach_its_own_batch(self):
         samples = records(6_000, "1080x2400") + records(4_000, "720x1600")
-        self.assertTrue(self.ready(samples))
+        with (
+            patch("dataset.auto_train.snapshot_records", return_value=(samples, {})),
+            patch("dataset.auto_train.trained_sample_ids", return_value=set()),
+        ):
+            self.assertEqual(self.trainer._ready_resolutions(), [])
+
+    def test_trains_each_resolution_that_reaches_the_batch(self):
+        samples = records(10_000, "1080x2400") + records(10_000, "720x1600")
+        with (
+            patch("dataset.auto_train.snapshot_records", return_value=(samples, {})),
+            patch("dataset.auto_train.trained_sample_ids", return_value=set()),
+        ):
+            self.assertEqual(
+                self.trainer._ready_resolutions(), ["1080x2400", "720x1600"],
+            )
 
     def test_already_trained_records_do_not_complete_a_batch(self):
         samples = records(10_000)
@@ -47,6 +61,23 @@ class AutoTrainerTests(unittest.TestCase):
 
         samples.append({"id": "new-frame", "_shard": "1080x2400"})
         self.assertTrue(self.ready(samples, trained))
+
+    def test_train_command_targets_model_for_resolution(self):
+        process = Mock()
+        process.poll.return_value = 0
+        process.wait.return_value = 0
+        with (
+            patch("dataset.auto_train.subprocess.Popen", return_value=process) as start_process,
+            patch("dataset.auto_train.log.start_process_output", return_value=None),
+        ):
+            self.trainer._train("1080x2400")
+
+        command = start_process.call_args.args[0]
+        self.assertEqual(command[command.index("--resolution") + 1], "1080x2400")
+        self.assertEqual(
+            Path(command[command.index("--model-out") + 1]),
+            ROOT / "IA" / "models" / "1080x2400" / "category.joblib",
+        )
 
     def test_trained_id_in_another_resolution_remains_new(self):
         self.assertTrue(self.ready(records(10_000), {"720x1600/frame-0"}))

@@ -144,7 +144,7 @@ class DeviceProfilesTests(unittest.TestCase):
                 apply_environment_profile(defaults)
         self.assertEqual(defaults["SHAPE_THRESHOLD"], 0.8)
 
-    def test_dataset_is_shared_while_device_learning_directories_are_isolated(self):
+    def test_dataset_is_shared_while_device_template_and_log_directories_are_isolated(self):
         shared_dataset = self.root / "shared_dataset"
         device_paths = []
         for device_id in ("phone-a", "phone-b"):
@@ -156,15 +156,13 @@ class DeviceProfilesTests(unittest.TestCase):
                 "EATVENTURE_STATE_ROOT": str(self.root / "state"),
             }, clear=True):
                 apply_environment_profile(namespace)
-            self.assertEqual(namespace["DEVICE_TEMPLATE_DIR"].name, "templates")
-            self.assertEqual(namespace["AI_DEVICE_MODEL_DIR"].name, "models")
-            self.assertEqual(namespace["DATASET_DIR"], shared_dataset)
-            self.assertEqual(namespace["LOG_DIR"].name, "logs")
-            device_paths.append((
-                namespace["DEVICE_TEMPLATE_DIR"],
-                namespace["AI_DEVICE_MODEL_DIR"],
-                namespace["LOG_DIR"],
-            ))
+                self.assertEqual(namespace["DEVICE_TEMPLATE_DIR"].name, "templates")
+                self.assertEqual(namespace["DATASET_DIR"], shared_dataset)
+                self.assertEqual(namespace["LOG_DIR"].name, "logs")
+                device_paths.append((
+                    namespace["DEVICE_TEMPLATE_DIR"],
+                    namespace["LOG_DIR"],
+                ))
         self.assertNotEqual(device_paths[0], device_paths[1])
         self.assertFalse((self.root / "state").exists())
 

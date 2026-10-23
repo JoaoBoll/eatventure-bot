@@ -84,14 +84,13 @@ local/
   runtime/<hash>.vision.*             # prévia temporária sob demanda
   device-data/<hash>/
     templates/
-    models/
     logs/
 dataset/
   data/<RESOLUÇÃO>/samples.jsonl      # coleta compartilhada com o terminal
   data/<RESOLUÇÃO>/images/
 ```
 
-`local/` é ignorado pelo Git. Faça backup dessa pasta para preservar os perfis e dados. Os templates compartilhados do projeto são lidos como base; o aprendizado feito pelo painel grava somente na pasta do aparelho. Modelos do treino automático também ficam separados por dispositivo. O dataset é compartilhado entre painel e terminal em `dataset/`. Alterações no perfil são aplicadas antes dos módulos do bot serem importados em cada processo.
+`local/` é ignorado pelo Git. Faça backup dessa pasta para preservar os perfis e dados. Os templates compartilhados do projeto são lidos como base; o aprendizado feito pelo painel grava somente na pasta do aparelho. Com `AI_AUTO_TRAIN = True` e a coleta habilitada no perfil, o treino automático acontece ao chegar a 10 mil amostras ainda não treinadas de uma mesma resolução; cada modelo fica em `IA/<RESOLUÇÃO>/` e pode ser versionado no Git. O dataset é compartilhado entre painel e terminal em `dataset/`. Alterações no perfil são aplicadas antes dos módulos do bot serem importados em cada processo.
 
 ## Serviço no Ubuntu
 
