@@ -1214,6 +1214,17 @@ $("login-form").addEventListener("submit", login);
 $("session-retry").addEventListener("click", bootstrapSession);
 $("logout").addEventListener("click", () => logout());
 $("refresh").addEventListener("click", () => refreshState(true));
+$("shutdown-server").addEventListener("click", async () => {
+  if (!confirm("Encerrar o painel web e parar os bots em execução?")) return;
+  $("shutdown-server").disabled = true;
+  try {
+    const result = await api("/api/server/shutdown", { method: "POST" });
+    toast(result.message || "Encerrando o painel…");
+  } catch (error) {
+    $("shutdown-server").disabled = false;
+    toast(error.message, true);
+  }
+});
 $("search").addEventListener("input", renderDevices);
 $("status-filter").addEventListener("change", renderDevices);
 $("select-all").addEventListener("change", (event) => {

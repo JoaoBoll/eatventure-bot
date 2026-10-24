@@ -92,6 +92,8 @@ dataset/
 
 `local/` é ignorado pelo Git. Faça backup dessa pasta para preservar os perfis e dados. Os templates compartilhados do projeto são lidos como base; o aprendizado feito pelo painel grava somente na pasta do aparelho. Com `AI_AUTO_TRAIN = True`, ao iniciar um bot com treino automático habilitado, o painel verifica o dataset e repete a verificação a cada 10 minutos (`AI_TRAIN_CHECK_INTERVAL`). Quando há 10 mil amostras ainda não treinadas de uma mesma resolução — incluindo lotes acumulados em execuções anteriores — treina todas as amostras novas disponíveis daquela resolução. Cada modelo fica em `IA/models/<RESOLUÇÃO>/` e pode ser versionado no Git. Durante o treino, os bots em execução são encerrados e reiniciados quando ele termina. O dataset é compartilhado entre painel e terminal em `dataset/`. Alterações no perfil são aplicadas antes dos módulos do bot serem importados em cada processo.
 
+O botão **Encerrar painel** solicita o encerramento gracioso do servidor web; os bots em execução são parados pelo supervisor durante o desligamento.
+
 ## Serviço no Ubuntu
 
 Exemplo de `/etc/systemd/system/eatventure-web.service`, ajustando usuário e caminhos:

@@ -22,9 +22,11 @@ class WebCliTests(unittest.TestCase):
         self.state = Path(directory.name) / "local"
         self.app = SimpleNamespace(state=SimpleNamespace(auth_required=False))
         self.create_app = Mock(return_value=self.app)
-        self.run_server = Mock()
+        self.server = Mock()
+        self.config_class = Mock(return_value=SimpleNamespace())
+        self.server_class = Mock(return_value=self.server)
         modules = patch.dict(sys.modules, {
-            "uvicorn": SimpleNamespace(run=self.run_server),
+            "uvicorn": SimpleNamespace(Config=self.config_class, Server=self.server_class),
             "dashboard.server": SimpleNamespace(create_app=self.create_app),
         })
         modules.start()
@@ -43,9 +45,12 @@ class WebCliTests(unittest.TestCase):
         arguments = self.create_app.call_args.kwargs
         self.assertEqual(arguments["state_root"], self.state)
         self.assertFalse(arguments.get("require_token", False))
-        self.run_server.assert_called_once_with(
+        self.config_class.assert_called_once_with(
             self.app, host="0.0.0.0", port=8765, workers=1, access_log=False,
         )
+        self.server_class.assert_called_once_with(self.config_class.return_value)
+        self.assertIs(self.app.state.web_server, self.server)
+        self.server.run.assert_called_once_with()
         self.assertIn("Painel: http://localhost:8765", self.output.getvalue())
         self.assertIn("Na rede: http://IP_DO_SERVIDOR:8765", self.output.getvalue())
         self.assertNotIn("dashboard.token", self.output.getvalue())
@@ -58,9 +63,10 @@ class WebCliTests(unittest.TestCase):
         ])
 
         self.assertTrue(self.create_app.call_args.kwargs["require_token"])
-        self.run_server.assert_called_once_with(
+        self.config_class.assert_called_once_with(
             self.app, host="127.0.0.1", port=9000, workers=1, access_log=False,
         )
+        self.server.run.assert_called_once_with()
         self.assertIn("Painel: http://127.0.0.1:9000", self.output.getvalue())
         self.assertNotIn("Na rede:", self.output.getvalue())
         self.assertFalse(self.state.exists())
@@ -72,7 +78,7 @@ class WebCliTests(unittest.TestCase):
             web.main(["--state-dir", str(self.state)])
 
         self.assertFalse(self.create_app.call_args.kwargs.get("require_token", False))
-        self.run_server.assert_called_once()
+        self.server.run.assert_called_once()
         self.assertNotIn(token, self.output.getvalue())
 
     def test_invalid_port_stops_before_creating_application(self):
@@ -81,7 +87,8 @@ class WebCliTests(unittest.TestCase):
 
         self.assertEqual(raised.exception.code, 2)
         self.create_app.assert_not_called()
-        self.run_server.assert_not_called()
+        self.config_class.assert_not_called()
+        self.server_class.assert_not_called()
         self.assertFalse(self.state.exists())
 
 

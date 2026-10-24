@@ -121,6 +121,22 @@ class DashboardApiTests(unittest.TestCase):
         token_loader.assert_not_called()
         self.assertFalse((self.root / "local" / "dashboard.token").exists())
 
+    def test_server_shutdown_requests_graceful_uvicorn_exit(self):
+        app = create_app(
+            root=self.root, state_root=self.root / "local",
+            supervisor=self.supervisor, token=self.token,
+        )
+        server = SimpleNamespace(should_exit=False)
+        app.state.web_server = server
+        client = TestClient(app)
+        response = client.post("/api/server/shutdown", headers=self.auth)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertTrue(server.should_exit)
+
+    def test_server_shutdown_endpoint_requires_authentication(self):
+        response = self.client.post("/api/server/shutdown")
+        self.assertEqual(response.status_code, 401)
+
     def test_runtime_endpoint_requires_auth_before_reading_metrics(self):
         response = self.client.get("/api/runtime")
         self.assertEqual(response.status_code, 401)

@@ -30,7 +30,11 @@ def main(argv=None):
     if app.state.auth_required and not os.environ.get("EATVENTURE_WEB_TOKEN"):
         print(f"Token de acesso salvo em: {args.state_dir.resolve() / 'dashboard.token'}", flush=True)
     # Um processo gerencia o catálogo e os filhos; múltiplos workers duplicariam esse estado.
-    uvicorn.run(app, host=args.host, port=args.port, workers=1, access_log=False)
+    server = uvicorn.Server(uvicorn.Config(
+        app, host=args.host, port=args.port, workers=1, access_log=False,
+    ))
+    app.state.web_server = server
+    server.run()
 
 
 if __name__ == "__main__":

@@ -154,6 +154,7 @@ def create_app(root=None, state_root=None, token=None, supervisor=None, require_
 
     app = FastAPI(title="EatVenture Control", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.supervisor = supervisor
+    app.state.web_server = None
     app.state.auth_required = token is not None
 
     def authenticated(request):
@@ -227,6 +228,14 @@ def create_app(root=None, state_root=None, token=None, supervisor=None, require_
     @app.get("/api/session")
     def session(request: Request):
         return {"authenticated": authenticated(request), "auth_required": app.state.auth_required}
+
+    @app.post("/api/server/shutdown")
+    def shutdown_server():
+        server = app.state.web_server
+        if server is None:
+            raise HTTPException(status_code=503, detail="Encerramento do painel indisponível.")
+        server.should_exit = True
+        return {"message": "Encerramento do painel solicitado."}
 
     @app.get("/api/state")
     def state(refresh: bool = False):
