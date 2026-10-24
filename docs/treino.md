@@ -85,8 +85,11 @@ python IA/train_ai.py --resolution 1080x2400 --model-out IA/models/1080x2400/cat
 Use `--combine-resolutions` explicitamente para criar um modelo misturando as
 resoluções.
 
-Cada execução gera seu próprio JSON em `IA/training_reports/`, com contagens
-do lote atual, dados reaproveitados e métricas de validação separados.
+Cada execução gera um resumo JSON em `IA/training_reports/`, com imagens usadas,
+categorias/classes e contagens, dados reaproveitados, extração, duração e métricas
+de validação por classe. Não lista IDs nem gera tabelas extensas no terminal.
+Os metadados do modelo guardam apenas o necessário para carregá-lo e consultar
+seu resumo de treino.
 
 Após salvar o modelo e o relatório, remove os registros e imagens
 aproveitados. O cache acumulado permanece. Use `--keep-data` para preservar

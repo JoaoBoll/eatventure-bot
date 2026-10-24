@@ -57,7 +57,7 @@ Nos comandos ao vivo, adicione `--device SERIAL` para escolher o aparelho ou `--
 
 ## Relatórios e limpeza
 
-Cada treino gera um JSON próprio em `IA/training_reports/`, com data, duração, resultado, parâmetros e métricas de validação. As contagens incluem ações, tipos, estados, resultados e resoluções, separando o lote atual dos dados reaproveitados. Cada arquivo descreve somente aquela execução.
+Cada treino gera um resumo JSON em `IA/training_reports/`, com data, duração, resultado, parâmetros, imagens usadas, categorias/classes e contagens, extração e métricas de validação por classe. Não lista IDs individuais nem despeja tabelas extensas no terminal. Os metadados do modelo guardam o necessário para carregá-lo e consultar seu resumo de treino.
 
 A limpeza só ocorre depois de salvar o modelo e o relatório com sucesso. Remove apenas os registros e imagens aproveitados; dados novos ou não aproveitados permanecem. Se a limpeza for interrompida, ela é retomada na próxima verificação da coleta ou no próximo treino.
 

@@ -119,7 +119,7 @@ class TrainingReportTests(unittest.TestCase):
             self.assertEqual(first.path.read_text(encoding="utf-8"), original)
             self.assertEqual(len(list((root / "training_reports").glob("*.json"))), 2)
             report = json.loads(original)
-            self.assertEqual(report["final_fit"]["frames"], 10000)
+            self.assertEqual(report["training"]["frames"], 10000)
             self.assertIsNotNone(report["finished_at_utc"])
             self.assertGreaterEqual(report["duration_seconds"], 0)
 
@@ -157,7 +157,9 @@ class TrainingReportTests(unittest.TestCase):
 
             def publish(execution, model, model_metadata, model_out):
                 self.assertIs(model, final_model)
-                self.assertEqual(model_metadata["final_fit"]["frames"], 20)
+                self.assertEqual(model_metadata["final_fit"]["images_used"], 20)
+                self.assertEqual(model_metadata["final_fit"]["category_count"], 1)
+                self.assertEqual(model_metadata["final_fit"]["class_count"], 2)
                 events.append("model_saved")
                 return {"model": "immutable/model.joblib", "pointer": "model.current.json"}
 
@@ -195,10 +197,14 @@ class TrainingReportTests(unittest.TestCase):
             self.assertEqual(len(final_model.fit.call_args.args[0]), 20)
             self.assertEqual(events, ["model_saved", "pointer_saved", "cleanup"])
             report = json.loads(run.path.read_text(encoding="utf-8"))
-            self.assertEqual(report["evaluation"]["validation"]["frames"], 4)
-            self.assertEqual(report["final_fit"]["frames"], 20)
-            self.assertEqual(report["current_batch"]["used_frames"], 15)
-            self.assertEqual(report["replay"]["frames"], 5)
+            self.assertEqual(report["validation"]["frames"], 4)
+            self.assertEqual(report["training"]["images_used"], 20)
+            self.assertEqual(report["training"]["category_count"], 1)
+            self.assertEqual(report["training"]["class_count"], 2)
+            self.assertEqual(report["training"]["new_images"], 15)
+            self.assertEqual(report["training"]["reused_images"], 5)
+            self.assertNotIn("current_batch", report)
+            self.assertNotIn("sample_keys", report)
             self.assertEqual(report["cleanup"]["replay_raw_frames"], 0 if filtered else 5)
             cache.mark_trained.assert_called_once()
 

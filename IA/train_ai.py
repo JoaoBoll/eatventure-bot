@@ -24,7 +24,7 @@ DEFAULT_MODEL = ROOT / "IA" / "model.joblib"
 # em core/state_machine.py). `fly` tem poucas caixas e a maior forma do
 # dataset (414x141 vs 95x94 da mediana), então some fácil num --limit ou
 # --outcome apertado sem que a acurácia agregada avise.
-CATEGORIAS_CRITICAS = ("renovate", "fly")
+
 
 
 def _parse_resolution(value):
@@ -347,188 +347,26 @@ def build_classifier(trees, seed, jobs):
     )
 
 
-def report(clf, X_teste, y_teste, y_treino, referencias, kind="category"):
-    from sklearn.metrics import (
-        accuracy_score,
-        classification_report,
-        confusion_matrix,
-    )
+def report(clf, X_teste, y_teste, referencias):
+    from sklearn.metrics import accuracy_score
 
     from dataset_io import majority_baseline
-    from collections import Counter
 
     previsto = clf.predict(X_teste)
-
     acuracia = accuracy_score(y_teste, previsto)
-
     base, classe_base = majority_baseline(list(y_teste))
-
-    treino_dist = Counter(str(v) for v in y_treino)
-    teste_dist = Counter(str(v) for v in y_teste)
-
-    print()
-    print("=" * 62)
-    print("  RESULTADO")
-    print("=" * 62)
-    print()
-    print(f"  acurácia do modelo ............. {acuracia:7.2%}")
-    print(f"  chutar a maior classe ('{classe_base}') "
-          f"{'':>{max(0, 8 - len(str(classe_base)))}}{base:7.2%}")
-
-    for nome, valor in referencias.items():
-        print(f"  {nome:<30} {valor:7.2%}")
-
-    print()
-
-    if acuracia <= base:
-        print("  !! Modelo não bate o chute na classe majoritária.")
-        print("     Formulação ou features erradas.")
-        print()
-
-    print("-" * 62)
-    print("  POR CLASSE")
-    print("-" * 62)
-    print()
-
-    print(classification_report(y_teste, previsto, zero_division=0, digits=3))
-
-    print("-" * 62)
-    print("  CONFUSÃO (linha = verdade, coluna = previsto)")
-    print("-" * 62)
-    print()
-
-    classes = sorted(set(y_teste) | set(previsto))
-
-    matriz = confusion_matrix(y_teste, previsto, labels=classes)
-
-    largura = max(len(c) for c in classes) + 1
-
-    cabecalho = " " * largura + "".join(
-        f"{c[:6]:>7}" for c in classes
+    linhas = [
+        f"{nome} {valor:.2%}" for nome, valor in referencias.items()
+    ]
+    print(
+        f"Validação: acurácia {acuracia:.2%}; "
+        f"baseline majoritário ({classe_base}) {base:.2%}; "
+        f"referências: {', '.join(linhas)}."
     )
-
-    print(cabecalho)
-
-    for nome, linha in zip(classes, matriz):
-
-        print(
-            f"{nome:<{largura}}"
-            + "".join(f"{v:>7d}" for v in linha)
-        )
-
-    print()
-
-    # pares de erro: diz se é confusão específica (resolvível) ou ruído geral
-    erros = Counter()
-
-    for verdade, palpite in zip(y_teste, previsto):
-
-        if verdade != palpite:
-            erros[(str(verdade), str(palpite))] += 1
-
-    # só faz sentido em category: em action os rótulos já são ações
-    if kind == "category":
-        _report_criticas(y_teste, y_treino, previsto)
-
-    if erros:
-
-        print("  maiores confusões:")
-
-        for (verdade, palpite), quantas in erros.most_common(8):
-
-            print(
-                f"    {verdade:<16} previsto como "
-                f"{palpite:<16} {quantas:5d}"
-            )
-
-        print()
-
-    _check_distribution_divergence(treino_dist, teste_dist)
+    if acuracia <= base:
+        print("Aviso: o modelo não superou o baseline majoritário.")
 
     return acuracia
-
-
-def _check_distribution_divergence(treino_dist, teste_dist):
-    print("-" * 62)
-    print("  VERIFICAÇÃO: DISTRIBUIÇÃO TREINO vs TESTE")
-    print("-" * 62)
-    print()
-
-    todas_classes = set(treino_dist.keys()) | set(teste_dist.keys())
-
-    desvios = []
-
-    for classe in sorted(todas_classes):
-        treino_pct = (treino_dist.get(classe, 0) / sum(treino_dist.values())) * 100
-        teste_pct = (teste_dist.get(classe, 0) / sum(teste_dist.values())) * 100
-
-        desvio = abs(treino_pct - teste_pct)
-        desvios.append((desvio, classe, treino_pct, teste_pct))
-
-    desvios.sort(reverse=True)
-
-    problemas = []
-
-    for desvio, classe, treino_pct, teste_pct in desvios[:5]:
-
-        if desvio > 10:
-            problemas.append(
-                f"  {classe:<16} treino {treino_pct:5.1f}% | "
-                f"teste {teste_pct:5.1f}%  (desvio {desvio:.1f}%)"
-            )
-
-    if problemas:
-        print("  maiores divergências:")
-        for p in problemas:
-            print(p)
-        print()
-        print("  ⚠ Split desigual: o modelo foi treinado numa "
-              "distribuição diferente da que vai testar.")
-    else:
-        print("  ✓ distribuições balanceadas entre treino e teste")
-
-    print()
-
-
-def _report_criticas(y_teste, y_treino, previsto):
-    # recall 0% em `fly` custa ~0.1% de acurácia agregada — invisível no
-    # número, fatal no bot; por isso reportado nominalmente aqui
-    print("-" * 62)
-    print("  CATEGORIAS QUE FECHAM RENOVATE")
-    print("-" * 62)
-    print()
-
-    treino_contagem = Counter(str(v) for v in y_treino)
-    teste_contagem = Counter(str(v) for v in y_teste)
-
-    for categoria in CATEGORIAS_CRITICAS:
-
-        no_treino = treino_contagem.get(categoria, 0)
-        no_teste = teste_contagem.get(categoria, 0)
-
-        acertos = sum(
-            1
-            for verdade, palpite in zip(y_teste, previsto)
-            if str(verdade) == categoria and str(palpite) == categoria
-        )
-
-        recall = (acertos / no_teste) if no_teste else None
-
-        linha = (
-            f"  {categoria:<12} treino {no_treino:6d} | "
-            f"teste {no_teste:6d} | recall "
-            + (f"{recall:7.2%}" if recall is not None else "     n/d")
-        )
-
-        if not no_treino:
-            linha += "   <- NÃO TREINADA"
-
-        elif recall is not None and recall < 0.5:
-            linha += "   <- perde mais da metade"
-
-        print(linha)
-
-    print()
 
 
 def _train_one_resolution(args):
@@ -663,7 +501,6 @@ def _fit_snapshot(args, raiz, registros, snapshot, aviso, execucao):
     execucao.data["current_batch"] = {
         **summarize(registros),
         "available_frames": len(snapshot),
-        "sample_keys": sorted(selecionadas),
     }
     execucao.data["cleanup"] = {
         "requested": bool(limpar),
@@ -737,7 +574,7 @@ def _fit_snapshot(args, raiz, registros, snapshot, aviso, execucao):
           f"{len(ids_teste)} frames/{len(X_teste)} recortes na validação.")
     avaliador = build_classifier(args.trees, args.seed, args.jobs)
     avaliador.fit(X_treino, y_treino)
-    acuracia = report(avaliador, X_teste, y_teste, y_treino, referencias, args.kind)
+    acuracia = report(avaliador, X_teste, y_teste, referencias)
     execucao.data["evaluation"] = {
         "accuracy": float(acuracia),
         "row_unit": "box_crop" if args.kind == "category" else "full_frame",
@@ -755,13 +592,22 @@ def _fit_snapshot(args, raiz, registros, snapshot, aviso, execucao):
     print(f"Ajuste final: {len(efetivas)} frames/{len(X)} recortes, incluindo validação e replay.")
     modelo = build_classifier(args.trees, args.seed, args.jobs)
     modelo.fit(X, y)
+    classes = dict(sorted(Counter(str(label) for label in y).items()))
+    data_summary = summarize(todos_registros)
     execucao.data["final_fit"] = {
-        **summarize(todos_registros),
+        "resolutions": data_summary["resolutions"],
+        "categories": data_summary["categories"],
+        "images_used": len(efetivas),
+        "new_images": len(atuais),
+        "reused_images": len(replay),
+        "category_count": (
+            len(classes) - int("background" in classes)
+            if args.kind == "category" else len(classes)
+        ),
         "rows": int(len(X)),
         "row_unit": "box_crop" if args.kind == "category" else "full_frame",
-        "current_batch_frames": len(atuais),
-        "replay_frames": len(replay),
-        "classes": dict(sorted(Counter(str(label) for label in y).items())),
+        "class_count": len(classes),
+        "classes": classes,
         "includes_validation": True,
     }
 
@@ -819,48 +665,16 @@ def _fit_snapshot(args, raiz, registros, snapshot, aviso, execucao):
         }
         print(f"Modelo publicado; limpeza/registro do lote não concluído: {error}")
     execucao.finish("success")
-    print(f"Modelo: {execucao.data['artifacts']['model']}")
-    print(f"Relatório: {execucao.path}")
+    final_fit = execucao.data["training"]
+    print(
+        f"Treino concluído: {final_fit['images_used']} imagens, "
+        f"{final_fit['category_count']} categorias, "
+        f"{final_fit['class_count']} classes; validação "
+        f"{execucao.data['validation']['accuracy']:.2%}."
+    )
+    print(f"Modelo: {execucao.data['model']['model']}")
+    print(f"Resumo: {execucao.path}")
     return 0
-
-def _recommendations(acuracia, referencias, contagem, background_pct):
-    print("=" * 62)
-    print("  RECOMENDAÇÕES PARA A PRÓXIMA COLETA")
-    print("=" * 62)
-    print()
-
-    teto = referencias.get("estado + categorias (teto)", 0.96)
-    espaco = teto - acuracia
-
-    if acuracia >= teto * 0.95:
-        print("  ✓ Modelo alcança o teto teórico. Está bom.")
-    elif espaco > 0.10:
-        print(f"  ℹ Ainda há {espaco*100:.1f}% de margem até o teto.")
-        print()
-        print("  Prioridades:")
-
-        total = sum(contagem.values())
-        raras = [
-            (c, q, q/total*100)
-            for c, q in contagem.items()
-            if c != "background" and q/total*100 < 5
-        ]
-
-        if raras:
-            print()
-            print("  1. Categorias raras (<5%):")
-            for cat, qtd, pct in sorted(raras, key=lambda x: x[2]):
-                print(f"     - {cat:<14} {qtd:6d} ({pct:5.2f}%)")
-            print("     Coletar mais dessas, especialmente as com <1%")
-
-        if background_pct < 20:
-            print()
-            print("  2. Aumentar negativos (background):")
-            print(f"     Hoje {background_pct:.1f}% | Recomendado >20%")
-            print("     Retreine com --negatives=3 ou --negatives=4")
-
-    print()
-
 
 def parse_args(argv=None):
 

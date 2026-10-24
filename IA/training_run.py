@@ -142,7 +142,51 @@ class TrainingRun:
     def finish(self, status):
         self.data["status"] = status
         self.data["finished_at_utc"] = utc_now()
+        if status == "success":
+            self._compact_success()
         self.save()
+
+    def _compact_success(self):
+        if "training" in self.data:
+            return
+        evaluation = self.data.get("evaluation", {})
+        validation = evaluation.get("validation", {})
+        artifacts = self.data.get("artifacts", {})
+        parameter_names = (
+            "kind", "resolution", "trees", "seed", "jobs", "negatives",
+            "split", "test_ratio", "outcome",
+        )
+        self.data = {
+            key: self.data[key]
+            for key in (
+                "run_id", "started_at_utc", "finished_at_utc",
+                "duration_seconds", "trigger", "status",
+            )
+            if key in self.data
+        } | {
+            "parameters": {
+                key: self.data["parameters"][key]
+                for key in parameter_names
+                if key in self.data.get("parameters", {})
+            },
+            "training": self.data.get("final_fit", {}),
+            "validation": {
+                "accuracy": evaluation.get("accuracy"),
+                "frames": validation.get("frames", 0),
+                "rows": validation.get("rows", 0),
+                "class_metrics": evaluation.get("class_metrics", {}),
+                "baselines": evaluation.get("baselines", {}),
+                "split": evaluation.get("split", {}),
+            },
+            "extraction": self.data.get("extraction", {}),
+            "model": {
+                key: artifacts[key]
+                for key in ("model", "metadata", "pointer")
+                if key in artifacts
+            },
+            "model_activated": self.data.get("model_activated", False),
+            "cleanup": self.data.get("cleanup", {}),
+        }
 
 
 def publish_model(run, classifier, metadata, model_out):
