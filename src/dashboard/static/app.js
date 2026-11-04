@@ -37,6 +37,9 @@ let visionMode = "off";
 let visionResume = false;
 let templateSelection = null;
 let templateStart = null;
+let templateDevice = null;
+let templatePointerId = null;
+let templateRetry = null;
 let sessionLoading = false;
 const visionReleases = new Map();
 const MAX_VISION_FRAME_BYTES = 5 * 1024 * 1024;
@@ -98,6 +101,7 @@ function showError(id, message) {
 }
 
 function logout(expired = false) {
+  closeTemplateSelector();
   stopVision();
   authenticated = false;
   rememberToken("");
@@ -534,6 +538,7 @@ async function openDetails(id, tab = "vision") {
 async function closeDetails() {
   if (saving) return false;
   if (changeCount() && !confirm("Descartar os ajustes que ainda não foram salvos?")) return false;
+  closeTemplateSelector();
   stopVision();
   $("device-dialog").close();
   draft = null;
@@ -894,23 +899,65 @@ function stopVision({ mode = "off", message = "", pause = false } = {}) {
 
 async function startTemplateSelector() {
   if (!detailId) return;
+  const id = detailId;
   await stopVision();
   renderTemplateCategorySuggestions();
+  templateDevice = id;
   templateSelection = null;
-  $("template-save").disabled = true;
-  $("template-form").hidden = false;
-  $("vision-status").textContent = "Capturando frame sem marcações…";
-  await api(`/api/devices/${encodeURIComponent(detailId)}/vision`, { method: "POST", body: JSON.stringify({ enabled: true, mode: "template" }) });
-  const image = $("vision-image");
-  image.onload = () => { $("vision-placeholder").hidden = true; image.hidden = false; $("vision-status").textContent = "Arraste sobre o item para criar o template."; };
-  image.onerror = () => setTimeout(() => {
-    if (!$("template-form").hidden) image.src = `/api/devices/${encodeURIComponent(detailId)}/vision?mode=template&t=${Date.now()}`;
-  }, 400);
-  image.src = `/api/devices/${encodeURIComponent(detailId)}/vision?mode=template&t=${Date.now()}`;
+  templateStart = null;
+  templatePointerId = null;
+  $("template-selection-step").hidden = false;
+  $("template-category-step").hidden = true;
+  $("template-selection-box").hidden = true;
+  $("template-confirm").disabled = true;
+  $("template-category").value = "";
+  $("template-title").textContent = "Selecione o item";
+  $("template-instruction").textContent = "Arraste com o botão esquerdo sobre o item.";
+  $("template-selection-status").textContent = "Capturando frame sem marcações…";
+  $("template-stage").querySelector(".loading-spinner").hidden = false;
+  const dialog = $("template-dialog");
+  if (!dialog.open) dialog.showModal();
+  await api(`/api/devices/${encodeURIComponent(id)}/vision`, { method: "POST", body: JSON.stringify({ enabled: true, mode: "template" }) });
+  if (!dialog.open || templateDevice !== id) return;
+  loadTemplateFrame();
+}
+
+function loadTemplateFrame() {
+  const image = $("template-image");
+  const id = templateDevice;
+  if (!id || !$("template-dialog").open) return;
+  clearTimeout(templateRetry);
+  image.onload = () => {
+    $("template-stage").querySelector(".loading-spinner").hidden = true;
+    image.hidden = false;
+    $("template-selection-status").textContent = "Arraste sobre o item para marcar a área do template.";
+  };
+  image.onerror = () => {
+    image.hidden = true;
+    templateRetry = setTimeout(loadTemplateFrame, 400);
+  };
+  image.src = `/api/devices/${encodeURIComponent(id)}/vision?mode=template&t=${Date.now()}`;
+}
+
+function closeTemplateSelector() {
+  const id = templateDevice;
+  clearTimeout(templateRetry);
+  templateRetry = null;
+  templateDevice = null;
+  templateSelection = null;
+  templateStart = null;
+  templatePointerId = null;
+  const image = $("template-image");
+  image.onload = null;
+  image.onerror = null;
+  image.removeAttribute("src");
+  image.hidden = true;
+  if ($("template-dialog").open) $("template-dialog").close();
+  if (id) releaseVision(id);
 }
 
 function templatePoint(event) {
-  const image = $("vision-image");
+  const image = $("template-image");
   const box = image.getBoundingClientRect();
   return {
     x: Math.max(0, Math.min(image.naturalWidth, Math.round((event.clientX - box.left) * image.naturalWidth / box.width))),
@@ -918,18 +965,54 @@ function templatePoint(event) {
   };
 }
 
+function updateTemplateSelection(start, end) {
+  const image = $("template-image");
+  const stage = $("template-stage").getBoundingClientRect();
+  const box = image.getBoundingClientRect();
+  const x = Math.min(start.x, end.x), y = Math.min(start.y, end.y);
+  templateSelection = { x, y, width: Math.abs(end.x - start.x), height: Math.abs(end.y - start.y) };
+  const selection = $("template-selection-box");
+  selection.style.left = `${box.left - stage.left + x * box.width / image.naturalWidth}px`;
+  selection.style.top = `${box.top - stage.top + y * box.height / image.naturalHeight}px`;
+  selection.style.width = `${templateSelection.width * box.width / image.naturalWidth}px`;
+  selection.style.height = `${templateSelection.height * box.height / image.naturalHeight}px`;
+  selection.hidden = false;
+  $("template-selection-status").textContent = `Seleção: ${templateSelection.width}×${templateSelection.height}px.`;
+}
+
+function reviewTemplateSelection() {
+  if (!templateSelection || templateSelection.width < 6 || templateSelection.height < 6) return;
+  const { x, y, width, height } = templateSelection;
+  const canvas = $("template-preview");
+  canvas.width = width;
+  canvas.height = height;
+  canvas.getContext("2d").drawImage($("template-image"), x, y, width, height, 0, 0, width, height);
+  $("template-review-size").textContent = `${width}×${height}px`;
+  $("template-selection-step").hidden = true;
+  $("template-category-step").hidden = false;
+  $("template-title").textContent = "Confirme o template";
+  $("template-instruction").textContent = "Confira o recorte e escolha sua categoria.";
+  $("template-category").focus();
+}
+
+function returnToTemplateSelection() {
+  $("template-category-step").hidden = true;
+  $("template-selection-step").hidden = false;
+  $("template-title").textContent = "Selecione o item";
+  $("template-instruction").textContent = "Arraste com o botão esquerdo sobre o item.";
+}
+
 async function saveTemplateSelection() {
-  if (!templateSelection || !detailId) return;
+  if (!templateSelection || !templateDevice) return;
   const category = $("template-category").value.trim();
   if (!/^[a-z][a-z0-9_]{0,63}$/.test(category)) { toast("Informe uma categoria válida.", true); return; }
   const button = $("template-save"); button.disabled = true;
   try {
-    const result = await api(`/api/devices/${encodeURIComponent(detailId)}/templates`, { method: "POST", body: JSON.stringify({ category, name: $("template-name").value.trim(), ...templateSelection }) });
+    const result = await api(`/api/devices/${encodeURIComponent(templateDevice)}/templates`, { method: "POST", body: JSON.stringify({ category, ...templateSelection }) });
     toast(`Template salvo: ${result.category} (${result.width}×${result.height}).`);
-    templateSelection = null;
-    $("template-form").hidden = true;
+    closeTemplateSelector();
     await refreshState();
-  } catch (error) { toast(error.message, true); } finally { button.disabled = !templateSelection; }
+  } catch (error) { toast(error.message, true); } finally { button.disabled = false; }
 }
 
 async function startVision() {
@@ -1317,22 +1400,35 @@ for (const tab of document.querySelectorAll("[data-tab]")) {
 $("log-pause").addEventListener("click", () => { logPaused = !logPaused; $("log-pause").textContent = logPaused ? "Retomar" : "Pausar"; if (!logPaused) pollLogs(); });
 $("log-download").addEventListener("click", downloadLogs);
 $("vision-toggle").addEventListener("click", () => { if (visionWanted) stopVision(); else startVision(); });
-$("template-select").addEventListener("click", () => startTemplateSelector().catch((error) => toast(error.message, true)));
+$("template-select").addEventListener("click", () => startTemplateSelector().catch((error) => { closeTemplateSelector(); toast(error.message, true); }));
 $("template-save").addEventListener("click", saveTemplateSelection);
-$("vision-image").addEventListener("pointerdown", (event) => {
-  if ($("template-form").hidden) return;
+$("template-close").addEventListener("click", closeTemplateSelector);
+$("template-cancel").addEventListener("click", closeTemplateSelector);
+$("template-category-cancel").addEventListener("click", closeTemplateSelector);
+$("template-confirm").addEventListener("click", reviewTemplateSelection);
+$("template-back").addEventListener("click", returnToTemplateSelection);
+$("template-dialog").addEventListener("cancel", (event) => { event.preventDefault(); closeTemplateSelector(); });
+$("template-image").addEventListener("pointerdown", (event) => {
+  if (event.pointerType === "mouse" && event.button !== 0) return;
+  event.preventDefault();
   templateStart = templatePoint(event);
-  $("vision-image").setPointerCapture(event.pointerId);
+  templatePointerId = event.pointerId;
+  templateSelection = null;
+  $("template-confirm").disabled = true;
+  $("template-image").setPointerCapture(event.pointerId);
 });
-$("vision-image").addEventListener("pointerup", (event) => {
-  if (!templateStart || $("template-form").hidden) return;
-  const end = templatePoint(event);
-  const x = Math.min(templateStart.x, end.x), y = Math.min(templateStart.y, end.y);
-  templateSelection = { x, y, width: Math.abs(end.x - templateStart.x), height: Math.abs(end.y - templateStart.y) };
+$("template-image").addEventListener("pointermove", (event) => {
+  if (!templateStart || event.pointerId !== templatePointerId) return;
+  updateTemplateSelection(templateStart, templatePoint(event));
+});
+$("template-image").addEventListener("pointerup", (event) => {
+  if (!templateStart || event.pointerId !== templatePointerId) return;
+  updateTemplateSelection(templateStart, templatePoint(event));
   templateStart = null;
-  $("template-save").disabled = templateSelection.width < 6 || templateSelection.height < 6;
-  $("vision-status").textContent = `Seleção: ${templateSelection.width}×${templateSelection.height}px.`;
+  templatePointerId = null;
+  $("template-confirm").disabled = templateSelection.width < 6 || templateSelection.height < 6;
 });
+$("template-image").addEventListener("pointercancel", () => { templateStart = null; templatePointerId = null; });
 $("connect-open").addEventListener("click", () => { $("connect-result").textContent = ""; $("connect-dialog").showModal(); });
 $("reconnect-open").addEventListener("click", () => {
   $("connect-result").textContent = "";
