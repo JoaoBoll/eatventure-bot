@@ -144,6 +144,29 @@ def training_catalog(root):
     return counts
 
 
+def collected_catalog(root):
+    """Total de imagens usadas em treinos concluídos, por resolução."""
+    totals = {}
+    reports = Path(root) / "IA" / "training_reports"
+    if not reports.is_dir():
+        return totals
+    for path in reports.glob("*.json"):
+        try:
+            if path.stat().st_size > 2_000_000:
+                continue
+            report = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, UnicodeError):
+            continue
+        if report.get("status") != "success":
+            continue
+        resolution = str(report.get("parameters", {}).get("resolution") or "all")
+        training = report.get("training", {})
+        # `new_images` evita contar novamente amostras reaproveitadas em treinos posteriores.
+        amount = training.get("new_images", training.get("images_used", 0))
+        totals[resolution] = totals.get(resolution, 0) + int(amount or 0)
+    return totals
+
+
 def create_app(root=None, state_root=None, token=None, supervisor=None, require_token=False):
     root = Path(root or config.PROJECT_ROOT).resolve()
     state_root = Path(state_root or root / "local").resolve()
@@ -157,6 +180,7 @@ def create_app(root=None, state_root=None, token=None, supervisor=None, require_
     catalog_lock = threading.Lock()
     catalog_cache = {"at": 0.0, "value": None}
     training_cache = {"at": 0.0, "value": None}
+    collected_cache = {"at": 0.0, "value": None}
 
     def catalog():
         with catalog_lock:
@@ -171,6 +195,12 @@ def create_app(root=None, state_root=None, token=None, supervisor=None, require_
             if time.monotonic() - training_cache["at"] > 10 or training_cache["value"] is None:
                 training_cache.update(at=time.monotonic(), value=training_catalog(root))
             return training_cache["value"]
+
+    def collected():
+        with catalog_lock:
+            if time.monotonic() - collected_cache["at"] > 10 or collected_cache["value"] is None:
+                collected_cache.update(at=time.monotonic(), value=collected_catalog(root))
+            return collected_cache["value"]
 
     @asynccontextmanager
     async def lifespan(app):
@@ -271,6 +301,7 @@ def create_app(root=None, state_root=None, token=None, supervisor=None, require_
             "schema": settings_schema(vars(config)),
             "templates": catalog(),
             "training": training(),
+            "collected": collected(),
             "server": {"name": "EatVenture Control", "profiles": "local/devices", "requires_restart": True},
             "error": getattr(supervisor.devices, "last_error", None),
         }

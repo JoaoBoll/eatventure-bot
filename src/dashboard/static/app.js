@@ -421,7 +421,7 @@ function metricValues(device) {
   const trainings = resolution ? state.training[resolution] : null;
   return [
     ["voos", "Voou", count(metric(device, "voos"))], ["reformas", "Renovou", count(metric(device, "reformas"))],
-    ["dados_coletados", "Dados coletados", count(metric(device, "dados_coletados"))],
+    ["dados_coletados", "Dados coletados", count((metric(device, "dados_coletados") || 0) + (state.collected?.[resolution] || 0))],
     ["treinamentos", "Treinamentos", trainings === null ? "—" : count(trainings)],
     ["fps", "FPS", fps === null ? "—" : fps.toLocaleString("pt-BR", { maximumFractionDigits: 1 })],
     ["battery", "Bateria", level === null ? "—" : `${level}%${battery?.charging ? " ↯" : ""}`]
