@@ -74,6 +74,8 @@ A fidelidade de forma segue esta prioridade:
 
 As opções de coleta de IA, uso exclusivo dos templates da resolução e gravação de log também são individuais. **Salvar** grava o perfil; **Reiniciar** aplica os ajustes ao bot ativo. Restaurar um item, grupo ou perfil devolve os padrões do código sem editar nenhum arquivo Python. A restauração do perfil preserva dataset, modelos, templates aprendidos e logs existentes.
 
+Na aba **Visão IA**, use **Adicionar template** para capturar um frame bruto, arrastar sobre o item e salvá-lo na categoria informada. O recorte vira um override local daquele dispositivo e daquela resolução; o detector o recarrega sem reiniciar o bot.
+
 Os arquivos ficam em:
 
 ```text
@@ -90,9 +92,27 @@ dataset/
   data/<RESOLUÇÃO>/images/
 ```
 
-`local/` é ignorado pelo Git. Faça backup dessa pasta para preservar os perfis e dados. Os templates compartilhados do projeto são lidos como base; o aprendizado feito pelo painel grava somente na pasta do aparelho. Com `AI_AUTO_TRAIN = True`, ao iniciar um bot com treino automático habilitado, o painel verifica o dataset e repete a verificação a cada 10 minutos (`AI_TRAIN_CHECK_INTERVAL`). Quando há 10 mil amostras ainda não treinadas de uma mesma resolução — incluindo lotes acumulados em execuções anteriores — treina todas as amostras novas disponíveis daquela resolução. Cada modelo fica em `IA/models/<RESOLUÇÃO>/` e pode ser versionado no Git. Durante o treino, os bots em execução são encerrados e reiniciados quando ele termina. O dataset é compartilhado entre painel e terminal em `dataset/`. Alterações no perfil são aplicadas antes dos módulos do bot serem importados em cada processo.
+`local/` é ignorado pelo Git. Faça backup dessa pasta para preservar os perfis e dados. Os templates compartilhados do projeto são lidos como base; o aprendizado feito pelo painel grava somente na pasta do aparelho. Com `AI_AUTO_TRAIN = True`, ao iniciar um bot com treino automático habilitado, o painel verifica o dataset e repete a verificação a cada 10 minutos (`AI_TRAIN_CHECK_INTERVAL`). Quando há 10 mil amostras ainda não treinadas de uma mesma resolução — incluindo lotes acumulados em execuções anteriores — treina todas as amostras novas disponíveis daquela resolução. Cada modelo fica em `IA/models/<RESOLUÇÃO>/` e pode ser versionado no Git. Durante o treino, somente bots que coletam a mesma resolução são pausados e reiniciados; registros novos adicionados após o snapshot não são removidos. O dataset é compartilhado entre painel e terminal em `dataset/`. Alterações no perfil são aplicadas antes dos módulos do bot serem importados em cada processo.
 
 O botão **Encerrar painel** solicita o encerramento gracioso do servidor web; os bots em execução são parados pelo supervisor durante o desligamento.
+
+## Verificação do Eatventure
+
+Enquanto o bot está ativo, ele só verifica o app após ficar 10 segundos sem
+executar uma ação que não seja swipe. Antes da busca, o bot descarta do dataset
+as amostras pendentes e já gravadas desde a última ação relevante. Nesse momento,
+pede uma busca pontual do template `engine`.
+Se encontrá-lo, não faz nada; se não, verifica o processo
+`com.hwqgrhhjfd.idlefastfood`: processo existente é reiniciado, processo ausente
+é apenas aberto. Os valores ficam em `src/core/config.py` como
+`EATVENTURE_GUARD_*`. Defina a variável `EATVENTURE_PACKAGE` se a instalação
+usar outro package name. Essa proteção só atua quando a máquina de estados está
+em `NORMAL`. A coleta volta a aceitar amostras após a próxima ação que não seja
+swipe.
+
+Antes de executar qualquer ação, o bot também faz essa mesma validação inicial
+do template `engine`. Enquanto ela não concluir, a máquina de estados fica
+pausada. Após validada, entra em vigor o watchdog de inatividade.
 
 ## Serviço no Ubuntu
 

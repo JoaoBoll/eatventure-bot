@@ -480,10 +480,19 @@ class BotSupervisor:
     def _training_session(self, resolution):
         with self._auto_training_lock:
             with self._lock:
-                device_ids = [
-                    device_id for device_id, run in self._runs.items()
+                active_runs = [
+                    (device_id, run) for device_id, run in self._runs.items()
                     if run.process.poll() is None
                 ]
+            # O snapshot do dataset e a limpeza por linha já preservam dados
+            # escritos depois do início do treino. Só pausamos quem coleta a
+            # mesma resolução para reduzir disputa de CPU e I/O, sem derrubar
+            # aparelhos que treinam outro shard.
+            device_ids = []
+            for device_id, run in active_runs:
+                summary = self._metrics(device_id, run).get("summary", {})
+                if summary.get("resolution") == resolution:
+                    device_ids.append(device_id)
             restart_ids = []
             for device_id in device_ids:
                 try:
@@ -807,7 +816,9 @@ class BotSupervisor:
                 self.stop(device["id"])
                 return self.start(device["id"])
 
-    def request_vision(self, device_id, enabled):
+    def request_vision(self, device_id, enabled, mode="vision"):
+        if mode not in {"vision", "template"}:
+            raise ValueError("Modo de prévia inválido.")
         device_id = self._runtime_device_id(device_id)
         with self._operation_lock(device_id):
             with self._lock:
@@ -819,7 +830,7 @@ class BotSupervisor:
                         FramePreview(run.status_file, run.session_id).clear()
                     return {"enabled": False}
             path = preview_paths(run.status_file)["request"]
-            request = {"session_id": run.session_id, "expires_at": time.time() + 8 if enabled else 0}
+            request = {"session_id": run.session_id, "expires_at": time.time() + 8 if enabled else 0, "mode": mode}
             temporary = None
             try:
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -836,9 +847,9 @@ class BotSupervisor:
                 FramePreview(run.status_file, run.session_id).clear()
             return {"enabled": enabled}
 
-    def vision_frame(self, device_id):
+    def vision_frame(self, device_id, mode="vision"):
         device_id = self._runtime_device_id(device_id)
-        self.request_vision(device_id, True)
+        self.request_vision(device_id, True, mode)
         with self._lock:
             run = self._runs[device_id]
         self._metrics(device_id, run)
@@ -850,6 +861,7 @@ class BotSupervisor:
             stat = paths["image"].stat()
             if (run.process.poll() is not None
                     or metadata.get("session_id") != run.session_id
+                    or metadata.get("mode", "vision") != mode
                     or metadata.get("pid") != (run.worker_pid or run.process.pid)
                     or updated_at < run.started_at
                     or not -2 <= time.time() - updated_at <= 5
@@ -858,6 +870,37 @@ class BotSupervisor:
             return paths["image"]
         except (OSError, ValueError, TypeError, AttributeError) as error:
             raise RuntimeError("Aguardando frame da visão IA.") from error
+
+    def save_template(self, device_id, category, x, y, width, height, name=None):
+        import cv2
+        import numpy as np
+
+        if not isinstance(category, str) or re.fullmatch(r"[a-z][a-z0-9_]{0,63}", category) is None:
+            raise ValueError("Categoria de template inválida.")
+        values = (x, y, width, height)
+        if any(type(value) is not int for value in values) or width < 6 or height < 6:
+            raise ValueError("Selecione uma área de pelo menos 6x6 pixels.")
+        device_id = self._runtime_device_id(device_id)
+        path = self.vision_frame(device_id, mode="template")
+        image = cv2.imdecode(np.frombuffer(path.read_bytes(), np.uint8), cv2.IMREAD_COLOR)
+        if image is None:
+            raise RuntimeError("Não foi possível ler o frame para o template.")
+        frame_height, frame_width = image.shape[:2]
+        if x < 0 or y < 0 or x + width > frame_width or y + height > frame_height:
+            raise ValueError("A seleção está fora do frame atual.")
+        crop = image[y:y + height, x:x + width]
+        safe_name = re.sub(r"[^a-zA-Z0-9_-]+", "_", name or "item").strip("_") or "item"
+        digest = hashlib.sha256(device_id.encode("utf-8")).hexdigest()
+        folder = self.state_root / "device-data" / digest / "templates" / f"{frame_width}x{frame_height}" / category
+        folder.mkdir(parents=True, exist_ok=True)
+        index = 1
+        destination = folder / f"{safe_name}_{index:03d}.png"
+        while destination.exists():
+            index += 1
+            destination = folder / f"{safe_name}_{index:03d}.png"
+        if not cv2.imwrite(str(destination), crop):
+            raise RuntimeError("Não foi possível salvar o template.")
+        return {"path": str(destination), "category": category, "width": width, "height": height}
 
     def open_vision_stream(self, device_id):
         if not isinstance(device_id, str) or not device_id or len(device_id) > 512:

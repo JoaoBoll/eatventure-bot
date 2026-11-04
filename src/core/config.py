@@ -18,6 +18,17 @@ _EXE_SUFFIX = ".exe" if _IS_WINDOWS else ""
 DEVICE_SERIAL = None
 
 
+# ==== EATVENTURE ====
+
+# Após inatividade, o guardião confere processo e o template `engine` uma vez.
+# Ajuste pelo ambiente quando a variante instalada usar outro package name.
+EATVENTURE_PACKAGE = os.environ.get("EATVENTURE_PACKAGE", "com.hwqgrhhjfd.idlefastfood")
+EATVENTURE_GUARD_ENABLED = True
+EATVENTURE_GUARD_IDLE_SECONDS = 30.0
+EATVENTURE_GUARD_STARTUP_GRACE = 10.0
+EATVENTURE_LOCK_PORTRAIT = True
+
+
 # ==== SCRCPY ====
 
 _scrcpy_dir = PROJECT_ROOT / "tools" / "scrcpy"
@@ -277,23 +288,33 @@ CATEGORY_THRESHOLDS = {
     "box": 0.95,
     "delivery": 0.95,
     "helper": 0.95,
+    "engine": 0.90
 }
 
 CATEGORY_COLOR_THRESHOLDS = {
-    "delivery": 0.99
+    "delivery": 0.99,
+    "engine": 0.95
 }
 
 
-CATEGORY_ROIS = {}
+# (x1, y1, x2, y2) como frações do frame. O ícone engine é o indicador de
+# que o jogo está visível e só pode existir na faixa superior da tela.
+CATEGORY_ROIS = {
+    "engine": (0.0, 0.0, 1.0, 0.10),
+}
 
 # Guarda o último recorte aprovado; defaults já cobertos são atualizados
 # apenas na thread de aprendizado, sem busca duplicada na visão principal.
 LEARN_RESOLUTION_TEMPLATES = True
-TEMPLATE_REFRESH_INTERVAL = 1.0
+TEMPLATE_REFRESH_INTERVAL = 5.0
+
+# Recortes aprendidos entram em uso imediatamente na memória. O disco só
+# recebe checkpoints periódicos, reduzindo escrita repetida no SSD.
+TEMPLATE_PERSIST_INTERVAL = 900.0
 
 # De quanto em quanto tempo checar se a pasta de templates mudou (template
 # novo, editado ou removido) e recarregar sem reiniciar o bot. 0 desliga.
-TEMPLATES_WATCH_INTERVAL = 2.0
+TEMPLATES_WATCH_INTERVAL = 10.0
 
 
 # ==== DETECTOR ====

@@ -4,7 +4,7 @@ const $ = (id) => document.getElementById(id);
 const sessionKey = "eatventure.dashboard.token";
 const adbAddressKey = "eatventure.dashboard.adbAddress";
 const numberFormat = new Intl.NumberFormat("pt-BR");
-const state = { devices: [], schema: [], templates: { total: 0, categories: [] } };
+const state = { devices: [], schema: [], templates: { total: 0, categories: [] }, training: {} };
 const selected = new Set();
 const busyDevices = new Set();
 let token = readToken();
@@ -12,6 +12,8 @@ let authenticated = false;
 let authRequired = true;
 let stateLoading = false;
 let runtimeLoading = false;
+let deviceRefreshGeneration = 0;
+let deviceAppliedGeneration = 0;
 let profileLoading = false;
 let detailId = null;
 let draft = null;
@@ -33,6 +35,8 @@ let visionStream = null;
 let visionUrl = null;
 let visionMode = "off";
 let visionResume = false;
+let templateSelection = null;
+let templateStart = null;
 let sessionLoading = false;
 const visionReleases = new Map();
 const MAX_VISION_FRAME_BYTES = 5 * 1024 * 1024;
@@ -253,9 +257,11 @@ function deviceLayout(device) {
 async function refreshRuntime() {
   if (!authenticated || runtimeLoading) return;
   runtimeLoading = true;
+  const generation = ++deviceRefreshGeneration;
   try {
     const result = await api("/api/runtime");
-    if (!authenticated || !Array.isArray(result.devices)) return;
+    if (!authenticated || !Array.isArray(result.devices) || generation < deviceAppliedGeneration) return;
+    deviceAppliedGeneration = generation;
     const changed = JSON.stringify(state.devices.map(deviceLayout)) !== JSON.stringify(result.devices.map(deviceLayout));
     state.devices = result.devices;
     for (const id of selected) if (!deviceById(id)) selected.delete(id);
@@ -276,13 +282,17 @@ async function refreshRuntime() {
 async function refreshState(force = false) {
   if (!authenticated || stateLoading) return;
   stateLoading = true;
+  const generation = ++deviceRefreshGeneration;
   $("refresh").disabled = true;
   try {
     const result = await api(`/api/state${force ? "?refresh=true" : ""}`);
-    if (!authenticated) return;
+    if (!authenticated || generation < deviceAppliedGeneration) return;
+    deviceAppliedGeneration = generation;
     state.devices = Array.isArray(result.devices) ? result.devices : [];
     state.schema = Array.isArray(result.schema) ? result.schema : [];
     state.templates = result.templates || state.templates;
+    state.training = result.training || {};
+    renderTemplateCategorySuggestions();
     for (const id of selected) if (!deviceById(id)) selected.delete(id);
     $("server-status").textContent = "Servidor online";
     $("server-detail").textContent = result.server?.hostname || result.server?.host || "Conexão autenticada";
@@ -315,10 +325,16 @@ function renderSummary(visible) {
   $("kpi-running").textContent = count(running);
   $("kpi-running-detail").textContent = `${state.devices.length} ${state.devices.length === 1 ? "dispositivo cadastrado" : "dispositivos cadastrados"}`;
   $("kpi-connected").textContent = count(state.devices.filter(connected).length);
-  $("kpi-actions").textContent = count(state.devices.reduce((sum, device) => sum + (numeric(metric(device, "acoes")) || 0), 0));
-  $("kpi-templates").textContent = count(state.templates.total);
-  $("kpi-templates-detail").textContent = `${count(state.templates.categories?.length || 0)} categorias de reconhecimento`;
   $("device-count").textContent = `${visible.length} ${visible.length === 1 ? "dispositivo" : "dispositivos"}`;
+}
+
+function renderTemplateCategorySuggestions() {
+  const list = $("template-categories");
+  list.replaceChildren(...(state.templates.categories || []).map((category) => {
+    const option = document.createElement("option");
+    option.value = category.name;
+    return option;
+  }));
 }
 
 function renderDevices() {
@@ -401,9 +417,12 @@ function metricValues(device) {
   const battery = metric(device, "battery");
   const level = numeric(typeof battery === "object" && battery ? battery.level : battery);
   const fps = numeric(metric(device, "fps") ?? metric(device, "capture_fps"));
+  const resolution = metric(device, "resolution");
+  const trainings = resolution ? state.training[resolution] : null;
   return [
-    ["voos", "Voou", count(metric(device, "voos"))], ["reformas", "Renovou", count(metric(device, "reformas"))], ["acoes", "Ações", count(metric(device, "acoes"))],
-    ["templates", "Templates", count(metric(device, "templates") ?? state.templates.total)],
+    ["voos", "Voou", count(metric(device, "voos"))], ["reformas", "Renovou", count(metric(device, "reformas"))],
+    ["dados_coletados", "Dados coletados", count(metric(device, "dados_coletados"))],
+    ["treinamentos", "Treinamentos", trainings === null ? "—" : count(trainings)],
     ["fps", "FPS", fps === null ? "—" : fps.toLocaleString("pt-BR", { maximumFractionDigits: 1 })],
     ["battery", "Bateria", level === null ? "—" : `${level}%${battery?.charging ? " ↯" : ""}`]
   ];
@@ -873,8 +892,49 @@ function stopVision({ mode = "off", message = "", pause = false } = {}) {
   visionController?.abort();
   visionController = null;
   clearVisionImage();
-  releaseVision(id);
+  const released = releaseVision(id);
   renderVision(mode, message);
+  return released;
+}
+
+async function startTemplateSelector() {
+  if (!detailId) return;
+  await stopVision();
+  renderTemplateCategorySuggestions();
+  templateSelection = null;
+  $("template-save").disabled = true;
+  $("template-form").hidden = false;
+  $("vision-status").textContent = "Capturando frame sem marcações…";
+  await api(`/api/devices/${encodeURIComponent(detailId)}/vision`, { method: "POST", body: JSON.stringify({ enabled: true, mode: "template" }) });
+  const image = $("vision-image");
+  image.onload = () => { $("vision-placeholder").hidden = true; image.hidden = false; $("vision-status").textContent = "Arraste sobre o item para criar o template."; };
+  image.onerror = () => setTimeout(() => {
+    if (!$("template-form").hidden) image.src = `/api/devices/${encodeURIComponent(detailId)}/vision?mode=template&t=${Date.now()}`;
+  }, 400);
+  image.src = `/api/devices/${encodeURIComponent(detailId)}/vision?mode=template&t=${Date.now()}`;
+}
+
+function templatePoint(event) {
+  const image = $("vision-image");
+  const box = image.getBoundingClientRect();
+  return {
+    x: Math.max(0, Math.min(image.naturalWidth, Math.round((event.clientX - box.left) * image.naturalWidth / box.width))),
+    y: Math.max(0, Math.min(image.naturalHeight, Math.round((event.clientY - box.top) * image.naturalHeight / box.height)))
+  };
+}
+
+async function saveTemplateSelection() {
+  if (!templateSelection || !detailId) return;
+  const category = $("template-category").value.trim();
+  if (!/^[a-z][a-z0-9_]{0,63}$/.test(category)) { toast("Informe uma categoria válida.", true); return; }
+  const button = $("template-save"); button.disabled = true;
+  try {
+    const result = await api(`/api/devices/${encodeURIComponent(detailId)}/templates`, { method: "POST", body: JSON.stringify({ category, name: $("template-name").value.trim(), ...templateSelection }) });
+    toast(`Template salvo: ${result.category} (${result.width}×${result.height}).`);
+    templateSelection = null;
+    $("template-form").hidden = true;
+    await refreshState();
+  } catch (error) { toast(error.message, true); } finally { button.disabled = !templateSelection; }
 }
 
 async function startVision() {
@@ -1262,6 +1322,22 @@ for (const tab of document.querySelectorAll("[data-tab]")) {
 $("log-pause").addEventListener("click", () => { logPaused = !logPaused; $("log-pause").textContent = logPaused ? "Retomar" : "Pausar"; if (!logPaused) pollLogs(); });
 $("log-download").addEventListener("click", downloadLogs);
 $("vision-toggle").addEventListener("click", () => { if (visionWanted) stopVision(); else startVision(); });
+$("template-select").addEventListener("click", () => startTemplateSelector().catch((error) => toast(error.message, true)));
+$("template-save").addEventListener("click", saveTemplateSelection);
+$("vision-image").addEventListener("pointerdown", (event) => {
+  if ($("template-form").hidden) return;
+  templateStart = templatePoint(event);
+  $("vision-image").setPointerCapture(event.pointerId);
+});
+$("vision-image").addEventListener("pointerup", (event) => {
+  if (!templateStart || $("template-form").hidden) return;
+  const end = templatePoint(event);
+  const x = Math.min(templateStart.x, end.x), y = Math.min(templateStart.y, end.y);
+  templateSelection = { x, y, width: Math.abs(end.x - templateStart.x), height: Math.abs(end.y - templateStart.y) };
+  templateStart = null;
+  $("template-save").disabled = templateSelection.width < 6 || templateSelection.height < 6;
+  $("vision-status").textContent = `Seleção: ${templateSelection.width}×${templateSelection.height}px.`;
+});
 $("connect-open").addEventListener("click", () => { $("connect-result").textContent = ""; $("connect-dialog").showModal(); });
 $("reconnect-open").addEventListener("click", () => {
   $("connect-result").textContent = "";

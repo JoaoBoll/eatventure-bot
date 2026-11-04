@@ -81,6 +81,21 @@ class PostgresStore:
 
             self.flush()
 
+    def delete(self, identifiers):
+        """Remove amostras descartadas do índice opcional e do lote pendente."""
+        identifiers = set(identifiers)
+        if not identifiers:
+            return
+        self.buffer = [record for record in self.buffer if record["id"] not in identifiers]
+        if self.connection is None:
+            return
+        with self.connection.cursor() as cursor:
+            cursor.execute(
+                f"DELETE FROM {self.schema}.dataset_sample WHERE id = ANY(%s)",
+                (list(identifiers),),
+            )
+        self.connection.commit()
+
     def flush(self):
 
         if not self.buffer:

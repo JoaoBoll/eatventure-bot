@@ -124,6 +124,26 @@ def template_catalog(root, state_root, store):
     }
 
 
+def training_catalog(root):
+    """Quantidade de modelos treinados com sucesso, agrupada por resolução."""
+    counts = {}
+    reports = Path(root) / "IA" / "training_reports"
+    if not reports.is_dir():
+        return counts
+    for path in reports.glob("*.json"):
+        try:
+            if path.stat().st_size > 2_000_000:
+                continue
+            report = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, UnicodeError):
+            continue
+        if report.get("status") != "success":
+            continue
+        resolution = str(report.get("parameters", {}).get("resolution") or "all")
+        counts[resolution] = counts.get(resolution, 0) + 1
+    return counts
+
+
 def create_app(root=None, state_root=None, token=None, supervisor=None, require_token=False):
     root = Path(root or config.PROJECT_ROOT).resolve()
     state_root = Path(state_root or root / "local").resolve()
@@ -136,6 +156,7 @@ def create_app(root=None, state_root=None, token=None, supervisor=None, require_
         raise ValueError("O token deve ter entre 24 e 512 caracteres.")
     catalog_lock = threading.Lock()
     catalog_cache = {"at": 0.0, "value": None}
+    training_cache = {"at": 0.0, "value": None}
 
     def catalog():
         with catalog_lock:
@@ -144,6 +165,12 @@ def create_app(root=None, state_root=None, token=None, supervisor=None, require_
                     at=time.monotonic(), value=template_catalog(root, state_root, store),
                 )
             return catalog_cache["value"]
+
+    def training():
+        with catalog_lock:
+            if time.monotonic() - training_cache["at"] > 10 or training_cache["value"] is None:
+                training_cache.update(at=time.monotonic(), value=training_catalog(root))
+            return training_cache["value"]
 
     @asynccontextmanager
     async def lifespan(app):
@@ -243,6 +270,7 @@ def create_app(root=None, state_root=None, token=None, supervisor=None, require_
             "devices": supervisor.list_devices(refresh=refresh),
             "schema": settings_schema(vars(config)),
             "templates": catalog(),
+            "training": training(),
             "server": {"name": "EatVenture Control", "profiles": "local/devices", "requires_restart": True},
             "error": getattr(supervisor.devices, "last_error", None),
         }
@@ -277,16 +305,28 @@ def create_app(root=None, state_root=None, token=None, supervisor=None, require_
         data = await body(request)
         if type(data.get("enabled")) is not bool:
             raise ValueError("Informe enabled como verdadeiro ou falso.")
-        return await run_in_threadpool(supervisor.request_vision, device_id, data["enabled"])
+        mode = data.get("mode", "vision")
+        if mode not in ("vision", "template"):
+            raise ValueError("Modo de prévia inválido.")
+        return await run_in_threadpool(supervisor.request_vision, device_id, data["enabled"], mode)
 
     @app.get("/api/devices/{device_id}/vision")
-    def vision_frame(device_id: str):
-        path = supervisor.vision_frame(device_id)
+    def vision_frame(device_id: str, mode: str = "vision"):
+        path = supervisor.vision_frame(device_id, mode)
         try:
             content = path.read_bytes()
         except OSError as error:
             raise RuntimeError("Aguardando frame da visão IA.") from error
         return Response(content, media_type="image/jpeg")
+
+    @app.post("/api/devices/{device_id}/templates")
+    async def save_template(device_id: str, request: Request):
+        from starlette.concurrency import run_in_threadpool
+        data = await body(request)
+        return await run_in_threadpool(
+            supervisor.save_template, device_id, data.get("category"), data.get("x"),
+            data.get("y"), data.get("width"), data.get("height"), data.get("name"),
+        )
 
     @app.get("/api/devices/{device_id}/vision/stream")
     async def vision_stream(device_id: str, request: Request):

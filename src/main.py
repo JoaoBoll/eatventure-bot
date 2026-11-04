@@ -81,12 +81,13 @@ import cv2
 from actions.manager import ActionManager
 from capture.screen import ScreenCapture
 from core import devices
+from core.app_guard import EatventureGuard
 from core.battery import BatteryMonitor
 from core.state_machine import StateMachine
 from core.status import StatusPanel, formata_bateria
 from dataset.recorder import DatasetRecorder
 from vision.detector import Detector
-from vision.worker import VisionWorker
+from vision.worker import EngineWorker, VisionWorker
 
 logger = log.get("main")
 
@@ -217,11 +218,15 @@ def run_loop(
     panel=None,
     auto_trainer=None,
     runtime=None,
+    app_guard=None,
+    recorder=None,
+    engine_worker=None,
 ):
 
     last_version = 0
     pause_started = None
     resume_floor = 0.0
+    current_resolution = None
 
     # Evita repetir o aviso de visão caída a cada quadro.
     vision_avisada = False
@@ -230,6 +235,9 @@ def run_loop(
         if panel is not None or runtime is not None:
             resumo = state_machine.summary()
             resumo["templates"] = detector.template_count()
+            resumo["dados_coletados"] = recorder.saved if recorder is not None else 0
+            if current_resolution is not None:
+                resumo["resolution"] = current_resolution
             if pause_started is not None:
                 resumo["estado"] = "PAUSADO PARA TREINO"
             if runtime is not None:
@@ -295,10 +303,12 @@ def run_loop(
         # nesse espaço, e é isso que faz a conversão frame->device ser
         # exata em qualquer resolução de device (não só 1080x2400).
         altura_frame, largura_frame = frame.shape[:2]
+        current_resolution = f"{largura_frame}x{altura_frame}"
 
         actions.set_frame_size(largura_frame, altura_frame)
 
         detections, lag, detect_frame, detect_time = [], 0.0, None, 0.0
+        guard_blocking = False
         if not paused:
             if VISION_FILTER_BY_STATE:
                 vision.set_categories(state_machine.wanted_categories())
@@ -308,10 +318,31 @@ def run_loop(
                 floor = max(floor, resume_floor)
             vision.set_frame_floor(floor)
             vision.set_frame(frame, timestamp)
+            if engine_worker is not None:
+                engine_worker.set_frame(frame)
 
             detections, lag, detect_frame, detect_time = (
                 read_detections(vision)
             )
+            if app_guard is not None and engine_worker is not None and state_machine.state == StateMachine.NORMAL:
+                pending_scan = app_guard.pending_scan()
+                if pending_scan is not None:
+                    result = engine_worker.result(pending_scan)
+                    if result is not None:
+                        if app_guard.resolve_scan(result):
+                            state_machine.confirm_game_visible()
+                        guard_blocking = app_guard.startup_validation
+                    else:
+                        guard_blocking = app_guard.startup_validation
+                elif app_guard.needs_startup_scan():
+                    app_guard.request_scan(engine_worker.request_scan())
+                    guard_blocking = True
+                elif app_guard.needs_scan(state_machine.last_meaningful_action_time):
+                    if recorder is not None:
+                        recorder.discard_since(state_machine.last_meaningful_action_wall)
+                    app_guard.request_scan(engine_worker.request_scan())
+            elif app_guard is not None:
+                app_guard.cancel_scan()
 
             if detect_frame is not None and (
                 detect_frame.shape[:2] != frame.shape[:2]
@@ -332,7 +363,7 @@ def run_loop(
 
             vision_avisada = True
 
-        if not paused and detect_frame is not None and detect_time > 0:
+        if not paused and not guard_blocking and detect_frame is not None and detect_time > 0:
             state_machine.update(
                 detections,
                 lag,
@@ -368,7 +399,10 @@ def run_loop(
 
         if web_vision:
             runtime.preview.submit(
-                frame, partial(render_ai_frame, detector=detector, detections=detections, stats=stats),
+                frame,
+                None if runtime.preview.mode() == "template" else partial(
+                    render_ai_frame, detector=detector, detections=detections, stats=stats,
+                ),
             )
 
         if SHOW_AI_VISION:
@@ -425,6 +459,16 @@ def main(argv=None, runtime=None):
     vision = VisionWorker(detector)
 
     actions = ActionManager(device_id)
+    app_guard = EatventureGuard(actions.android)
+    engine_detector = None
+    engine_worker = None
+    if app_guard.enabled:
+        app_guard.lock_portrait()
+        engine_detector = Detector(
+            use_defaults=not args.layout_only,
+            learn_resolution_templates=False,
+        )
+        engine_worker = EngineWorker(engine_detector)
 
     recorder = build_recorder(ai_collect=True if args.ai_collect else None)
 
@@ -457,6 +501,9 @@ def main(argv=None, runtime=None):
 
         vision.start()
 
+        if engine_worker is not None:
+            engine_worker.start()
+
         actions.start()
 
         battery.start()
@@ -479,6 +526,9 @@ def main(argv=None, runtime=None):
             panel,
             auto_trainer=recorder.auto_trainer if recorder else None,
             runtime=runtime,
+            app_guard=app_guard,
+            recorder=recorder,
+            engine_worker=engine_worker,
         )
 
     except KeyboardInterrupt:
@@ -507,7 +557,13 @@ def main(argv=None, runtime=None):
 
         vision.stop()
 
+        if engine_worker is not None:
+            engine_worker.stop()
+
         detector.stop()
+
+        if engine_detector is not None:
+            engine_detector.stop()
 
         actions.stop()
 

@@ -141,6 +141,8 @@ class StateMachine:
         self.state_entered = time.monotonic()
 
         self.last_action_time = 0.0
+        self.last_meaningful_action_time = 0.0
+        self.last_meaningful_action_wall = None
         self.action_cooldown = ACTION_COOLDOWN
         self.action_settle = ACTION_SETTLE
 
@@ -292,6 +294,11 @@ class StateMachine:
         self._frame = None
         self._frame_time = None
         self._detections = []
+
+    def confirm_game_visible(self):
+        """Renova a inatividade sem registrar uma ação ou amostra de treino."""
+        self.last_meaningful_action_time = time.monotonic()
+        self.last_meaningful_action_wall = time.time()
 
     def update(
         self,
@@ -483,6 +490,10 @@ class StateMachine:
             self.detector.learn_action(self._frame, detection)
 
         self._record(action, detection)
+
+        if not self._last_was_swipe:
+            self.last_meaningful_action_time = self.last_action_time
+            self.last_meaningful_action_wall = time.time()
 
         if next_state is not None and next_state != self.state:
 

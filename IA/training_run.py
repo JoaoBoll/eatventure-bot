@@ -172,6 +172,7 @@ class TrainingRun:
             "training": self.data.get("final_fit", {}),
             "validation": {
                 "accuracy": evaluation.get("accuracy"),
+                "macro_f1": evaluation.get("macro_f1"),
                 "frames": validation.get("frames", 0),
                 "rows": validation.get("rows", 0),
                 "class_metrics": evaluation.get("class_metrics", {}),
@@ -185,6 +186,7 @@ class TrainingRun:
                 if key in artifacts
             },
             "model_activated": self.data.get("model_activated", False),
+            "promotion": self.data.get("promotion", {}),
             "cleanup": self.data.get("cleanup", {}),
         }
 

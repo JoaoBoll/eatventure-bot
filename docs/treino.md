@@ -38,10 +38,10 @@ execução nova só processa o que é novo e grava um chunk a mais, sem reescrev
 os anteriores. Com o cache formado, **a imagem original não é mais necessária
 para treinar**.
 
-O cache é invalidado sozinho quando o que ele guarda deixa de ser comparável:
-mudar `IA/features.py` (tamanho do patch, margem, bins do HSV) ou o número de
-`--negatives` gera uma assinatura nova e os chunks daquela resolução são
-descartados e refeitos.
+O cache tem uma assinatura. Mudar `IA/features.py` (tamanho do patch, margem,
+bins do HSV), o número de `--negatives` ou a origem dos rótulos torna os chunks
+incompatíveis. Eles **não são apagados automaticamente**: o treino para e pede
+outro `--cache-root`, para não perder a memória já coletada por engano.
 
 ## Comandos
 
@@ -61,9 +61,10 @@ daquela resolução. No painel web, o treinador verifica o dataset ao iniciar
 qualquer bot com treino automático habilitado, inclusive para processar lotes
 acumulados em execuções anteriores. O modelo e o ponteiro ficam em
 `IA/models/<RESOLUÇÃO>/` e são versionáveis no Git. Durante o treino no painel,
-os bots em execução são encerrados e iniciados novamente, inclusive quando o
-treino falha. O ajuste da floresta usa todos os núcleos disponíveis (até 64);
-a extração das features das imagens continua sequencial.
+somente bots que coletam a mesma resolução são pausados e reiniciados. O
+snapshot e a limpeza preservam registros e imagens gravados depois do início do
+treino. O ajuste da floresta usa todos os núcleos disponíveis (até 64); a
+extração das features das imagens continua sequencial.
 
 No terminal, o bot permanece aberto, mas pausa ações e coleta por padrão
 durante o treino. Defina `AI_PAUSE_BOT_WHILE_TRAINING = False` para continuar
@@ -87,11 +88,11 @@ resoluções.
 
 Cada execução gera um resumo JSON em `IA/training_reports/`, com imagens usadas,
 categorias/classes e contagens, dados reaproveitados, extração, duração e métricas
-de validação por classe. Não lista IDs nem gera tabelas extensas no terminal.
-Os metadados do modelo guardam apenas o necessário para carregá-lo e consultar
-seu resumo de treino.
+de validação por classe. O modelo novo é sempre salvo como candidato; o ponteiro
+ativo só é atualizado se atingir macro F1 e recall mínimos nas categorias críticas
+presentes no holdout. Não lista IDs nem gera tabelas extensas no terminal.
 
-Após salvar o modelo e o relatório, remove os registros e imagens
+Após publicar e promover o candidato, remove os registros e imagens
 aproveitados. O cache acumulado permanece. Use `--keep-data` para preservar
 os dados brutos no treino manual. Dados novos e não aproveitados permanecem.
 
@@ -102,9 +103,10 @@ os dados brutos no treino manual. Dados novos e não aproveitados permanecem.
 | `--resolution LARGURAxALTURA` | todas | limita o treino à resolução indicada; `legacy` seleciona amostras sem resolução identificável |
 | `--model-out ARQUIVO` | `IA/models/<RESOLUÇÃO>/category.joblib` | referência do modelo da resolução selecionada |
 | `--combine-resolutions` | desligado | opta por treinar todas as resoluções juntas |
-| `--split phash\|session` | `phash` | agrupamento do split. `phash`: quadros visualmente iguais ficam do mesmo lado. `session`: partida inteira de um lado só |
+| `--split phash\|session` | `session` | agrupamento do split. `session`: partida inteira de um lado só; sem sessão, usa `phash`. `phash`: somente quadros idênticos ficam do mesmo lado |
 | `--test-ratio FRACAO` | `0.2` | fração de **grupos** para teste |
 | `--negatives N` | `2` | recortes de fundo por frame. Muda a assinatura do cache |
+| `--label-source confirmed\|all` | `all` | `all` usa todas as caixas do matcher; `confirmed` usa só o alvo acionado com resultado `changed` |
 | `--cache-root PASTA` | `<dataset>/cache` | onde fica o cache de features |
 | `--no-cache` | desligado | extrai tudo do zero, sem ler nem gravar cache e sem limpar os dados brutos |
 | `--keep-data` | desligado | preserva registros e imagens após o treino manual |
@@ -113,11 +115,21 @@ os dados brutos no treino manual. Dados novos e não aproveitados permanecem.
 | `--jobs N` | `-1` | processos no fit (`-1` = todos) |
 | `--limit N` | todas | corta o número de amostras |
 | `--seed N` | `42` | semente do split e do modelo |
+| `--min-macro-f1 F` | `0.55` | macro F1 mínimo para ativar o candidato |
+| `--min-critical-recall F` | `0.40` | recall mínimo de `renovate` e `fly`, quando aparecem no holdout |
+| `--allow-unsafe-promotion` | desligado | ativa o candidato sem atingir os critérios; use apenas para diagnóstico |
 
 Na coleta analisada, 56% das amostras repetiam `phash`. O split é
 **por grupo, não por amostra**:
 dividir por amostra deixa o mesmo quadro nos dois lados — a acurácia sai
 inflada por decorar em vez de generalizar.
+
+O modelo de visão precisa reconhecer todas as boxes visíveis, não apenas a que
+foi pressionada. Por isso o padrão usa todas as caixas fornecidas pelo matcher;
+o campo `acted`, o estado e o resultado da ação permanecem no dataset para o
+futuro modelo de prioridade. O fundo é amostrado em regiões sem caixas. Use
+`--label-source confirmed` para um experimento mais conservador, que aceita só
+o alvo de ações com resultado `changed`.
 
 ### Rodar o bot com o modelo
 
@@ -149,10 +161,10 @@ Grava `IA/simulation_report.json`. Aceita `--dataset-root`, `--limit`,
 
 ## Liberar espaço
 
-Com o cache formado, as imagens de uma resolução já processada podem sair —
-o treino segue funcionando pelo cache. O que **não** pode ser apagado é
-`dataset/cache/`, que passa a ser o dataset de verdade, nem os
-`samples.jsonl`, que são a fonte dos rótulos.
+Após uma promoção bem-sucedida, a limpeza remove somente registros e imagens do
+snapshot que efetivamente entraram no treino. Linhas ou imagens adicionadas
+depois do snapshot permanecem. Mantenha `dataset/cache/` enquanto quiser poder
+reavaliar ou substituir um modelo sem recolher os dados históricos.
 
 ## O que o modelo decide
 

@@ -15,7 +15,12 @@ import numpy as np
 
 from core import log
 from dataset import layout
-from dataset.training_files import index_lock, raw_dataset_bytes
+from dataset.training_files import (
+    cleanup_records,
+    index_lock,
+    raw_dataset_bytes,
+    snapshot_records,
+)
 from core.config import (
     AI_AUTO_TRAIN,
     AI_PAUSE_BOT_WHILE_TRAINING,
@@ -92,6 +97,7 @@ class DatasetRecorder:
         self._store_closed = False
 
         self.session = session or uuid.uuid4().hex
+        self.created_at = time.time()
 
         self.enabled = enabled
         self.auto_trainer = None
@@ -140,6 +146,8 @@ class DatasetRecorder:
         self.last_disk_check = 0.0
 
         self.disk_warned = False
+        self._discard_ranges = []
+        self.discarded = 0
 
     def start(self):
 
@@ -243,6 +251,9 @@ class DatasetRecorder:
 
         if not self.running:
             return
+
+        if action_kind not in ("scroll", "swipe"):
+            self._resume_collection(time.time())
 
         if action not in DATASET_ACTIONS:
             return
@@ -442,6 +453,66 @@ class DatasetRecorder:
                     self.dropped,
                 )
 
+    def discard_since(self, timestamp=None):
+        """Descarta o intervalo sem ação útil, inclusive fila e arquivos já gravados."""
+        cutoff = self.created_at if timestamp is None else float(timestamp)
+        with self.lock:
+            if not self._discard_ranges or self._discard_ranges[-1][1] is not None:
+                self._discard_ranges.append([cutoff, None])
+            if (
+                self.pending is not None
+                and self.pending.created.timestamp() > cutoff
+            ):
+                self.pending = None
+
+        try:
+            records, _ = snapshot_records(self.root)
+        except OSError as error:
+            logger.warning("Não foi possível revisar o intervalo inválido: %s", error)
+            return 0
+        discarded = [
+            record for record in records
+            if self._record_timestamp(record) > cutoff
+        ]
+        if not discarded:
+            return 0
+        ids = {record["id"] for record in discarded if record.get("id")}
+        result = cleanup_records(self.root, discarded, ids)
+        removed = result.get("records_removed", 0)
+        self.discarded += removed
+        self.saved = max(0, self.saved - removed)
+        self.disk_bytes = max(0, self.disk_bytes - result.get("bytes_freed", 0))
+        if self.store and ids:
+            try:
+                self.store.delete(ids)
+            except Exception as error:
+                logger.warning("Falha removendo o intervalo inválido do banco: %s", error)
+        logger.warning(
+            "Dataset: descartadas %d amostras sem ação relevante (%d imagens).",
+            removed, result.get("images_removed", 0),
+        )
+        return removed
+
+    @staticmethod
+    def _record_timestamp(record):
+        try:
+            return datetime.fromisoformat(record["created_at"]).timestamp()
+        except (KeyError, TypeError, ValueError):
+            return 0.0
+
+    def _discarded(self, sample):
+        with self.lock:
+            created_at = sample.created.timestamp()
+            return any(
+                created_at > start and (end is None or created_at < end)
+                for start, end in self._discard_ranges
+            )
+
+    def _resume_collection(self, timestamp):
+        with self.lock:
+            if self._discard_ranges and self._discard_ranges[-1][1] is None:
+                self._discard_ranges[-1][1] = timestamp
+
     def _run(self):
 
         try:
@@ -489,6 +560,9 @@ class DatasetRecorder:
         frame = sample.frame
 
         if frame is None:
+            return
+
+        if self._discarded(sample):
             return
 
         # A coleta pode enfileirar várias amostras antes de saved avançar.
@@ -584,6 +658,9 @@ class DatasetRecorder:
         registro = self._record(sample, caminho, chave, shard)
 
         with index_lock(self.root):
+            if self._discarded(sample):
+                caminho.unlink(missing_ok=True)
+                return
             with layout.index_path(shard).open(
                 "a", encoding="utf-8",
             ) as arquivo:

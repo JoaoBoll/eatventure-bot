@@ -30,6 +30,7 @@ from core.config import (
     ESCALA_UNICA_POR_TEMPLATE,
     LEARN_RESOLUTION_TEMPLATES,
     TEMPLATE_REFRESH_INTERVAL,
+    TEMPLATE_PERSIST_INTERVAL,
     MAX_DETECTION_AGE,
     TEMPLATES_WATCH_INTERVAL,
     MAX_MATCHES_PER_TEMPLATE,
@@ -186,6 +187,8 @@ class Detector:
         # Fidelidade do último recorte aprovado, sem exigir melhora histórica.
         self._fidelity = {}
         self._learned_sequence = {}
+        self._last_template_persist = {}
+        self._dirty_templates = {}
         self._defaults_generation = 0
         self._learn_writing = False
 
@@ -261,6 +264,9 @@ class Detector:
 
         if not stopped:
             logger.warning("Aprendizado ainda encerrando após %.1fs", timeout)
+
+        if stopped:
+            self._flush_dirty_templates()
 
         return stopped
 
@@ -1386,9 +1392,50 @@ class Detector:
             with self._learn_lock:
                 self._learn_writing = False
 
-    def _write_learn_candidate(self, categoria, nome, chave, crop, confidence, sequence):
+    def _write_learn_candidate(
+        self, categoria, nome, chave, crop, confidence, sequence, force=False,
+    ):
         fidelity_id = (chave, categoria, nome)
         frame_width, frame_height = chave
+        novo = self._build_template(
+            categoria,
+            nome,
+            crop,
+            None,
+            "override",
+        )
+        now = time.monotonic()
+
+        # A detecção passa a usar o recorte novo imediatamente. Persistir é
+        # apenas um checkpoint: não deve ficar escrevendo o SSD a cada frame.
+        with self._learn_lock:
+            self._fidelity[fidelity_id] = confidence
+            if sequence is not None:
+                self._learned_sequence[fidelity_id] = sequence
+
+            lista = self._resolution_templates.setdefault(
+                chave, {}
+            ).setdefault(categoria, [])
+            lista[:] = [
+                template for template in lista
+                if self._base_name(template["name"]) != nome
+            ]
+            lista.append(novo)
+            self._scaled_cache.pop(chave, None)
+            self._ordem_cache.clear()
+            self._overrides_versao += 1
+            self._dirty_templates[fidelity_id] = (
+                categoria, nome, chave, crop, confidence, sequence,
+            )
+            persist = force or (
+                now - self._last_template_persist.get(
+                    fidelity_id,
+                    float("-inf"),
+                ) >= max(0.0, TEMPLATE_PERSIST_INTERVAL)
+            )
+
+        if not persist:
+            return
 
         destino_dir = (
             TEMPLATES_DIR
@@ -1408,14 +1455,6 @@ class Detector:
             )
 
             return
-
-        novo = self._build_template(
-            categoria,
-            nome,
-            crop,
-            None,
-            "override",
-        )
 
         with self._learn_lock:
 
@@ -1449,6 +1488,10 @@ class Detector:
         self._save_fidelity(chave)
         self._reassina_overrides()
 
+        with self._learn_lock:
+            self._last_template_persist[fidelity_id] = now
+            self._dirty_templates.pop(fidelity_id, None)
+
         logger.info(
             "Override %dx%d %s/%s: fidelidade %s -> %.4f",
             frame_width,
@@ -1458,6 +1501,12 @@ class Detector:
             "-" if anterior is None else f"{anterior:.4f}",
             confidence,
         )
+
+    def _flush_dirty_templates(self):
+        with self._learn_lock:
+            pending = list(self._dirty_templates.values())
+        for candidate in pending:
+            self._write_learn_candidate(*candidate, force=True)
 
     def _color_similarity(
         self,
@@ -1804,7 +1853,7 @@ class Detector:
             + frios[:giro]
         )
 
-    def detect(self, frame, categories=None):
+    def detect(self, frame, categories=None, exhaustive=False):
         """Detecções aprovadas, ordenadas por confiança (maior primeiro). `categories` filtra a busca (permite a StateMachine procurar 2 templates em vez de 43)."""
 
         self._maybe_reload_templates()
@@ -1890,7 +1939,7 @@ class Detector:
                 if category in por_categoria:
                     ordem.append(category)
 
-            parar_na_prioridade = VISION_PRIORITY_STOP
+            parar_na_prioridade = VISION_PRIORITY_STOP and not exhaustive
 
         else:
 
@@ -1902,7 +1951,7 @@ class Detector:
         # (cobertura do main_layouts, overlay de diagnóstico): nem teto de
         # detecções nem sonda de escala — as duas existem para poupar
         # trabalho que não viraria ação, e aqui não há ação nenhuma.
-        exaustiva = categories is None
+        exaustiva = categories is None or exhaustive
 
         # Quantos templates a passada de fato olhou: é o
         # número que explica um HUD vazio ("procurou 0").
@@ -2080,6 +2129,9 @@ class Detector:
                             ),
                             "min_threshold": float(
                                 min_threshold
+                            ),
+                            "template_scale": float(
+                                template.get("escala", 1.0)
                             ),
 
                             "x": int(x),

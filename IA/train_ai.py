@@ -110,6 +110,7 @@ def extract_category_rows(
     registros,
     negativos_por_frame,
     tamanhos,
+    label_source="all",
     fase="extraindo features",
 ):
     """(X, y, donos, info) — donos[i] é o id da amostra que gerou a linha i.
@@ -143,7 +144,17 @@ def extract_category_rows(
             progress(indice, total, fase)
             continue
 
-        for caixa, categoria, _agiu in box_labels(registro):
+        caixas = box_labels(registro)
+        if label_source == "confirmed":
+            # A coleta nasce do matcher de templates. Só o alvo que sumiu após
+            # o clique tem um sinal adicional de que aquela caixa era útil;
+            # as demais detecções ainda podem ser falsos positivos do matcher.
+            caixas = [
+                (caixa, categoria, agiu)
+                for caixa, categoria, agiu in caixas
+                if registro.get("outcome") == "changed" and agiu
+            ]
+        for caixa, categoria, _agiu in caixas:
             vetor = box_features(imagem, caixa)
             if vetor is None:
                 vazios += 1
@@ -192,6 +203,7 @@ def category_dataset(
     cache_root,
     usar_cache=True,
     metadata_records=None,
+    label_source="all",
 ):
     """Junta as features novas e a memória, preservando metadados de cada frame."""
 
@@ -209,6 +221,7 @@ def category_dataset(
         PATCH_SIZE,
         PATCH_MARGIN,
         HSV_BINS,
+        label_source,
     )
 
     por_shard = defaultdict(list)
@@ -261,7 +274,8 @@ def category_dataset(
                 novos,
                 negativos_por_frame,
                 tamanhos,
-                f"extraindo {shard} ({len(novos)} novas)",
+                label_source=label_source,
+                fase=f"extraindo {shard} ({len(novos)} novas)",
             )
 
             info["ilegiveis"] += extra["ilegiveis"]
@@ -347,26 +361,45 @@ def build_classifier(trees, seed, jobs):
     )
 
 
-def report(clf, X_teste, y_teste, referencias):
-    from sklearn.metrics import accuracy_score
-
-    from dataset_io import majority_baseline
+def validation_metrics(clf, X_teste, y_teste):
+    from sklearn.metrics import accuracy_score, classification_report, f1_score
 
     previsto = clf.predict(X_teste)
-    acuracia = accuracy_score(y_teste, previsto)
-    base, classe_base = majority_baseline(list(y_teste))
-    linhas = [
-        f"{nome} {valor:.2%}" for nome, valor in referencias.items()
-    ]
-    print(
-        f"Validação: acurácia {acuracia:.2%}; "
-        f"baseline majoritário ({classe_base}) {base:.2%}; "
-        f"referências: {', '.join(linhas)}."
+    metricas = classification_report(
+        y_teste, previsto, output_dict=True, zero_division=0,
     )
-    if acuracia <= base:
-        print("Aviso: o modelo não superou o baseline majoritário.")
+    return {
+        "accuracy": float(accuracy_score(y_teste, previsto)),
+        "macro_f1": float(f1_score(y_teste, previsto, average="macro", zero_division=0)),
+        "class_metrics": metricas,
+    }
 
-    return acuracia
+
+def promotion_decision(metricas, args):
+    if getattr(args, "allow_unsafe_promotion", False):
+        return True, ["promoção forçada pela linha de comando"]
+
+    min_macro_f1 = getattr(args, "min_macro_f1", 0.55)
+    min_critical_recall = getattr(args, "min_critical_recall", 0.40)
+    critical_categories = getattr(args, "critical_categories", ["renovate", "fly"])
+    reasons = []
+    if metricas["macro_f1"] < min_macro_f1:
+        reasons.append(
+            f"macro F1 {metricas['macro_f1']:.2%} abaixo de {min_macro_f1:.2%}"
+        )
+    classes = metricas["class_metrics"]
+    critical_present = [
+        category for category in critical_categories if category in classes
+    ]
+    low_recall = [
+        category for category in critical_present
+        if classes[category].get("recall", 0.0) < min_critical_recall
+    ]
+    if low_recall:
+        reasons.append(
+            "recall insuficiente nas categorias críticas: " + ", ".join(low_recall)
+        )
+    return not reasons, reasons
 
 
 def _train_one_resolution(args):
@@ -467,16 +500,19 @@ def _fit_snapshot(args, raiz, registros, snapshot, aviso, execucao):
     check_dependencies()
 
     import numpy as np
-    from sklearn.metrics import classification_report
-
     from dataset.training_files import cleanup_records
-    from dataset_io import ceiling_state_categories, split_groups, state_baseline
+    from dataset_io import (
+        ceiling_state_categories_on_holdout,
+        split_groups,
+        state_baseline_on_holdout,
+    )
     from training_run import (
         activate_model, compact_record, publish_model,
         record_id, record_key, summarize,
     )
 
     automatico = getattr(args, "automatic", False)
+    label_source = getattr(args, "label_source", "all")
     compativel_limpeza = args.kind == "category" and not args.no_cache
     pedido_limpeza = getattr(args, "cleanup", None)
     if pedido_limpeza is True and not compativel_limpeza:
@@ -513,6 +549,7 @@ def _fit_snapshot(args, raiz, registros, snapshot, aviso, execucao):
         X, y, donos, extra = category_dataset(
             registros, args.negatives, cache_root,
             usar_cache=not args.no_cache, metadata_records=snapshot,
+            label_source=label_source,
         )
         metadados = extra["records"]
         caches = extra["caches"]
@@ -562,28 +599,37 @@ def _fit_snapshot(args, raiz, registros, snapshot, aviso, execucao):
     if len(set(y_treino.tolist())) < 2:
         raise ValueError("O conjunto de treino contém menos de duas categorias.")
 
-    baseline_records = [
-        {**r, "boxes": [{"category": category} for category in r["categories"]]}
-        for r in todos_registros
-    ]
-    referencias = {
-        "só o estado da máquina": state_baseline(baseline_records),
-        "estado + categorias (teto)": ceiling_state_categories(baseline_records),
-    }
     print(f"Avaliação: {len(ids_treino)} frames/{len(X_treino)} recortes no treino, "
           f"{len(ids_teste)} frames/{len(X_teste)} recortes na validação.")
     avaliador = build_classifier(args.trees, args.seed, args.jobs)
     avaliador.fit(X_treino, y_treino)
-    acuracia = report(avaliador, X_teste, y_teste, referencias)
+    metricas = validation_metrics(avaliador, X_teste, y_teste)
+    referencias = {}
+    if args.kind == "action":
+        baseline_train = [
+            {**record, "boxes": [{"category": category} for category in record["categories"]]}
+            for record in treino
+        ]
+        baseline_test = [
+            {**record, "boxes": [{"category": category} for category in record["categories"]]}
+            for record in teste
+        ]
+        referencias = {
+            "só o estado da máquina": state_baseline_on_holdout(baseline_train, baseline_test),
+            "estado + categorias (teto)": ceiling_state_categories_on_holdout(baseline_train, baseline_test),
+        }
+    print(
+        f"Validação: acurácia {metricas['accuracy']:.2%}; "
+        f"macro F1 {metricas['macro_f1']:.2%}."
+    )
     execucao.data["evaluation"] = {
-        "accuracy": float(acuracia),
+        "accuracy": metricas["accuracy"],
+        "macro_f1": metricas["macro_f1"],
         "row_unit": "box_crop" if args.kind == "category" else "full_frame",
         "split": {**divisao, "test_ratio": args.test_ratio},
         "training": {**summarize(treino), "rows": int(len(X_treino))},
         "validation": {**summarize(teste), "rows": int(len(X_teste))},
-        "class_metrics": classification_report(
-            y_teste, avaliador.predict(X_teste), output_dict=True, zero_division=0,
-        ),
+        "class_metrics": metricas["class_metrics"],
         "baselines": {name: float(value) for name, value in referencias.items()},
         "scope": "held_out_groups_before_final_refit",
     }
@@ -617,7 +663,8 @@ def _fit_snapshot(args, raiz, registros, snapshot, aviso, execucao):
         "kind": args.kind,
         "labels": [str(label) for label in modelo.classes_],
         "counts": execucao.data["final_fit"]["classes"],
-        "accuracy": float(acuracia),
+        "accuracy": metricas["accuracy"],
+        "macro_f1": metricas["macro_f1"],
         "accuracy_scope": "validation_before_final_refit",
         "baselines": execucao.data["evaluation"]["baselines"],
         "split": execucao.data["evaluation"]["split"],
@@ -635,12 +682,22 @@ def _fit_snapshot(args, raiz, registros, snapshot, aviso, execucao):
     )
     execucao.data["status"] = "publishing"
     execucao.save()
-    activate_model(execucao)
-    execucao.data["model_activated"] = True
+    promoted, promotion_reasons = promotion_decision(metricas, args)
+    execucao.data["promotion"] = {
+        "accepted": promoted,
+        "min_macro_f1": getattr(args, "min_macro_f1", 0.55),
+        "min_critical_recall": getattr(args, "min_critical_recall", 0.40),
+        "reasons": promotion_reasons,
+    }
+    if promoted:
+        activate_model(execucao)
+    else:
+        print("Modelo salvo como candidato; ponteiro ativo preservado: " + "; ".join(promotion_reasons))
+    execucao.data["model_activated"] = promoted
     execucao.finish("success")
 
     try:
-        if limpar:
+        if limpar and promoted:
             fonte_limpeza = snapshot if not args.outcome and not args.limit else registros
             consumiveis = [r for r in fonte_limpeza if record_key(r) in efetivas]
             consumidos = {record_id(r) for r in consumiveis}
@@ -702,10 +759,10 @@ def parse_args(argv=None):
     parser.add_argument(
         "--split",
         choices=("phash", "session"),
-        default="phash",
+        default="session",
         help=(
-            "agrupamento do split: phash (quadros iguais no mesmo lado) "
-            "ou session (partida inteira num lado)"
+            "agrupamento do split: session (padrão; partida inteira no mesmo lado) "
+            "ou phash (somente quadros idênticos no mesmo lado)"
         ),
     )
 
@@ -781,6 +838,15 @@ def parse_args(argv=None):
         default=2,
         help="recortes de fundo por frame (padrão: 2)",
     )
+    parser.add_argument(
+        "--label-source",
+        choices=("confirmed", "all"),
+        default="all",
+        help=(
+            "all usa todas as caixas do matcher de templates; "
+            "confirmed usa só o alvo acionado com resultado changed"
+        ),
+    )
 
     parser.add_argument(
         "--trees",
@@ -809,10 +875,36 @@ def parse_args(argv=None):
         default=42,
         help="semente (padrão: 42)",
     )
+    parser.add_argument(
+        "--min-macro-f1",
+        type=float,
+        default=0.55,
+        help="macro F1 mínimo para ativar a versão publicada (padrão: 0.55)",
+    )
+    parser.add_argument(
+        "--min-critical-recall",
+        type=float,
+        default=0.40,
+        help="recall mínimo das classes críticas presentes no holdout (padrão: 0.40)",
+    )
+    parser.add_argument(
+        "--critical-categories",
+        nargs="*",
+        default=["renovate", "fly"],
+        metavar="CATEGORIA",
+        help="classes cujo recall bloqueia promoção quando aparecem na validação",
+    )
+    parser.add_argument(
+        "--allow-unsafe-promotion",
+        action="store_true",
+        help="ativa o candidato mesmo sem atingir os critérios de validação",
+    )
 
     args = parser.parse_args(argv)
     if args.resolution is not None and args.combine_resolutions:
         parser.error("--resolution e --combine-resolutions são incompatíveis.")
+    if not 0 <= args.min_macro_f1 <= 1 or not 0 <= args.min_critical_recall <= 1:
+        parser.error("Os mínimos de promoção devem ficar entre 0 e 1.")
     return args
 
 

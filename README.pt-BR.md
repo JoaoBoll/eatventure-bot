@@ -123,7 +123,7 @@ Executa o bot usando somente os templates já aprendidos para a resolução atua
 python src/main.py --ai-collect
 ```
 
-Executa o bot por templates e coleta imagens e registros em `dataset/data/<resolução>/`. A cada 10 mil registros novos, somando as resoluções, treina a IA e salva um relatório JSON por execução. Durante o treino, mantém os processos e janelas abertos, pausa as ações e a coleta e retoma automaticamente ao terminar ou falhar. Após o sucesso, remove os registros e imagens aproveitados, preservando o cache de treinamento. Veja os [comandos da IA](IA/README.md) para treinar manualmente e usar o modelo atualizado.
+Executa o bot por templates e coleta imagens e registros em `dataset/data/<resolução>/`. A cada 10 mil registros novos de uma mesma resolução, treina a IA e salva um relatório JSON por execução. Durante o treino no terminal, pausa ações e coleta e retoma automaticamente ao terminar ou falhar. Após a promoção do candidato, remove somente os registros e imagens aproveitados no snapshot, preservando o cache de treinamento. Veja os [comandos da IA](IA/README.md) para treinar manualmente e usar o modelo atualizado.
 
 Para continuar jogando e coletando durante o treino automático, defina `AI_PAUSE_BOT_WHILE_TRAINING = False` em [src/core/config.py](src/core/config.py).
 
