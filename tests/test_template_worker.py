@@ -63,9 +63,7 @@ class TemplateWorkerTests(unittest.TestCase):
         self.assertFalse(self.detector._refresh_pending)
         self.assertTrue(self.detector._learn_queue.empty())
 
-    def test_action_only_learning_still_refreshes_already_covered_templates(self):
-        self.detector.learn_only_actions = True
-
+    def test_learning_schedules_template_generation(self):
         sequence = self.detector._queue_refresh_frame(self.frame)
 
         self.assertIsInstance(sequence, int)
@@ -74,7 +72,7 @@ class TemplateWorkerTests(unittest.TestCase):
         self.assertTrue(self.detector._refresh_pending)
         self.assertEqual(self.detector._learn_queue.qsize(), 1)
 
-    def test_uncovered_resolution_still_orders_foreground_generations(self):
+    def test_uncovered_resolution_schedules_template_generation(self):
         self.detector._resolution_templates = {(16, 16): {"box": [{}]}}
 
         first_sequence = self.detector._queue_refresh_frame(self.frame)
@@ -82,9 +80,9 @@ class TemplateWorkerTests(unittest.TestCase):
 
         self.assertIsInstance(first_sequence, int)
         self.assertGreater(next_sequence, first_sequence)
-        self.assertIsNone(self.detector._refresh_frame)
-        self.assertFalse(self.detector._refresh_pending)
-        self.assertTrue(self.detector._learn_queue.empty())
+        self.assertEqual(self.detector._refresh_frame[1], next_sequence)
+        self.assertTrue(self.detector._refresh_pending)
+        self.assertEqual(self.detector._learn_queue.qsize(), 1)
 
     def test_refresh_interval_limits_scans_without_losing_generation_order(self):
         self.detector._refresh_started_at = 10.0
@@ -246,7 +244,7 @@ class TemplateWorkerTests(unittest.TestCase):
         self.assertEqual(self.detector._fidelity[(self.key, "box", "item_001.png")], 0.95)
         self.assertEqual(self.detector._learn_queue.unfinished_tasks, 0)
 
-    def test_real_background_scanner_updates_covered_template_from_synthetic_frame(self):
+    def test_real_background_scanner_generates_uncovered_template_from_synthetic_frame(self):
         image = np.random.default_rng(42).integers(
             0, 256, (12, 10, 3), dtype=np.uint8
         )
@@ -278,10 +276,7 @@ class TemplateWorkerTests(unittest.TestCase):
                     "box", "108x240_item_001.png", image, None, "default"
                 )
             ]
-            previous = self.detector._build_template(
-                "box", "item_001.png", np.zeros_like(image), None, "override"
-            )
-            self.detector._resolution_templates = {key: {"box": [previous]}}
+            self.detector._resolution_templates = {}
 
             with (
                 patch.object(Path, "mkdir"),
@@ -295,7 +290,6 @@ class TemplateWorkerTests(unittest.TestCase):
         self.assertIsNotNone(self.detector._refresh_scanner)
         write.assert_called_once()
         current = self.detector._resolution_templates[key]["box"][0]
-        self.assertIsNot(current, previous)
         self.assertEqual(current["origin"], "override")
         np.testing.assert_array_equal(current["image"], image)
         self.assertGreaterEqual(self.detector._fidelity[(key, "box", "item_001.png")], 0.995)

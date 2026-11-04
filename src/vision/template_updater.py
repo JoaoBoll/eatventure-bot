@@ -1,4 +1,4 @@
-"""Busca isolada dos defaults que já possuem override na resolução atual."""
+"""Gera e atualiza templates por resolução a partir dos defaults."""
 
 from vision.detector import Detector
 
@@ -15,7 +15,6 @@ class DefaultTemplateScanner(Detector):
             category_rois=dict(parent.category_rois),
             coarse_scale=parent.coarse_scale,
             coarse_margin=parent.coarse_margin,
-            use_defaults=True,
             learn_resolution_templates=False,
         )
         self._prefer_active_scale = True
@@ -46,28 +45,7 @@ class DefaultTemplateScanner(Detector):
             self.load_templates()
 
     def _templates_for(self, frame_width, frame_height):
-        with self._parent._learn_lock:
-            overrides = self._parent._resolution_templates.get(
-                (frame_width, frame_height), {}
-            )
-            covered = {
-                (category, self._base_name(template["name"]))
-                for category, templates in overrides.items()
-                for template in templates
-            }
-
-        if not covered:
-            key = (frame_width, frame_height)
-            self._defaults_cache.pop(key, None)
-            self._default_variants_cache.pop(key, None)
-            self._defaults_selection.pop(key, None)
-            return {}
-
-        selected = [
-            template for template in self.templates
-            if (template["category"], self._base_name(template["name"])) in covered
-        ]
-        return self._defaults_for(frame_width, frame_height, selected)
+        return self._defaults_for(frame_width, frame_height)
 
     def detect(self, frame):
         return super().detect(frame, categories=None)

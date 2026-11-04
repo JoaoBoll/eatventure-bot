@@ -58,7 +58,7 @@ class DefaultTemplateScannerTests(unittest.TestCase):
             category, []
         ).append(self.template(category, name, "override"))
 
-    def test_only_covered_defaults_are_selected_for_current_resolution(self):
+    def test_all_defaults_are_selected_for_any_resolution(self):
         self.parent.templates = [
             self.template(name="108x240_item_001.png"),
             self.template(name="item_002.png"),
@@ -68,23 +68,30 @@ class DefaultTemplateScannerTests(unittest.TestCase):
         scanner = DefaultTemplateScanner(self.parent)
 
         selected = scanner._templates_for(108, 240)
-        self.assertEqual(list(selected), ["box"])
-        self.assertEqual([item["name"] for item in selected["box"]], ["108x240_item_001.png"])
-        self.assertTrue(all(item["origin"] == "default" for item in selected["box"]))
-        self.assertEqual(scanner._templates_for(72, 160), {})
-        self.assertNotIn((72, 160), scanner._defaults_cache)
+        self.assertEqual(set(selected), {"box", "food"})
+        self.assertEqual(
+            {item["name"] for item in selected["box"]},
+            {"108x240_item_001.png", "item_002.png"},
+        )
+        self.assertTrue(
+            all(
+                item["origin"] == "default"
+                for items in selected.values()
+                for item in items
+            )
+        )
+        self.assertEqual(set(scanner._templates_for(72, 160)), {"box", "food"})
+        self.assertIn((72, 160), scanner._defaults_cache)
 
-    def test_new_or_removed_override_changes_selection_without_default_reload(self):
+    def test_override_changes_do_not_change_default_selection(self):
         self.parent.templates = [self.template()]
         scanner = DefaultTemplateScanner(self.parent)
-        self.assertEqual(scanner._templates_for(108, 240), {})
+        selected = scanner._templates_for(108, 240)
+        self.assertEqual(len(selected["box"]), 1)
         self.cover()
-        self.assertEqual(len(scanner._templates_for(108, 240)["box"]), 1)
+        self.assertIs(scanner._templates_for(108, 240), selected)
         self.parent._resolution_templates.clear()
-        self.assertEqual(scanner._templates_for(108, 240), {})
-        self.assertNotIn((108, 240), scanner._defaults_cache)
-        self.assertNotIn((108, 240), scanner._default_variants_cache)
-        self.assertNotIn((108, 240), scanner._defaults_selection)
+        self.assertIs(scanner._templates_for(108, 240), selected)
 
     def test_default_generation_refreshes_snapshot_and_private_caches(self):
         self.parent.templates = [self.template()]

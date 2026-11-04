@@ -97,7 +97,7 @@ class TemplateEfficiencyTests(unittest.TestCase):
         self.assertIs(cached, selected)
         self.assertEqual((box["width"], box["height"]), (10, 12))
 
-    def test_partial_foreground_builds_only_uncovered_category_and_name(self):
+    def test_partial_foreground_uses_only_generated_templates(self):
         self.detector.templates = [
             self.template("72x160_item_001.png"),
             self.template("108x240_item_001.png"),
@@ -111,15 +111,12 @@ class TemplateEfficiencyTests(unittest.TestCase):
         ) as rescale:
             selected = self.detector._templates_for(*self.key)
 
-        self.assertEqual(
-            self.rescaled_keys(rescale.call_args_list),
-            {("box", "item_002.png"), ("food", "item_001.png")},
-        )
+        rescale.assert_not_called()
+        self.assertEqual(set(selected), {"box"})
+        self.assertEqual(len(selected["box"]), 1)
         self.assertIs(selected["box"][0], override)
-        self.assertTrue(any(item["origin"] == "default" for item in selected["box"]))
-        self.assertTrue(all(item["origin"] == "default" for item in selected["food"]))
 
-    def test_background_builds_only_covered_defaults_and_reuses_existing_variants(self):
+    def test_background_builds_all_defaults_and_reuses_existing_variants(self):
         self.detector.templates = [
             self.template("72x160_item_001.png"),
             self.template("108x240_item_001.png"),
@@ -135,10 +132,21 @@ class TemplateEfficiencyTests(unittest.TestCase):
         ) as rescale:
             selected = scanner._templates_for(*self.key)
             self.assertEqual(
-                self.rescaled_keys(rescale.call_args_list), {("box", "item_001.png")}
+                self.rescaled_keys(rescale.call_args_list),
+                {
+                    ("box", "item_001.png"),
+                    ("box", "item_002.png"),
+                    ("food", "item_001.png"),
+                },
             )
-            self.assertEqual(set(selected), {"box"})
-            self.assertTrue(all(item["origin"] == "default" for item in selected["box"]))
+            self.assertEqual(set(selected), {"box", "food"})
+            self.assertTrue(
+                all(
+                    item["origin"] == "default"
+                    for items in selected.values()
+                    for item in items
+                )
+            )
             rescale.reset_mock()
 
             scanner._templates_for(*self.key)
@@ -147,9 +155,7 @@ class TemplateEfficiencyTests(unittest.TestCase):
             self.cover("item_002.png")
             selected = scanner._templates_for(*self.key)
 
-        self.assertEqual(
-            self.rescaled_keys(rescale.call_args_list), {("box", "item_002.png")}
-        )
+        rescale.assert_not_called()
         self.assertEqual(
             {scanner._base_name(item["name"]) for item in selected["box"]},
             {"item_001.png", "item_002.png"},

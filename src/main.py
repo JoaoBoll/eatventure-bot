@@ -62,12 +62,7 @@ def parse_args(argv=None):
     parser.add_argument(
         "--layout-only",
         action="store_true",
-        help=(
-            "detect() busca só os overrides da resolução, sem os "
-            "templates default (mais rápido, mas cego onde ainda não há "
-            "override). Os existentes continuam sendo atualizados "
-            "em segundo plano quando o aprendizado está ativo."
-        ),
+        help=argparse.SUPPRESS,
     )
 
     return parser.parse_args(argv)
@@ -458,11 +453,8 @@ def main(argv=None, runtime=None):
 
     capture = ScreenCapture(device_id)
 
-    detector = Detector(
-        use_defaults=not args.layout_only,
-        # O aprendizado por resolução independe da coleta do dataset.
-        learn_only_actions=False,
-    )
+    # O aprendizado por resolução independe da coleta do dataset.
+    detector = Detector()
 
     vision = VisionWorker(detector)
 
@@ -473,7 +465,6 @@ def main(argv=None, runtime=None):
     if app_guard.enabled:
         app_guard.lock_portrait()
         engine_detector = Detector(
-            use_defaults=not args.layout_only,
             learn_resolution_templates=False,
         )
         engine_worker = EngineWorker(engine_detector)

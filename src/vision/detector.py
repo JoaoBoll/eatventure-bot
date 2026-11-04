@@ -88,15 +88,8 @@ class Detector:
         category_rois=None,
         coarse_scale=COARSE_SCALE,
         coarse_margin=COARSE_MARGIN,
-        use_defaults=True,
-        learn_only_actions=False,
         learn_resolution_templates=None,
     ):
-
-        # False: busca somente overrides; os existentes seguem atualizados no worker.
-        self.use_defaults = use_defaults
-        # Restringe a descoberta inicial; os existentes continuam atualizados.
-        self.learn_only_actions = learn_only_actions
         self.learn_resolution_templates = (
             LEARN_RESOLUTION_TEMPLATES
             if learn_resolution_templates is None
@@ -430,13 +423,11 @@ class Detector:
             overrides,
         )
 
-        # Sem template não há detecção — mesmo sintoma de detector quebrado (bot parado).
         if not self.templates:
 
             logger.error(
-                "NENHUM template carregado de %s — o detector "
-                "não tem com o que comparar, e o bot não vai "
-                "agir.",
+                "NENHUM template default carregado de %s — a thread "
+                "de atualização não poderá gerar templates novos.",
                 DEFAULT_TEMPLATES_DIR,
             )
 
@@ -644,7 +635,7 @@ class Detector:
 
     def template_count(self):
         with self._learn_lock:
-            return len(self.templates) + sum(
+            return sum(
                 len(items)
                 for categories in self._resolution_templates.values()
                 for items in categories.values()
@@ -994,7 +985,7 @@ class Detector:
         )
 
     def _templates_for(self, frame_width, frame_height):
-        """Overrides nativos e defaults apenas onde ainda falta override."""
+        """Templates gerados nativos da resolução, sem fallback default."""
 
         chave = (frame_width, frame_height)
 
@@ -1004,8 +995,7 @@ class Detector:
             return cacheados
 
         # Snapshot rápido sob lock: a thread de aprendizado também escreve
-        # em _resolution_templates/_scaled_cache, e o resto desta função
-        # (reescala, merge) é caro demais pra fazer com o lock preso.
+        # em _resolution_templates/_scaled_cache.
         with self._learn_lock:
 
             versao = self._overrides_versao
@@ -1021,35 +1011,14 @@ class Detector:
                 }
             )
 
-        cobertos = {
-            (categoria, self._base_name(template["name"]))
-            for categoria, lista in (extras or {}).items()
-            for template in lista
-        }
-        faltantes = [
-            template for template in self.templates
-            if (template["category"], self._base_name(template["name"])) not in cobertos
-        ] if self.use_defaults else []
-        default_categorias = self._defaults_for(frame_width, frame_height, faltantes)
-
-        # Sempre uma cópia, nunca o próprio dict de _defaults_cache: os dois
-        # caches são invalidados em momentos diferentes (override aprendido
-        # descarta só este), e compartilhar as listas fazia um pop() aqui
-        # mutilar o cache de defaults.
         cacheados = {
             categoria: list(lista)
-            for categoria, lista in default_categorias.items()
+            for categoria, lista in (extras or {}).items()
         }
-
-        if extras:
-
-            for categoria, lista in extras.items():
-
-                cacheados[categoria] = lista + cacheados.get(categoria, [])
 
         with self._learn_lock:
 
-            # Override commitado enquanto este merge era calculado: o pop
+            # Override commitado enquanto o snapshot era copiado: o pop
             # dele não achou nada para invalidar, e publicar agora deixaria
             # o cache sem o override, sem nada pendente para corrigi-lo.
             if versao == self._overrides_versao:
@@ -1273,19 +1242,12 @@ class Detector:
         if not self.learn_resolution_templates:
             return None
 
-        chave = (frame.shape[1], frame.shape[0])
-        with self._learn_lock:
-            coberto = bool(self._resolution_templates.get(chave))
-
         with self._learn_queue_lock:
             if self._learn_stopping:
                 return None
 
             self._learn_sequence += 1
             sequence = self._learn_sequence
-
-            if not coberto:
-                return sequence
 
             now = time.monotonic()
             if (
@@ -1318,7 +1280,7 @@ class Detector:
             )
 
     def _learn_worker(self):
-        """Atualiza defaults cobertos e grava recortes fora da visão principal."""
+        """Gera e atualiza templates por resolução fora da visão principal."""
 
         while True:
 
@@ -2141,23 +2103,6 @@ class Detector:
                             "height": template["height"],
                         }
                     )
-
-                    if (
-                        self.learn_resolution_templates
-                        and not self.learn_only_actions
-                        and origin == "default"
-                    ):
-
-                        self._queue_learn_candidate(
-                            frame_color,
-                            template,
-                            x,
-                            y,
-                            frame_width,
-                            frame_height,
-                            confidence,
-                            learn_sequence,
-                        )
 
                 if template.get("nome_base") is not None:
 
