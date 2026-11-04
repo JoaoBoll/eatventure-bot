@@ -111,20 +111,41 @@ test("detalhes abrem modal antes de ativar automaticamente a visão", async () =
 
 test("runtime atualiza métricas sem recriar cards nem esperar descoberta ADB", async () => {
   const env = environment();
-  env.context.initial = device({ acoes: 3, updated_at: Date.now() / 1000 });
-  env.context.next = device({ acoes: 8, voos: 2, reformas: 1, updated_at: Date.now() / 1000 });
+  env.context.initial = device({ dados_sessao: 3, resolution: "1080x2400", updated_at: Date.now() / 1000 });
+  env.context.next = device({ dados_sessao: 8, voos: 2, reformas: 1, resolution: "1080x2400", updated_at: Date.now() / 1000 });
   env.run(`
     authenticated = true; stateLoading = true; state.devices = [initial];
+    state.collected = { "1080x2400": 50 }; state.training = { "1080x2400": 4 };
     var requested = []; api = async (url) => { requested.push(url); return { devices: [next] }; };
     var card = renderDevice(initial); $("devices").append(card);
   `);
   const card = env.context.card;
   await env.run("refreshRuntime()");
   assert.equal(env.document.getElementById("devices").children[0], card);
-  assert.equal(card.querySelector('[data-metric="acoes"]').textContent, "8");
+  assert.equal(card.querySelector('[data-metric="dados_coletados"]').textContent, "50");
+  assert.equal(card.querySelector('[data-metric="dados_sessao"]').textContent, "8");
   assert.equal(card.querySelector('[data-metric="voos"]').textContent, "2");
-  assert.equal(env.document.getElementById("kpi-actions").textContent, "8");
   assert.equal(JSON.stringify(env.context.requested), '["/api/runtime"]');
+});
+
+test("card ordena dados e eventos em duas linhas", () => {
+  const env = environment();
+  env.context.current = device({
+    dados_sessao: 8, voos: 2, reformas: 1, resolution: "1080x2400",
+    battery: { level: 75, charging: false }
+  });
+  env.run('state.collected = { "1080x2400": 50 }; state.training = { "1080x2400": 4 };');
+  assert.equal(
+    env.run("JSON.stringify(metricValues(current).map(([key, label, value]) => [key, label, value]))"),
+    JSON.stringify([
+      ["dados_coletados", "Dados coletados", "50"],
+      ["dados_sessao", "Dados da sessão", "8"],
+      ["treinamentos", "Treinamentos", "4"],
+      ["voos", "Voou", "2"],
+      ["reformas", "Renovou", "1"],
+      ["battery", "Bateria", "75%"]
+    ])
+  );
 });
 
 test("frame anterior só é liberado após carregar o próximo", async () => {

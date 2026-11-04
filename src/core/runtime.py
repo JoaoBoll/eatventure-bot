@@ -48,7 +48,7 @@ class RuntimeControl:
             "summary": summary, "fps": fps, "capture_fps": capture_fps, "templates": templates,
             "battery": dict(zip(("level", "charging", "age"), values)),
             **{key: summary.get(key, 0) for key in (
-                "voos", "reformas", "acoes", "dados_coletados",
+                "voos", "reformas", "acoes", "dados_sessao",
             )},
         }
         temporary = None

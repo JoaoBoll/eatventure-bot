@@ -26,7 +26,10 @@ class WebRuntimeTests(unittest.TestCase):
         return json.loads(self.status.read_text(encoding="utf-8"))
 
     def test_status_identifies_process_device_and_session(self):
-        summary = {"estado": "UPGRADE", "voos": 2, "reformas": 3, "acoes": 40}
+        summary = {
+            "estado": "UPGRADE", "voos": 2, "reformas": 3,
+            "acoes": 40, "dados_sessao": 12,
+        }
         with patch("core.runtime.os.getpid", return_value=1234), patch(
             "core.runtime.time.time", return_value=1000.5,
         ):
@@ -40,6 +43,7 @@ class WebRuntimeTests(unittest.TestCase):
         self.assertEqual((data["fps"], data["capture_fps"], data["templates"]), (12.5, 30, 156))
         self.assertEqual(data["battery"], {"level": 80, "charging": True, "age": 2})
         self.assertEqual((data["voos"], data["reformas"], data["acoes"]), (2, 3, 40))
+        self.assertEqual(data["dados_sessao"], 12)
 
     def test_status_replaces_complete_file_atomically(self):
         self.runtime.publish({"estado": "ANTES"}, force=True)

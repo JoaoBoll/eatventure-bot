@@ -234,11 +234,7 @@ def run_loop(
         if panel is not None or runtime is not None:
             resumo = state_machine.summary()
             resumo["templates"] = detector.template_count()
-            resumo["dados_coletados"] = (
-                recorder.samples_for_resolution(current_resolution)
-                if recorder is not None and current_resolution is not None
-                else 0
-            )
+            resumo["dados_sessao"] = recorder.stats()["saved"] if recorder is not None else 0
             if current_resolution is not None:
                 resumo["resolution"] = current_resolution
             if pause_started is not None:

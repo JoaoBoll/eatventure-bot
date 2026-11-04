@@ -438,14 +438,14 @@ function renderDevice(device) {
 function metricValues(device) {
   const battery = metric(device, "battery");
   const level = numeric(typeof battery === "object" && battery ? battery.level : battery);
-  const fps = numeric(metric(device, "fps") ?? metric(device, "capture_fps"));
   const resolution = metric(device, "resolution");
   const trainings = resolution ? state.training[resolution] : null;
   return [
-    ["voos", "Voou", count(metric(device, "voos"))], ["reformas", "Renovou", count(metric(device, "reformas"))],
-    ["dados_coletados", "Dados coletados", count((metric(device, "dados_coletados") || 0) + (state.collected?.[resolution] || 0))],
+    ["dados_coletados", "Dados coletados", count(state.collected?.[resolution] || 0)],
+    ["dados_sessao", "Dados da sessão", count(metric(device, "dados_sessao"))],
     ["treinamentos", "Treinamentos", trainings === null ? "—" : count(trainings)],
-    ["fps", "FPS", fps === null ? "—" : fps.toLocaleString("pt-BR", { maximumFractionDigits: 1 })],
+    ["voos", "Voou", count(metric(device, "voos"))],
+    ["reformas", "Renovou", count(metric(device, "reformas"))],
     ["battery", "Bateria", level === null ? "—" : `${level}%${battery?.charging ? " ↯" : ""}`]
   ];
 }
