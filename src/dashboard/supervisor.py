@@ -871,7 +871,7 @@ class BotSupervisor:
         except (OSError, ValueError, TypeError, AttributeError) as error:
             raise RuntimeError("Aguardando frame da visão IA.") from error
 
-    def save_template(self, device_id, category, x, y, width, height, name=None):
+    def save_template(self, device_id, category, x, y, width, height):
         import cv2
         import numpy as np
 
@@ -889,17 +889,19 @@ class BotSupervisor:
         if x < 0 or y < 0 or x + width > frame_width or y + height > frame_height:
             raise ValueError("A seleção está fora do frame atual.")
         crop = image[y:y + height, x:x + width]
-        safe_name = re.sub(r"[^a-zA-Z0-9_-]+", "_", name or "item").strip("_") or "item"
-        digest = hashlib.sha256(device_id.encode("utf-8")).hexdigest()
-        folder = self.state_root / "device-data" / digest / "templates" / f"{frame_width}x{frame_height}" / category
-        folder.mkdir(parents=True, exist_ok=True)
-        index = 1
-        destination = folder / f"{safe_name}_{index:03d}.png"
-        while destination.exists():
-            index += 1
-            destination = folder / f"{safe_name}_{index:03d}.png"
-        if not cv2.imwrite(str(destination), crop):
-            raise RuntimeError("Não foi possível salvar o template.")
+        folder = self.root / "src" / "vision" / "templates" / "default" / category
+        with self._lock:
+            folder.mkdir(parents=True, exist_ok=True)
+            numbered = re.compile(r"^(?:\d+x\d+_)?item_(\d+)\.png$", re.IGNORECASE)
+            indexes = [
+                int(match.group(1))
+                for candidate in folder.glob("*.png")
+                if (match := numbered.fullmatch(candidate.name)) is not None
+            ]
+            index = max(indexes, default=0) + 1
+            destination = folder / f"{frame_width}x{frame_height}_item_{index:03d}.png"
+            if not cv2.imwrite(str(destination), crop):
+                raise RuntimeError("Não foi possível salvar o template.")
         return {"path": str(destination), "category": category, "width": width, "height": height}
 
     def open_vision_stream(self, device_id):

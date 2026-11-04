@@ -356,7 +356,7 @@ def create_app(root=None, state_root=None, token=None, supervisor=None, require_
         data = await body(request)
         return await run_in_threadpool(
             supervisor.save_template, device_id, data.get("category"), data.get("x"),
-            data.get("y"), data.get("width"), data.get("height"), data.get("name"),
+            data.get("y"), data.get("width"), data.get("height"),
         )
 
     @app.get("/api/devices/{device_id}/vision/stream")

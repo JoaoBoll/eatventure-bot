@@ -76,7 +76,7 @@ A fidelidade de forma segue esta prioridade:
 
 As opções de coleta de IA, uso exclusivo dos templates da resolução e gravação de log também são individuais. **Salvar** grava o perfil; **Reiniciar** aplica os ajustes ao bot ativo. Restaurar um item, grupo ou perfil devolve os padrões do código sem editar nenhum arquivo Python. A restauração do perfil preserva dataset, modelos, templates aprendidos e logs existentes.
 
-Na aba **Visão IA**, use **Adicionar template** para capturar um frame bruto, arrastar sobre o item e salvá-lo na categoria informada. O recorte vira um override local daquele dispositivo e daquela resolução; o detector o recarrega sem reiniciar o bot.
+Na aba **Visão IA**, use **Adicionar template** para capturar um frame bruto, arrastar sobre o item e salvá-lo na categoria informada. O recorte é salvo em `src/vision/templates/default/<categoria>/`, com a resolução de origem no nome, e fica disponível para todos os dispositivos; o detector o recarrega sem reiniciar o bot.
 
 Os arquivos ficam em:
 
@@ -92,9 +92,11 @@ local/
 dataset/
   data/<RESOLUÇÃO>/samples.jsonl      # coleta compartilhada com o terminal
   data/<RESOLUÇÃO>/images/
+src/vision/templates/default/
+  <categoria>/                       # templates manuais compartilhados
 ```
 
-`local/` é ignorado pelo Git. Faça backup dessa pasta para preservar os perfis e dados. Os templates compartilhados do projeto são lidos como base; o aprendizado feito pelo painel grava somente na pasta do aparelho. Com `AI_AUTO_TRAIN = True`, ao iniciar um bot com treino automático habilitado, o painel verifica o dataset e repete a verificação a cada 10 minutos (`AI_TRAIN_CHECK_INTERVAL`). Quando há 10 mil amostras ainda não treinadas de uma mesma resolução — incluindo lotes acumulados em execuções anteriores — treina todas as amostras novas disponíveis daquela resolução. Cada modelo fica em `IA/models/<RESOLUÇÃO>/` e pode ser versionado no Git. Durante o treino, somente bots que coletam a mesma resolução são pausados e reiniciados; registros novos adicionados após o snapshot não são removidos. O dataset é compartilhado entre painel e terminal em `dataset/`. Alterações no perfil são aplicadas antes dos módulos do bot serem importados em cada processo.
+`local/` é ignorado pelo Git. Faça backup dessa pasta para preservar os perfis e dados. Templates adicionados manualmente pelo painel são compartilhados em `src/vision/templates/default/`; o aprendizado automático do bot continua gravando os overrides somente na pasta do aparelho. Com `AI_AUTO_TRAIN = True`, ao iniciar um bot com treino automático habilitado, o painel verifica o dataset e repete a verificação a cada 10 minutos (`AI_TRAIN_CHECK_INTERVAL`). Quando há 10 mil amostras ainda não treinadas de uma mesma resolução — incluindo lotes acumulados em execuções anteriores — treina todas as amostras novas disponíveis daquela resolução. Cada modelo fica em `IA/models/<RESOLUÇÃO>/` e pode ser versionado no Git. Durante o treino, somente bots que coletam a mesma resolução são pausados e reiniciados; registros novos adicionados após o snapshot não são removidos. O dataset é compartilhado entre painel e terminal em `dataset/`. Alterações no perfil são aplicadas antes dos módulos do bot serem importados em cada processo.
 
 O botão **Encerrar painel** solicita o encerramento gracioso do servidor web; os bots em execução são parados pelo supervisor durante o desligamento.
 
