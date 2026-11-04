@@ -551,6 +551,23 @@ def test_limite_de_amostras_inclui_as_que_ja_estao_na_fila():
         assert len(indice.read_text(encoding="utf-8").splitlines()) == 2
 
 
+def test_total_da_resolucao_inclui_registros_de_execucoes_anteriores():
+
+    with tempfile.TemporaryDirectory() as pasta:
+
+        indice = layout.index_path(layout.shard_root(pasta, 64, 64))
+        indice.parent.mkdir(parents=True)
+        indice.write_text('{"id":"anterior"}\n', encoding="utf-8")
+        rec = DatasetRecorder(directory=pasta, auto_train=False)
+
+        assert rec.samples_for_resolution("64x64") == 1
+
+        with indice.open("a", encoding="utf-8") as arquivo:
+            arquivo.write('{"id":"atual"}\n')
+
+        assert rec.samples_for_resolution("64x64") == 2
+
+
 def test_troca_de_resolucao_preserva_indices_e_coordenadas():
 
     with Gravador() as g:

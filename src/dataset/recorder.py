@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import queue
+import re
 import threading
 import time
 import uuid
@@ -133,6 +134,7 @@ class DatasetRecorder:
         self.unchanged_streak = 0
 
         self.saved = 0
+        self._resolution_count_cache = {}
         self.dropped = 0
         self.duplicates = 0
         self.by_action = {}
@@ -148,6 +150,35 @@ class DatasetRecorder:
         self.disk_warned = False
         self._discard_ranges = []
         self.discarded = 0
+
+    def samples_for_resolution(self, resolution):
+        """Total atualmente registrado no shard da resolução."""
+        if not isinstance(resolution, str) or not re.fullmatch(
+            r"[1-9]\d*x[1-9]\d*", resolution
+        ):
+            return 0
+
+        index = layout.index_path(self.data_dir / resolution)
+        try:
+            signature = (index.stat().st_mtime_ns, index.stat().st_size)
+        except OSError:
+            self._resolution_count_cache.pop(resolution, None)
+            return 0
+
+        cached = self._resolution_count_cache.get(resolution)
+        if cached and cached[0] == signature:
+            return cached[1]
+
+        try:
+            with index_lock(self.root):
+                signature = (index.stat().st_mtime_ns, index.stat().st_size)
+                with index.open(encoding="utf-8") as file:
+                    total = sum(1 for line in file if line.strip())
+        except OSError:
+            return 0
+
+        self._resolution_count_cache[resolution] = (signature, total)
+        return total
 
     def start(self):
 
