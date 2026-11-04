@@ -83,18 +83,23 @@ With the virtual environment activated, install the panel dependencies and start
 
 ```powershell
 python -m pip install -r requirements-web.txt
-python src/web.py
 ```
 
-Open `http://localhost:8765` on the same computer. Use `python src/web.py --host 127.0.0.1` to allow local access only. The panel finds ADB-authorized devices and can start, stop and configure their bots. See [docs/painel-web.md](docs/painel-web.md) for access tokens, another port and LAN use.
+Open `http://localhost:8765` on the same computer. Use `nohup .venv/bin/python src/web.py --host 127.0.0.1 > /dev/null 2>&1 < /dev/null &` to allow local access only. The panel finds ADB-authorized devices and can start, stop and configure their bots. See [docs/painel-web.md](docs/painel-web.md) for access tokens, another port and LAN use.
 
-On a Linux server, start the panel in the background to release the terminal:
+On a Linux server, use this command to start the panel in the background:
 
 ```bash
 nohup .venv/bin/python src/web.py > /dev/null 2>&1 < /dev/null &
 ```
 
 The panel keeps running after the SSH session closes without saving output to a file. Use the **Encerrar painel** button in the interface to stop it. To keep it running after server reboots too, use the `systemd` service described in [docs/painel-web.md](docs/painel-web.md).
+
+To stop it from the terminal:
+
+```bash
+python src/stop-web.py
+```
 
 On Debian or Ubuntu, if `pip` reports `externally-managed-environment`, install virtual-environment support and use `.venv`; do not use `--break-system-packages`:
 
@@ -104,7 +109,7 @@ sudo apt install -y python3-venv
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements-web.txt
-python src/web.py
+nohup .venv/bin/python src/web.py > /dev/null 2>&1 < /dev/null &
 ```
 
 If Python was installed separately and `venv` still fails, install its matching package, for example `sudo apt install -y python3.14-venv`.

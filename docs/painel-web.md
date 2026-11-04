@@ -8,17 +8,19 @@ Na raiz do projeto, com o ambiente virtual ativado e as dependências do bot ins
 
 ```bash
 python -m pip install -r requirements-web.txt
-python src/web.py
+nohup .venv/bin/python src/web.py > /dev/null 2>&1 < /dev/null &
 ```
 
-Por padrão, o painel escuta em todas as interfaces (`0.0.0.0`). No próprio computador, abra `http://localhost:8765`; em outro computador ou celular na mesma rede, abra `http://IP_DO_SERVIDOR:8765`, substituindo `IP_DO_SERVIDOR` pelo IP do computador que executa o painel.
+O comando libera o terminal e não salva saída em arquivo. Por padrão, o painel escuta em todas as interfaces (`0.0.0.0`). No próprio computador, abra `http://localhost:8765`; em outro computador ou celular na mesma rede, abra `http://IP_DO_SERVIDOR:8765`, substituindo `IP_DO_SERVIDOR` pelo IP do computador que executa o painel.
 
-Para permitir acesso somente no próprio computador, use `python src/web.py --host 127.0.0.1`. A opção `--port` permite alterar a porta padrão `8765`.
+Para encerrar o painel pelo terminal, execute `python src/stop-web.py`. O script lê o PID salvo em `local/web.pid`, confirma no Linux que ele pertence a `web.py` e envia o encerramento gracioso antes de forçar a parada se necessário.
+
+Para permitir acesso somente no próprio computador, use `nohup .venv/bin/python src/web.py --host 127.0.0.1 > /dev/null 2>&1 < /dev/null &`. A opção `--port` permite alterar a porta padrão `8765`.
 
 Por padrão, o painel abre diretamente, sem token. Para exigir autenticação, inicie com:
 
 ```bash
-python src/web.py --require-token
+nohup .venv/bin/python src/web.py --require-token > /dev/null 2>&1 < /dev/null &
 ```
 
 Nesse modo, o primeiro início cria um token de acesso. Leia-o em outro terminal:
