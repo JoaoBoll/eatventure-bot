@@ -2,6 +2,7 @@
 
 import argparse
 from functools import partial
+import os
 import subprocess
 import sys
 import time
@@ -177,7 +178,10 @@ def build_recorder(ai_collect=None):
 
                 store = None
 
-    return DatasetRecorder(store=store)
+    return DatasetRecorder(
+        store=store,
+        session=os.environ.get("EATVENTURE_SESSION_ID") or None,
+    )
 
 
 def read_detections(vision):

@@ -745,6 +745,7 @@ class DatasetRecorder:
         return {
             "id": sample.id,
             "session": self.session,
+            "device_id": os.environ.get("EATVENTURE_DEVICE_ID") or None,
             "created_at": sample.created.isoformat(),
 
             # Relativo à raiz DA RESOLUÇÃO: a pasta daquela resolução

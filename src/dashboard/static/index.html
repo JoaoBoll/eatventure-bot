@@ -76,6 +76,22 @@
   </dialog>
 
   <dialog id="connect-dialog" class="connect-dialog" aria-labelledby="connect-title"><form id="connect-form"><div class="modal-heading"><div><p class="eyebrow">ANDROID VIA WI-FI</p><h2 id="connect-title">Conectar dispositivo</h2></div><button id="connect-close" class="icon-button" type="button" aria-label="Fechar conexão">×</button></div><p class="muted">Informe o IP e a porta atual da depuração sem fio. Após conectar, o painel tenta mudar para a porta 5555 e reconectar automaticamente.</p><label for="connect-address">IP e porta atuais</label><input id="connect-address" required placeholder="192.168.1.4:42819" autocomplete="off" spellcheck="false"><details class="pair-details"><summary>Precisa parear primeiro?</summary><p class="muted">Abra “Parear dispositivo com código” no Android. A porta de pareamento costuma ser diferente da porta de conexão.</p><label for="pair-address">Endereço de pareamento</label><input id="pair-address" placeholder="192.168.1.4:37123" autocomplete="off" spellcheck="false"><label for="pair-code">Código de pareamento</label><div class="pair-code-row"><input id="pair-code" inputmode="numeric" autocomplete="off" placeholder="123456" maxlength="6"><button id="pair-submit" class="button secondary" type="button">Parear</button></div></details><p id="connect-result" class="form-error" role="status"></p><button id="connect-submit" type="submit" class="button primary full-width">Conectar e usar porta 5555</button></form></dialog>
+  <dialog id="dataset-dialog" class="dataset-dialog" aria-labelledby="dataset-title">
+    <header class="dataset-heading"><div><p class="eyebrow">DADOS COLETADOS</p><h2 id="dataset-title">Datasets por sessão</h2><p class="muted">Imagens em ordem de criação, agrupadas pelo ID da execução.</p></div><button id="dataset-close" class="icon-button" type="button" aria-label="Fechar datasets">×</button></header>
+    <div class="dataset-layout">
+      <aside class="dataset-sessions"><div class="dataset-session-heading"><strong>Sessões</strong><button id="dataset-refresh" class="button ghost compact" type="button">Atualizar</button></div><div id="dataset-session-list" class="dataset-session-list"></div></aside>
+      <section class="dataset-content">
+        <div id="dataset-empty" class="empty-state"><span class="empty-symbol" aria-hidden="true">▦</span><h2>Nenhuma sessão selecionada</h2><p>Escolha uma sessão para revisar as imagens coletadas.</p></div>
+        <div id="dataset-selected" hidden>
+          <div class="dataset-toolbar"><div><h3 id="dataset-session-title"></h3><p id="dataset-session-detail" class="mono muted"></p></div><button id="dataset-delete-session" class="button ghost compact danger-text" type="button">Excluir sessão</button></div>
+          <form id="dataset-range-form" class="dataset-range-form"><span>Excluir intervalo</span><label>De <input id="dataset-range-start" type="number" min="1" required></label><label>até <input id="dataset-range-end" type="number" min="1" required></label><button class="button ghost compact danger-text" type="submit">Excluir imagens</button></form>
+          <p id="dataset-status" class="muted" role="status"></p>
+          <div id="dataset-images" class="dataset-images"></div>
+          <button id="dataset-more" class="button ghost" type="button" hidden>Carregar mais imagens</button>
+        </div>
+      </section>
+    </div>
+  </dialog>
   <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
 </body>
 </html>

@@ -20,6 +20,7 @@ from core import config
 from core.device_profiles import ProfileStore, settings_schema, template_key
 from core.preview import MIN_FRAME_INTERVAL
 from dashboard.supervisor import BotSupervisor
+from dataset.manager import DatasetManager
 
 
 STATIC = Path(__file__).resolve().parent / "static"
@@ -177,6 +178,7 @@ def create_app(root=None, state_root=None, token=None, supervisor=None, require_
     catalog_cache = {"at": 0.0, "value": None}
     training_cache = {"at": 0.0, "value": None}
     collected_cache = {"at": 0.0, "value": None}
+    datasets = DatasetManager(root / "dataset")
 
     def catalog():
         with catalog_lock:
@@ -309,6 +311,39 @@ def create_app(root=None, state_root=None, token=None, supervisor=None, require_
     @app.get("/api/runtime")
     def runtime():
         return supervisor.runtime_state()
+
+    @app.get("/api/datasets/sessions")
+    def dataset_sessions():
+        return {"sessions": datasets.sessions()}
+
+    @app.get("/api/datasets/sessions/{session_id}")
+    def dataset_session(session_id: str, offset: int = 0, limit: int = 200):
+        if offset < 0 or not 1 <= limit <= 500:
+            raise ValueError("Paginação inválida.")
+        try:
+            return datasets.page(session_id, offset, limit)
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail="Sessão do dataset não encontrada.") from error
+
+    @app.get("/api/datasets/sessions/{session_id}/images/{sample_id}")
+    def dataset_image(session_id: str, sample_id: str):
+        try:
+            path = datasets.image(session_id, sample_id)
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail="Imagem do dataset não encontrada.") from error
+        media_type = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
+        return FileResponse(path, media_type=media_type)
+
+    @app.delete("/api/datasets/sessions/{session_id}")
+    async def delete_dataset_session(session_id: str, request: Request):
+        from starlette.concurrency import run_in_threadpool
+        data = await body(request)
+        try:
+            return await run_in_threadpool(
+                datasets.delete, session_id, data.get("start"), data.get("end"), data.get("all") is True,
+            )
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail="Sessão do dataset não encontrada.") from error
 
     @app.get("/api/devices/{device_id}/profile")
     def profile(device_id: str):

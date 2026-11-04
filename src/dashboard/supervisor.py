@@ -568,6 +568,7 @@ class BotSupervisor:
             device.update({
                 "name": profile.get("name") or device.get("model") or device_id,
                 "running": running,
+                "session_id": run.session_id if run else None,
                 "pid": run.process.pid if running else None,
                 "started_at": _iso_time(run.started_at) if run else None,
                 "exit_code": exit_code,

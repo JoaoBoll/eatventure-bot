@@ -41,6 +41,12 @@ let templateDevice = null;
 let templatePointerId = null;
 let templateRetry = null;
 let sessionLoading = false;
+let datasetSession = null;
+let datasetOffset = 0;
+let datasetTotal = 0;
+let datasetGeneration = 0;
+let datasetUrls = [];
+let datasetPageLoading = false;
 const visionReleases = new Map();
 const MAX_VISION_FRAME_BYTES = 5 * 1024 * 1024;
 const MAX_VISION_HEADER_BYTES = 8 * 1024;
@@ -101,6 +107,7 @@ function showError(id, message) {
 }
 
 function logout(expired = false) {
+  if ($("dataset-dialog").open) closeDatasets();
   closeTemplateSelector();
   stopVision();
   authenticated = false;
@@ -145,6 +152,19 @@ async function api(path, options = {}) {
     if (error instanceof TypeError) throw new Error("Não foi possível acessar o servidor. Verifique a conexão.");
     throw error;
   } finally { clearTimeout(timeout); }
+}
+
+async function apiBlob(path) {
+  const response = await fetch(path, {
+    headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    cache: "no-store"
+  });
+  if (response.status === 401) { logout(true); throw new Error("Token de acesso inválido."); }
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(body.detail || `O servidor retornou ${response.status}.`);
+  }
+  return response.blob();
 }
 
 async function login(event) {
@@ -255,7 +275,7 @@ function visibleDevices() {
 }
 
 function deviceLayout(device) {
-  return [device.id, device.serial, device.name, device.model, device.connected, device.running, device.status, device.adb_state, device.exit_code, device.profile];
+  return [device.id, device.serial, device.name, device.model, device.connected, device.running, device.session_id, device.status, device.adb_state, device.exit_code, device.profile];
 }
 
 async function refreshRuntime() {
@@ -402,7 +422,10 @@ function renderDevice(device) {
   const settings = button("⚙", "button ghost settings-button", () => openDetails(device.id, "settings"), "Configurações, itens e logs");
   settings.setAttribute("aria-label", `Configurar ${deviceName(device)}`);
   settings.dataset.role = "settings";
-  footer.append(start, restart, settings);
+  const dataset = button("▦ Dados", "button ghost dataset-button", () => openDatasets(device.session_id), "Ver datasets por sessão");
+  dataset.setAttribute("aria-label", `Ver datasets de ${deviceName(device)}`);
+  dataset.dataset.role = "dataset";
+  footer.append(start, restart, dataset, settings);
   card.append(header, status);
   card.append(node("p", "bot-state"), node("p", "metrics-freshness"));
   card.append(metrics, footer);
@@ -1352,6 +1375,138 @@ function downloadLogs() {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+function releaseDatasetImages() {
+  datasetUrls.forEach((url) => URL.revokeObjectURL(url));
+  datasetUrls = [];
+}
+
+function datasetDate(value) {
+  const date = value ? new Date(value) : null;
+  return date && !Number.isNaN(date.getTime()) ? date.toLocaleString("pt-BR") : "Data desconhecida";
+}
+
+async function openDatasets(preferredSession = null) {
+  datasetSession = preferredSession || null;
+  $("dataset-dialog").showModal();
+  await refreshDatasetSessions(preferredSession);
+}
+
+async function refreshDatasetSessions(preferredSession = datasetSession) {
+  const generation = ++datasetGeneration;
+  $("dataset-refresh").disabled = true;
+  $("dataset-session-list").replaceChildren(node("p", "muted", "Carregando sessões…"));
+  try {
+    const result = await api("/api/datasets/sessions");
+    if (generation !== datasetGeneration) return;
+    const sessions = Array.isArray(result.sessions) ? result.sessions : [];
+    const buttons = sessions.map((session) => {
+      const item = button("", `dataset-session${session.id === datasetSession ? " active" : ""}`, () => selectDatasetSession(session.id));
+      item.append(node("strong", "", session.id), node("small", "", `${count(session.count)} imagens · ${datasetDate(session.created_at)}`));
+      item.title = session.id;
+      return item;
+    });
+    $("dataset-session-list").replaceChildren(...buttons);
+    if (!sessions.length) {
+      $("dataset-session-list").replaceChildren(node("p", "muted", "Nenhuma imagem coletada."));
+      clearDatasetSelection();
+      return;
+    }
+    const selected = sessions.find((session) => session.id === preferredSession) || sessions[0];
+    await selectDatasetSession(selected.id);
+  } catch (error) {
+    if (authenticated) $("dataset-session-list").replaceChildren(node("p", "form-error", error.message));
+  } finally { $("dataset-refresh").disabled = false; }
+}
+
+function clearDatasetSelection() {
+  datasetSession = null;
+  datasetOffset = 0;
+  datasetTotal = 0;
+  releaseDatasetImages();
+  $("dataset-images").replaceChildren();
+  $("dataset-selected").hidden = true;
+  $("dataset-empty").hidden = false;
+}
+
+async function selectDatasetSession(session, append = false) {
+  if (append && datasetPageLoading) return;
+  const generation = append ? datasetGeneration : ++datasetGeneration;
+  datasetPageLoading = true;
+  $("dataset-more").disabled = true;
+  if (!append) {
+    datasetSession = session;
+    datasetOffset = 0;
+    releaseDatasetImages();
+    $("dataset-images").replaceChildren();
+    $("dataset-empty").hidden = true;
+    $("dataset-selected").hidden = false;
+    $("dataset-status").textContent = "Carregando imagens…";
+    for (const item of $("dataset-session-list").children) item.classList.toggle("active", item.title === session);
+  }
+  try {
+    const result = await api(`/api/datasets/sessions/${encodeURIComponent(session)}?offset=${datasetOffset}&limit=200`);
+    if (generation !== datasetGeneration || datasetSession !== session) return;
+    datasetTotal = result.total;
+    $("dataset-session-title").textContent = `Sessão com ${count(datasetTotal)} imagens`;
+    $("dataset-session-detail").textContent = session;
+    $("dataset-range-start").max = datasetTotal;
+    $("dataset-range-end").max = datasetTotal;
+    if (!append) {
+      $("dataset-range-start").value = datasetTotal ? 1 : "";
+      $("dataset-range-end").value = datasetTotal ? datasetTotal : "";
+    }
+    const fragment = document.createDocumentFragment();
+    for (const item of result.items || []) {
+      const figure = node("figure", "dataset-image");
+      const image = node("img");
+      image.alt = `Imagem ${item.index} da sessão`;
+      image.loading = "lazy";
+      const caption = node("figcaption");
+      caption.append(node("strong", "", item.action || "Sem ação"), node("small", "", datasetDate(item.created_at)));
+      figure.append(image, node("span", "image-index", `#${item.index}`), caption);
+      fragment.append(figure);
+      apiBlob(`/api/datasets/sessions/${encodeURIComponent(session)}/images/${encodeURIComponent(item.id)}`).then((blob) => {
+        if (generation !== datasetGeneration || datasetSession !== session) return;
+        const url = URL.createObjectURL(blob);
+        datasetUrls.push(url);
+        image.src = url;
+      }).catch(() => { image.alt = "Imagem indisponível"; });
+    }
+    $("dataset-images").append(fragment);
+    datasetOffset += (result.items || []).length;
+    $("dataset-status").textContent = `${count(datasetOffset)} de ${count(datasetTotal)} imagens exibidas · ordem da mais antiga para a mais recente`;
+    $("dataset-more").hidden = datasetOffset >= datasetTotal;
+  } catch (error) {
+    if (generation === datasetGeneration && authenticated) $("dataset-status").textContent = error.message;
+  } finally {
+    if (generation === datasetGeneration) {
+      datasetPageLoading = false;
+      $("dataset-more").disabled = false;
+    }
+  }
+}
+
+async function deleteDataset(payload) {
+  if (!datasetSession) return;
+  const active = state.devices.some((device) => device.running && device.session_id === datasetSession);
+  const description = payload.all ? `toda a sessão (${datasetTotal} imagens)` : `as imagens de #${payload.start} até #${payload.end}`;
+  const warning = active ? " O bot desta sessão ainda está coletando e poderá criar novas imagens." : "";
+  if (!confirm(`Excluir ${description}? Essa ação remove os registros e os arquivos sem outra referência.${warning}`)) return;
+  $("dataset-selected").inert = true;
+  try {
+    const result = await api(`/api/datasets/sessions/${encodeURIComponent(datasetSession)}`, { method: "DELETE", body: JSON.stringify(payload) });
+    toast(`${count(result.deleted)} registros e ${count(result.images_deleted)} imagens excluídos.`);
+    await refreshDatasetSessions(datasetSession);
+  } catch (error) { if (authenticated) toast(error.message, true); }
+  finally { $("dataset-selected").inert = false; }
+}
+
+function closeDatasets() {
+  datasetGeneration += 1;
+  clearDatasetSelection();
+  $("dataset-dialog").close();
+}
+
 async function connectAndroid(event) {
   event.preventDefault();
   if ($("connect-form").inert) return;
@@ -1480,6 +1635,21 @@ $("reconnect-open").addEventListener("click", () => {
 $("connect-close").addEventListener("click", () => $("connect-dialog").close());
 $("connect-form").addEventListener("submit", connectAndroid);
 $("pair-submit").addEventListener("click", pairAndroid);
+$("dataset-close").addEventListener("click", closeDatasets);
+$("dataset-dialog").addEventListener("cancel", (event) => { event.preventDefault(); closeDatasets(); });
+$("dataset-refresh").addEventListener("click", () => refreshDatasetSessions());
+$("dataset-more").addEventListener("click", () => selectDatasetSession(datasetSession, true));
+$("dataset-delete-session").addEventListener("click", () => deleteDataset({ all: true }));
+$("dataset-range-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  const start = Number($("dataset-range-start").value);
+  const end = Number($("dataset-range-end").value);
+  if (!Number.isInteger(start) || !Number.isInteger(end) || start < 1 || end < start || end > datasetTotal) {
+    toast(`Informe um intervalo entre 1 e ${datasetTotal}.`, true);
+    return;
+  }
+  deleteDataset({ start, end });
+});
 window.addEventListener("beforeunload", (event) => { if (changeCount()) { event.preventDefault(); event.returnValue = ""; } });
 setInterval(() => { if (!document.hidden) refreshState(); }, 5000);
 setInterval(() => { if (!document.hidden) refreshRuntime(); }, 1000);

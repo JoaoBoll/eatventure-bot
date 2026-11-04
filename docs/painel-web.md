@@ -49,6 +49,8 @@ O painel só gerencia processos que ele iniciou. Ao encerrar o servidor web, sol
 
 Clique no card do dispositivo para abrir diretamente a **Visão IA**; com o bot em execução, a transmissão começa automaticamente. A engrenagem continua abrindo as configurações. A prévia mostra a tela com as detecções e métricas desenhadas pelo bot, sem abrir janelas no servidor, tanto no Windows quanto no Linux. A transmissão usa uma conexão HTTP contínua (MJPEG), com até 20 imagens por segundo, conforme a captura e a conexão.
 
+O botão **Dados** de cada bot abre o dataset da execução correspondente. O painel agrupa as coletas pelo ID da sessão, ordena as imagens pela data de criação e mostra previews em uma grade. É possível excluir a sessão inteira ou um intervalo inclusivo pelos números exibidos nas imagens. A limpeza remove os registros do `samples.jsonl` e apaga somente arquivos que não sejam mais referenciados.
+
 Desenho, redução e compressão das imagens rodam em uma thread exclusiva da prévia de cada dispositivo. Ela sempre usa o quadro mais recente e descarta os pendentes antigos, sem formar uma fila de vídeo atrasado nem fazer esse trabalho no loop de ações do bot.
 
 A transmissão é opcional: só prepara imagens enquanto a aba de visão estiver aberta. Trocar de aba, fechar o dispositivo ou ocultar o navegador interrompe a transmissão; o bot continua ativo. Se a conexão cair, a solicitação expira automaticamente. Apenas o quadro mais recente fica temporariamente em `local/runtime/`, sem criar um histórico de imagens.
