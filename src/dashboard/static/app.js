@@ -292,19 +292,15 @@ async function refreshState(force = false) {
     state.schema = Array.isArray(result.schema) ? result.schema : [];
     state.templates = result.templates || state.templates;
     state.training = result.training || {};
+    state.collected = result.collected || {};
     renderTemplateCategorySuggestions();
     for (const id of selected) if (!deviceById(id)) selected.delete(id);
-    $("server-status").textContent = "Servidor online";
-    $("server-detail").textContent = result.server?.hostname || result.server?.host || "Conexão autenticada";
-    $("server-dot").className = "server-dot green";
     $("last-update").textContent = `Atualizado ${new Date().toLocaleTimeString("pt-BR")}`;
     showError("state-error", result.error || "");
     renderDevices();
     renderDetailStatus();
   } catch (error) {
     if (!authenticated) return;
-    $("server-status").textContent = "Servidor indisponível";
-    $("server-dot").className = "server-dot amber";
     showError("state-error", error.message);
     if (!state.devices.length) renderEmpty("Não foi possível carregar", "Use Atualizar para tentar novamente.", "!");
   } finally {
@@ -321,7 +317,6 @@ function renderEmpty(title, message, symbol = "▤") {
 
 function renderSummary(visible) {
   const running = state.devices.filter((device) => device.running).length;
-  $("nav-count").textContent = state.devices.length;
   $("kpi-running").textContent = count(running);
   $("kpi-running-detail").textContent = `${state.devices.length} ${state.devices.length === 1 ? "dispositivo cadastrado" : "dispositivos cadastrados"}`;
   $("kpi-connected").textContent = count(state.devices.filter(connected).length);
