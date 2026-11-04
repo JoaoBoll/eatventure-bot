@@ -77,6 +77,38 @@ Habilita a conexão pela mesma rede Wi-Fi. Confirme com `adb devices` antes de r
 
 ## Comandos para rodar
 
+### Painel web
+
+Com o ambiente virtual ativado, instale as dependências do painel e inicie-o:
+
+```powershell
+python -m pip install -r requirements-web.txt
+python src/web.py
+```
+
+Abra `http://localhost:8765` no mesmo computador. Para permitir acesso apenas local, use `python src/web.py --host 127.0.0.1`. O painel detecta os dispositivos autorizados pelo ADB e permite iniciar, parar e configurar os bots. Veja [docs/painel-web.md](docs/painel-web.md) para token de acesso, outra porta e operação pela rede local.
+
+Em um servidor Linux, para liberar o terminal, inicie o painel em segundo plano:
+
+```bash
+nohup .venv/bin/python src/web.py > /dev/null 2>&1 < /dev/null &
+```
+
+O painel continua executando após encerrar a sessão SSH, sem salvar saída em arquivo. Use o botão **Encerrar painel** na interface para pará-lo. Para mantê-lo ativo também após reinicializações do servidor, use o serviço `systemd` descrito em [docs/painel-web.md](docs/painel-web.md).
+
+Em Debian ou Ubuntu, se o `pip` informar `externally-managed-environment`, instale o suporte a ambientes virtuais e use `.venv`; não use `--break-system-packages`:
+
+```bash
+sudo apt update
+sudo apt install -y python3-venv
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements-web.txt
+python src/web.py
+```
+
+Se a versão do Python for instalada separadamente e o comando `venv` ainda falhar, instale o pacote correspondente, por exemplo `sudo apt install -y python3.14-venv`.
+
 Para controlar vários aparelhos pelo navegador, iniciar/parar bots e salvar ajustes locais por dispositivo, use o [painel web opcional](docs/painel-web.md). Ele roda no servidor sem interface gráfica; os comandos de terminal abaixo continuam disponíveis.
 
 Mantenha o EatVenture aberto, com a tela ligada e desbloqueada.
