@@ -12,10 +12,11 @@ from core.preview import FramePreview
 
 
 class RuntimeControl:
-    def __init__(self, device_id, status_file, stop_file, session_id=""):
+    def __init__(self, device_id, status_file, stop_file, session_id="", pause_file=None):
         self.device_id = device_id
         self.status_file = Path(status_file)
         self.stop_file = Path(stop_file)
+        self.pause_file = Path(pause_file) if pause_file else None
         self.session_id = session_id
         self.preview = FramePreview(self.status_file, session_id)
         self.stopped = threading.Event()
@@ -33,6 +34,15 @@ class RuntimeControl:
             return True
         try:
             with self.stop_file.open(encoding="utf-8") as source:
+                return source.read(128).strip() == self.session_id
+        except (OSError, UnicodeError):
+            return False
+
+    def should_pause(self):
+        if self.pause_file is None:
+            return False
+        try:
+            with self.pause_file.open(encoding="utf-8") as source:
                 return source.read(128).strip() == self.session_id
         except (OSError, UnicodeError):
             return False

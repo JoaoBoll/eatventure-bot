@@ -1,6 +1,7 @@
 """Encerra o painel web iniciado por src/web.py."""
 
 import argparse
+import json
 import os
 from pathlib import Path
 import signal
@@ -18,14 +19,78 @@ def alive(pid):
     return True
 
 
+def _windows_command_line(pid):
+    command = (
+        f'$process = Get-CimInstance Win32_Process -Filter "ProcessId = {pid}" '
+        '-ErrorAction Stop; $process.CommandLine | ConvertTo-Json -Compress'
+    )
+    try:
+        result = subprocess.run(
+            [
+                "powershell.exe", "-NoProfile", "-NonInteractive",
+                "-Command", command,
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+            check=False,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        value = json.loads(result.stdout) if result.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    return value if isinstance(value, str) else None
+
+
+def _windows_arguments(command_line):
+    import ctypes
+    from ctypes import wintypes
+
+    count = ctypes.c_int()
+    parser = ctypes.windll.shell32.CommandLineToArgvW
+    parser.argtypes = (wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_int))
+    parser.restype = ctypes.POINTER(wintypes.LPWSTR)
+    arguments = parser(command_line, ctypes.byref(count))
+    if not arguments:
+        return []
+    try:
+        return [arguments[index] for index in range(count.value)]
+    finally:
+        release = ctypes.windll.kernel32.LocalFree
+        release.argtypes = (ctypes.c_void_p,)
+        release.restype = ctypes.c_void_p
+        release(arguments)
+
+
+def _is_web_command(arguments):
+    if not arguments:
+        return False
+    executable = Path(arguments[0]).name.casefold()
+    if not (executable.startswith("python") or executable.startswith("pypy")):
+        return False
+    return any(
+        Path(argument).name.casefold() == "web.py"
+        for argument in arguments[1:]
+    )
+
+
 def web_process(pid):
     if os.name == "nt":
-        return True
+        command_line = _windows_command_line(pid)
+        if command_line is None:
+            return False
+        return _is_web_command(_windows_arguments(command_line))
     try:
         command = Path(f"/proc/{pid}/cmdline").read_bytes()
     except OSError:
         return False
-    return b"web.py" in command
+    return _is_web_command(
+        [part.decode(errors="replace") for part in command.split(b"\0") if part]
+    )
 
 
 def remove_pid(path, pid):

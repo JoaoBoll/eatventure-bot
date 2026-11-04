@@ -47,5 +47,5 @@ class DefaultTemplateScanner(Detector):
     def _templates_for(self, frame_width, frame_height):
         return self._defaults_for(frame_width, frame_height)
 
-    def detect(self, frame):
-        return super().detect(frame, categories=None)
+    def detect(self, frame, categories=None, exhaustive=False):
+        return super().detect(frame, categories=categories, exhaustive=exhaustive)

@@ -364,6 +364,7 @@ class _Run:
     serial: str
     status_file: Path
     stop_file: Path
+    pause_file: Path | None = None
     lines: deque = field(default_factory=deque)
     cursor: int = 0
     log_bytes: int = 0
@@ -376,6 +377,7 @@ class _Run:
     watcher: object = None
     group_cleaned: bool = False
     worker_pid: object = None
+    template_snapshots: dict = field(default_factory=dict)
 
 
 class BotSupervisor:
@@ -641,6 +643,13 @@ class BotSupervisor:
 
     def _cleanup_group(self, run):
         FramePreview(run.status_file, run.session_id).clear()
+        with self._lock:
+            run.template_snapshots.clear()
+        if run.pause_file is not None:
+            try:
+                run.pause_file.unlink(missing_ok=True)
+            except OSError:
+                pass
         if os.name != "nt":
             with self._lock:
                 if run.group_cleaned:
@@ -677,7 +686,8 @@ class BotSupervisor:
             key = hashlib.sha256(device_id.encode("utf-8")).hexdigest()
             status_file = runtime / f"{key}.status.json"
             stop_file = runtime / f"{key}.stop"
-            for path in (status_file, stop_file):
+            pause_file = runtime / f"{key}.pause"
+            for path in (status_file, stop_file, pause_file):
                 path.unlink(missing_ok=True)
             session_id = uuid.uuid4().hex
             environment = os.environ.copy()
@@ -689,6 +699,7 @@ class BotSupervisor:
                 "EATVENTURE_STATE_ROOT": str(self.state_root),
                 "EATVENTURE_STATUS_FILE": str(status_file),
                 "EATVENTURE_STOP_FILE": str(stop_file),
+                "EATVENTURE_PAUSE_FILE": str(pause_file),
                 "EATVENTURE_SESSION_ID": session_id,
                 "EATVENTURE_AUTO_TRAIN_EXTERNAL": "1",
             })
@@ -721,7 +732,10 @@ class BotSupervisor:
                     )
                 except OSError as exc:
                     raise RuntimeError(f"Não foi possível iniciar o bot: {exc}") from exc
-                run = _Run(process, started_at, session_id, device["serial"], status_file, stop_file)
+                run = _Run(
+                    process, started_at, session_id, device["serial"], status_file,
+                    stop_file, pause_file=pause_file,
+                )
                 if previous:
                     run.lines.extend(previous.lines)
                     run.cursor = previous.cursor
@@ -829,6 +843,7 @@ class BotSupervisor:
                         raise RuntimeError("Inicie o bot para abrir a visão IA.")
                     if run is not None:
                         FramePreview(run.status_file, run.session_id).clear()
+                        run.template_snapshots.clear()
                     return {"enabled": False}
             path = preview_paths(run.status_file)["request"]
             request = {"session_id": run.session_id, "expires_at": time.time() + 8 if enabled else 0, "mode": mode}
@@ -846,6 +861,16 @@ class BotSupervisor:
                     temporary.unlink(missing_ok=True)
             if not enabled:
                 FramePreview(run.status_file, run.session_id).clear()
+                with self._lock:
+                    run.template_snapshots.clear()
+            if run.pause_file is not None:
+                try:
+                    if enabled and mode == "template":
+                        run.pause_file.write_text(run.session_id, encoding="utf-8")
+                    else:
+                        run.pause_file.unlink(missing_ok=True)
+                except OSError as error:
+                    raise RuntimeError("Não foi possível alterar a pausa para selecionar o template.") from error
             return {"enabled": enabled}
 
     def vision_frame(self, device_id, mode="vision"):
@@ -872,7 +897,35 @@ class BotSupervisor:
         except (OSError, ValueError, TypeError, AttributeError) as error:
             raise RuntimeError("Aguardando frame da visão IA.") from error
 
-    def save_template(self, device_id, category, x, y, width, height):
+    def template_snapshot(self, device_id, snapshot_id=None):
+        device_id = self._runtime_device_id(device_id)
+        path = self.vision_frame(device_id, mode="template")
+        try:
+            content = path.read_bytes()
+        except OSError as error:
+            raise RuntimeError("Não foi possível congelar o frame para o template.") from error
+        if not 0 < len(content) <= 5_000_000:
+            raise RuntimeError("O frame para o template é inválido.")
+        if snapshot_id is not None and (
+            not isinstance(snapshot_id, str)
+            or re.fullmatch(r"[0-9a-f]{32}", snapshot_id) is None
+        ):
+            raise ValueError("Identificador do frame inválido.")
+        snapshot = {
+            "id": snapshot_id or uuid.uuid4().hex,
+            "content": content,
+            "created_at": time.time(),
+        }
+        with self._lock:
+            run = self._runs.get(device_id)
+            if run is None or run.process.poll() is not None:
+                raise RuntimeError("A sessão do bot foi encerrada.")
+            run.template_snapshots[snapshot["id"]] = snapshot
+            while len(run.template_snapshots) > 4:
+                run.template_snapshots.pop(next(iter(run.template_snapshots)))
+        return snapshot
+
+    def save_template(self, device_id, category, snapshot_id, x, y, width, height):
         import cv2
         import numpy as np
 
@@ -881,14 +934,21 @@ class BotSupervisor:
         values = (x, y, width, height)
         if any(type(value) is not int for value in values) or width < 6 or height < 6:
             raise ValueError("Selecione uma área de pelo menos 6x6 pixels.")
+        if not isinstance(snapshot_id, str) or re.fullmatch(r"[0-9a-f]{32}", snapshot_id) is None:
+            raise ValueError("O frame selecionado é inválido.")
         device_id = self._runtime_device_id(device_id)
-        path = self.vision_frame(device_id, mode="template")
-        image = cv2.imdecode(np.frombuffer(path.read_bytes(), np.uint8), cv2.IMREAD_COLOR)
+        with self._lock:
+            run = self._runs.get(device_id)
+            snapshot = run.template_snapshots.get(snapshot_id) if run is not None else None
+            if snapshot is None:
+                raise RuntimeError("O frame selecionado expirou. Atualize o frame e selecione novamente.")
+            content = snapshot["content"]
+        image = cv2.imdecode(np.frombuffer(content, np.uint8), cv2.IMREAD_COLOR)
         if image is None:
-            raise RuntimeError("Não foi possível ler o frame para o template.")
+            raise RuntimeError("Não foi possível ler o frame congelado.")
         frame_height, frame_width = image.shape[:2]
         if x < 0 or y < 0 or x + width > frame_width or y + height > frame_height:
-            raise ValueError("A seleção está fora do frame atual.")
+            raise ValueError("A seleção está fora do frame congelado.")
         crop = image[y:y + height, x:x + width]
         folder = self.root / "src" / "vision" / "templates" / "default" / category
         with self._lock:
@@ -903,6 +963,11 @@ class BotSupervisor:
             destination = folder / f"{frame_width}x{frame_height}_item_{index:03d}.png"
             if not cv2.imwrite(str(destination), crop):
                 raise RuntimeError("Não foi possível salvar o template.")
+            if run.pause_file is not None:
+                try:
+                    run.pause_file.unlink(missing_ok=True)
+                except OSError as error:
+                    raise RuntimeError("Template salvo, mas não foi possível retomar o bot.") from error
         return {"path": str(destination), "category": category, "width": width, "height": height}
 
     def open_vision_stream(self, device_id):

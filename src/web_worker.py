@@ -12,6 +12,7 @@ def main():
     runtime = RuntimeControl(
         os.environ["EATVENTURE_DEVICE_ID"], os.environ["EATVENTURE_STATUS_FILE"],
         os.environ["EATVENTURE_STOP_FILE"], os.environ.get("EATVENTURE_SESSION_ID", ""),
+        os.environ.get("EATVENTURE_PAUSE_FILE"),
     )
     runtime.install_signals()
     runtime.publish({"estado": "iniciando"}, force=True)

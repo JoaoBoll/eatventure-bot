@@ -83,6 +83,7 @@ from core.state_machine import StateMachine
 from core.status import StatusPanel, formata_bateria
 from dataset.recorder import DatasetRecorder
 from vision.detector import Detector
+from vision.template_updater import DefaultTemplateScanner
 from vision.worker import EngineWorker, VisionWorker
 
 logger = log.get("main")
@@ -224,6 +225,7 @@ def run_loop(
 
     last_version = 0
     pause_started = None
+    pause_label = None
     resume_floor = 0.0
     current_resolution = None
 
@@ -238,7 +240,7 @@ def run_loop(
             if current_resolution is not None:
                 resumo["resolution"] = current_resolution
             if pause_started is not None:
-                resumo["estado"] = "PAUSADO PARA TREINO"
+                resumo["estado"] = pause_label or "PAUSADO"
             if runtime is not None:
                 runtime.publish(
                     resumo, fps=vision.get_fps(), capture_fps=capture.get_fps(),
@@ -262,7 +264,14 @@ def run_loop(
                 break
             runtime.preview.requested()
 
-        paused = auto_trainer is not None and auto_trainer.pause_requested
+        training_paused = auto_trainer is not None and auto_trainer.pause_requested
+        template_paused = runtime is not None and runtime.should_pause()
+        paused = training_paused or template_paused
+        pause_label = (
+            "PAUSADO PARA TEMPLATE" if template_paused
+            else "PAUSADO PARA TREINO" if training_paused
+            else None
+        )
         # Timeout curto para a janela do OpenCV continuar respondendo
         # (e o ESC funcionar) mesmo se o stream travar.
         frame, version, timestamp = capture.get_frame(
@@ -280,9 +289,12 @@ def run_loop(
             if pause_started is None:
                 pause_started = time.monotonic()
                 vision.set_frame_floor(float("inf"))
-                logger.info("Bot pausado para o treino automático.")
+                logger.info(
+                    "Bot pausado %s.",
+                    "para selecionar template" if template_paused else "para o treino automático",
+                )
             recorder = state_machine.recorder
-            if not actions.is_busy() and (recorder is None or recorder.prepare_for_training()):
+            if training_paused and not actions.is_busy() and (recorder is None or recorder.prepare_for_training()):
                 auto_trainer.acknowledge_pause()
         elif pause_started is not None:
             resume_floor = time.monotonic()
@@ -336,6 +348,8 @@ def run_loop(
                 elif app_guard.needs_startup_scan():
                     app_guard.request_scan(engine_worker.request_scan())
                     guard_blocking = True
+                # Swipe só explora a tela; qualquer outra ação real zera
+                # o intervalo antes de o guardião poder reiniciar o jogo.
                 elif app_guard.needs_scan(state_machine.last_meaningful_action_time):
                     if recorder is not None:
                         recorder.discard_since(state_machine.last_meaningful_action_wall)
@@ -385,7 +399,11 @@ def run_loop(
             # Leitura em memória: dumpsys custa ~56 ms e não pode entrar aqui.
             "battery": battery.get(),
             "cycle": state_machine.cycle_stats(),
-            "state": "PAUSADO PARA TREINO" if paused else state_machine.state,
+            "state": (
+                "PAUSADO PARA TEMPLATE" if template_paused
+                else "PAUSADO PARA TREINO" if paused
+                else state_machine.state
+            ),
             "searched": detector.last_searched,
             "searchable": detector.last_total,
             "detections": len(detections),
@@ -460,9 +478,9 @@ def main(argv=None, runtime=None):
     engine_worker = None
     if app_guard.enabled:
         app_guard.lock_portrait()
-        engine_detector = Detector(
-            learn_resolution_templates=False,
-        )
+        # O guardião precisa funcionar antes de existir qualquer override da
+        # resolução. O scanner usa diretamente os defaults já carregados.
+        engine_detector = DefaultTemplateScanner(detector)
         engine_worker = EngineWorker(engine_detector)
 
     recorder = build_recorder(ai_collect=True if args.ai_collect else None)

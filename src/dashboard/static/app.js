@@ -40,6 +40,7 @@ let templateStart = null;
 let templateDevice = null;
 let templatePointerId = null;
 let templateRetry = null;
+let templateSnapshot = null;
 let sessionLoading = false;
 let datasetSession = null;
 let datasetOffset = 0;
@@ -899,6 +900,16 @@ function clearVisionImage() {
   visionUrl = null;
 }
 
+function templateSnapshotId() {
+  const bytes = new Uint8Array(16);
+  if (globalThis.crypto?.getRandomValues) {
+    globalThis.crypto.getRandomValues(bytes);
+  } else {
+    for (let index = 0; index < bytes.length; index += 1) bytes[index] = Math.floor(Math.random() * 256);
+  }
+  return Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("");
+}
+
 function stopVision({ mode = "off", message = "", pause = false } = {}) {
   const id = visionDevice;
   visionResume = pause && (visionWanted || visionResume);
@@ -929,6 +940,7 @@ async function startTemplateSelector() {
   templateSelection = null;
   templateStart = null;
   templatePointerId = null;
+  templateSnapshot = null;
   $("template-selection-step").hidden = false;
   $("template-category-step").hidden = true;
   $("template-selection-box").hidden = true;
@@ -951,19 +963,21 @@ function loadTemplateFrame() {
   const id = templateDevice;
   if (!id || !$("template-dialog").open) return;
   clearTimeout(templateRetry);
+  templateSnapshot = templateSnapshotId();
   image.onload = () => {
     $("template-stage").querySelector(".loading-spinner").hidden = true;
     image.hidden = false;
     const box = image.getBoundingClientRect();
     image.style.width = `${box.width}px`;
     image.style.height = `${box.height}px`;
-    $("template-selection-status").textContent = "Arraste sobre o item para marcar a área do template.";
+    $("template-selection-status").textContent = "Frame congelado. Arraste sobre o item para marcar a área do template.";
   };
   image.onerror = () => {
+    templateSnapshot = null;
     image.hidden = true;
     templateRetry = setTimeout(loadTemplateFrame, 400);
   };
-  image.src = `/api/devices/${encodeURIComponent(id)}/vision?mode=template&t=${Date.now()}`;
+  image.src = `/api/devices/${encodeURIComponent(id)}/vision?mode=template&snapshot_id=${templateSnapshot}&t=${Date.now()}`;
 }
 
 function refreshTemplateFrame() {
@@ -971,6 +985,7 @@ function refreshTemplateFrame() {
   templateSelection = null;
   templateStart = null;
   templatePointerId = null;
+  templateSnapshot = null;
   $("template-selection-box").hidden = true;
   $("template-live-preview").hidden = true;
   $("template-confirm").disabled = true;
@@ -990,6 +1005,7 @@ function closeTemplateSelector() {
   templateSelection = null;
   templateStart = null;
   templatePointerId = null;
+  templateSnapshot = null;
   const image = $("template-image");
   image.onload = null;
   image.onerror = null;
@@ -1064,12 +1080,19 @@ function returnToTemplateSelection() {
 }
 
 async function saveTemplateSelection() {
-  if (!templateSelection || !templateDevice) return;
+  if (!templateSelection || !templateDevice || !templateSnapshot) return;
   const category = $("template-category").value.trim();
   if (!/^[a-z][a-z0-9_]{0,63}$/.test(category)) { toast("Informe uma categoria válida.", true); return; }
   const button = $("template-save"); button.disabled = true;
   try {
-    const result = await api(`/api/devices/${encodeURIComponent(templateDevice)}/templates`, { method: "POST", body: JSON.stringify({ category, ...templateSelection }) });
+    const result = await api(`/api/devices/${encodeURIComponent(templateDevice)}/templates`, {
+      method: "POST",
+      body: JSON.stringify({
+        category,
+        snapshot: templateSnapshot,
+        ...templateSelection
+      })
+    });
     toast(`Template salvo: ${result.category} (${result.width}×${result.height}).`);
     closeTemplateSelector();
     await refreshState();

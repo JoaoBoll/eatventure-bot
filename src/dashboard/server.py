@@ -373,7 +373,13 @@ def create_app(root=None, state_root=None, token=None, supervisor=None, require_
         return await run_in_threadpool(supervisor.request_vision, device_id, data["enabled"], mode)
 
     @app.get("/api/devices/{device_id}/vision")
-    def vision_frame(device_id: str, mode: str = "vision"):
+    def vision_frame(device_id: str, mode: str = "vision", snapshot_id: str = ""):
+        if mode == "template":
+            snapshot = supervisor.template_snapshot(device_id, snapshot_id or None)
+            return Response(
+                snapshot["content"], media_type="image/jpeg",
+                headers={"X-Template-Snapshot": snapshot["id"]},
+            )
         path = supervisor.vision_frame(device_id, mode)
         try:
             content = path.read_bytes()
@@ -386,8 +392,9 @@ def create_app(root=None, state_root=None, token=None, supervisor=None, require_
         from starlette.concurrency import run_in_threadpool
         data = await body(request)
         return await run_in_threadpool(
-            supervisor.save_template, device_id, data.get("category"), data.get("x"),
-            data.get("y"), data.get("width"), data.get("height"),
+            supervisor.save_template, device_id, data.get("category"),
+            data.get("snapshot"), data.get("x"), data.get("y"),
+            data.get("width"), data.get("height"),
         )
 
     @app.get("/api/devices/{device_id}/vision/stream")
