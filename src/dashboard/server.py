@@ -2,7 +2,6 @@
 
 from contextlib import asynccontextmanager
 import asyncio
-import hashlib
 import hmac
 import json
 import os
@@ -77,11 +76,8 @@ def access_token(state_root):
     return token
 
 
-def template_catalog(root, state_root, store):
+def template_catalog(root):
     roots = [Path(root) / "src" / "vision" / "templates"]
-    for profile in store.list_profiles():
-        digest = hashlib.sha256(profile["device_id"].encode()).hexdigest()
-        roots.append(Path(state_root) / "device-data" / digest / "templates")
     categories = {}
     total = 0
     for base in roots:
@@ -186,7 +182,7 @@ def create_app(root=None, state_root=None, token=None, supervisor=None, require_
         with catalog_lock:
             if time.monotonic() - catalog_cache["at"] > 10 or catalog_cache["value"] is None:
                 catalog_cache.update(
-                    at=time.monotonic(), value=template_catalog(root, state_root, store),
+                    at=time.monotonic(), value=template_catalog(root),
                 )
             return catalog_cache["value"]
 

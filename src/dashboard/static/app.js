@@ -909,6 +909,7 @@ async function startTemplateSelector() {
   $("template-selection-step").hidden = false;
   $("template-category-step").hidden = true;
   $("template-selection-box").hidden = true;
+  $("template-live-preview").hidden = true;
   $("template-confirm").disabled = true;
   $("template-category").value = "";
   $("template-title").textContent = "Selecione o item";
@@ -930,6 +931,9 @@ function loadTemplateFrame() {
   image.onload = () => {
     $("template-stage").querySelector(".loading-spinner").hidden = true;
     image.hidden = false;
+    const box = image.getBoundingClientRect();
+    image.style.width = `${box.width}px`;
+    image.style.height = `${box.height}px`;
     $("template-selection-status").textContent = "Arraste sobre o item para marcar a área do template.";
   };
   image.onerror = () => {
@@ -945,7 +949,10 @@ function refreshTemplateFrame() {
   templateStart = null;
   templatePointerId = null;
   $("template-selection-box").hidden = true;
+  $("template-live-preview").hidden = true;
   $("template-confirm").disabled = true;
+  $("template-image").style.width = "";
+  $("template-image").style.height = "";
   $("template-image").hidden = true;
   $("template-stage").querySelector(".loading-spinner").hidden = false;
   $("template-selection-status").textContent = "Buscando o frame mais recente…";
@@ -964,6 +971,8 @@ function closeTemplateSelector() {
   image.onload = null;
   image.onerror = null;
   image.removeAttribute("src");
+  image.style.width = "";
+  image.style.height = "";
   image.hidden = true;
   if ($("template-dialog").open) $("template-dialog").close();
   if (id) releaseVision(id);
@@ -990,7 +999,23 @@ function updateTemplateSelection(start, end) {
   selection.style.width = `${templateSelection.width * box.width / image.naturalWidth}px`;
   selection.style.height = `${templateSelection.height * box.height / image.naturalHeight}px`;
   selection.hidden = false;
-  $("template-selection-status").textContent = `Seleção: ${templateSelection.width}×${templateSelection.height}px.`;
+  updateTemplatePreview();
+}
+
+function updateTemplatePreview() {
+  const { x, y, width, height } = templateSelection || {};
+  const preview = $("template-live-preview");
+  if (!width || !height) { preview.hidden = true; return; }
+  const limit = 240;
+  const scale = Math.min(limit / width, limit / height);
+  const canvas = $("template-live-canvas");
+  canvas.width = Math.max(1, Math.round(width * scale));
+  canvas.height = Math.max(1, Math.round(height * scale));
+  const context = canvas.getContext("2d");
+  context.imageSmoothingEnabled = false;
+  context.drawImage($("template-image"), x, y, width, height, 0, 0, canvas.width, canvas.height);
+  $("template-live-size").textContent = `${width}×${height}px`;
+  preview.hidden = false;
 }
 
 function reviewTemplateSelection() {
@@ -1428,6 +1453,7 @@ $("template-image").addEventListener("pointerdown", (event) => {
   templateStart = templatePoint(event);
   templatePointerId = event.pointerId;
   templateSelection = null;
+  $("template-live-preview").hidden = true;
   $("template-confirm").disabled = true;
   $("template-image").setPointerCapture(event.pointerId);
 });
@@ -1441,6 +1467,7 @@ $("template-image").addEventListener("pointerup", (event) => {
   templateStart = null;
   templatePointerId = null;
   $("template-confirm").disabled = templateSelection.width < 6 || templateSelection.height < 6;
+  $("template-selection-status").textContent = `Seleção: ${templateSelection.width}×${templateSelection.height}px. Confira o preview e confirme.`;
 });
 $("template-image").addEventListener("pointercancel", () => { templateStart = null; templatePointerId = null; });
 $("connect-open").addEventListener("click", () => { $("connect-result").textContent = ""; $("connect-dialog").showModal(); });

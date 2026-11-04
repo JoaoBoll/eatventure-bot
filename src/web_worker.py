@@ -1,7 +1,6 @@
 """Entrada isolada usada pelo supervisor; não inicia interface gráfica."""
 
 import os
-from pathlib import Path
 
 
 def main():
@@ -10,9 +9,6 @@ def main():
         raise SystemExit("Este processo deve ser iniciado pelo painel web.")
     from core import config
     from core.runtime import RuntimeControl
-    template_directory = getattr(config, "DEVICE_TEMPLATE_DIR", None)
-    if template_directory is not None:
-        Path(template_directory).mkdir(parents=True, exist_ok=True)
     runtime = RuntimeControl(
         os.environ["EATVENTURE_DEVICE_ID"], os.environ["EATVENTURE_STATUS_FILE"],
         os.environ["EATVENTURE_STOP_FILE"], os.environ.get("EATVENTURE_SESSION_ID", ""),

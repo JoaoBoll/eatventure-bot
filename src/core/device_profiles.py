@@ -268,7 +268,7 @@ def apply_environment_profile(namespace):
         digest = hashlib.sha256(profile["device_id"].encode("utf-8")).hexdigest()
         device_root = Path(state_root).expanduser().resolve() / "device-data" / digest
         namespace.update(
-            DEVICE_TEMPLATE_DIR=device_root / "templates",
+            DEVICE_TEMPLATE_DIR=None,
             LOG_DIR=device_root / "logs",
         )
     namespace.update(SHOW_AI_VISION=False, SHOW_SCRCPY=False, STATUS_PANEL=False)
