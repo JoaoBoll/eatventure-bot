@@ -939,6 +939,19 @@ function loadTemplateFrame() {
   image.src = `/api/devices/${encodeURIComponent(id)}/vision?mode=template&t=${Date.now()}`;
 }
 
+function refreshTemplateFrame() {
+  if (!templateDevice) return;
+  templateSelection = null;
+  templateStart = null;
+  templatePointerId = null;
+  $("template-selection-box").hidden = true;
+  $("template-confirm").disabled = true;
+  $("template-image").hidden = true;
+  $("template-stage").querySelector(".loading-spinner").hidden = false;
+  $("template-selection-status").textContent = "Buscando o frame mais recente…";
+  loadTemplateFrame();
+}
+
 function closeTemplateSelector() {
   const id = templateDevice;
   clearTimeout(templateRetry);
@@ -1405,6 +1418,7 @@ $("template-save").addEventListener("click", saveTemplateSelection);
 $("template-close").addEventListener("click", closeTemplateSelector);
 $("template-cancel").addEventListener("click", closeTemplateSelector);
 $("template-category-cancel").addEventListener("click", closeTemplateSelector);
+$("template-refresh").addEventListener("click", refreshTemplateFrame);
 $("template-confirm").addEventListener("click", reviewTemplateSelection);
 $("template-back").addEventListener("click", returnToTemplateSelection);
 $("template-dialog").addEventListener("cancel", (event) => { event.preventDefault(); closeTemplateSelector(); });
