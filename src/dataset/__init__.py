@@ -1,1 +1,1 @@
-"""Gravação e indexação do dataset de treino."""
+"""Gravação local do dataset de treino."""

@@ -83,7 +83,6 @@ class DatasetRecorder:
     def __init__(
         self,
         directory=None,
-        store=None,
         session=None,
         enabled=True,
         auto_train=None,
@@ -92,10 +91,6 @@ class DatasetRecorder:
         self.root = Path(
             DATASET_DIR if directory is None else directory
         )
-
-        # Índice consultável (Postgres). None = só arquivos.
-        self.store = store
-        self._store_closed = False
 
         self.session = session or uuid.uuid4().hex
         self.created_at = time.time()
@@ -191,7 +186,6 @@ class DatasetRecorder:
 
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
-        self._store_closed = False
         self.running = True
 
         self.thread = threading.Thread(
@@ -221,7 +215,6 @@ class DatasetRecorder:
             if self.thread is None or not self.thread.is_alive():
 
                 self.thread = None
-                self._close_store()
 
             return
 
@@ -243,9 +236,6 @@ class DatasetRecorder:
             else:
 
                 self.thread = None
-
-        if self.thread is None:
-            self._close_store()
 
         logger.info(
             "Dataset: %d gravadas (%.1f MB), %d duplicadas, "
@@ -513,11 +503,6 @@ class DatasetRecorder:
         self.discarded += removed
         self.saved = max(0, self.saved - removed)
         self.disk_bytes = max(0, self.disk_bytes - result.get("bytes_freed", 0))
-        if self.store and ids:
-            try:
-                self.store.delete(ids)
-            except Exception as error:
-                logger.warning("Falha removendo o intervalo inválido do banco: %s", error)
         logger.warning(
             "Dataset: descartadas %d amostras sem ação relevante (%d imagens).",
             removed, result.get("images_removed", 0),
@@ -546,45 +531,30 @@ class DatasetRecorder:
 
     def _run(self):
 
-        try:
+        # stop() interrompe a coleta; o que já entrou na fila ainda vale.
+        while self.running or not self.queue.empty():
 
-            # stop() interrompe a coleta; o que já entrou na fila ainda vale.
-            while self.running or not self.queue.empty():
+            try:
 
-                try:
+                sample = self.queue.get(timeout=0.2)
 
-                    sample = self.queue.get(timeout=0.2)
+            except queue.Empty:
+                continue
 
-                except queue.Empty:
-                    continue
+            try:
 
-                try:
+                self._write(sample)
 
-                    self._write(sample)
+            except Exception as error:
 
-                except Exception as error:
+                logger.exception(
+                    "Erro gravando amostra: %s",
+                    error,
+                )
 
-                    logger.exception(
-                        "Erro gravando amostra: %s",
-                        error,
-                    )
+            finally:
 
-                finally:
-
-                    self.queue.task_done()
-
-        finally:
-
-            self._close_store()
-
-    def _close_store(self):
-
-        with self.lock:
-
-            if self.store and not self._store_closed:
-
-                self._store_closed = True
-                self.store.close()
+                self.queue.task_done()
 
     def _write(self, sample):
 
@@ -707,20 +677,6 @@ class DatasetRecorder:
 
         self.by_action[rotulo] = self.by_action.get(rotulo, 0) + 1
 
-        # Índice no banco é opcional; falha aqui não pode derrubar a gravação (JSONL é a fonte de verdade).
-        if self.store:
-
-            try:
-
-                self.store.insert(registro)
-
-            except Exception as error:
-
-                logger.warning(
-                    "Falha ao indexar no banco (o arquivo "
-                    "foi gravado): %s",
-                    error,
-                )
 
     def _disk_full(self):
         limite = DATASET_MAX_DISK_MB * 1_000_000

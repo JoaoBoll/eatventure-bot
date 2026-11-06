@@ -86,8 +86,9 @@ class RuntimeTests(unittest.TestCase):
 
     def test_config_dataset_save_e_respeitada_sem_flag(self):
         with ExitStack() as stack:
-            for name in ("SHOW_AI_VISION", "SHOW_SCRCPY", "STATUS_PANEL", "DATASET_DB_ENABLED"):
+            for name in ("SHOW_AI_VISION", "SHOW_SCRCPY", "STATUS_PANEL"):
                 stack.enter_context(patch.object(main, name, False))
+            stack.enter_context(patch.dict(main.os.environ, {"EATVENTURE_SESSION_ID": ""}))
             stack.enter_context(patch.object(main, "DATASET_SAVE", True))
             stack.enter_context(patch.object(main.devices, "resolver", return_value="device"))
             for name in ("ScreenCapture", "Detector", "VisionWorker", "ActionManager", "StateMachine", "BatteryMonitor", "run_loop"):
@@ -95,7 +96,7 @@ class RuntimeTests(unittest.TestCase):
             stack.enter_context(patch.object(main.cv2, "destroyAllWindows"))
             recorder = stack.enter_context(patch.object(main, "DatasetRecorder"))
             main.main([])
-            recorder.assert_called_once_with(store=None)
+            recorder.assert_called_once_with(session=None)
             recorder.return_value.start.assert_called_once()
             recorder.return_value.stop.assert_called_once()
 

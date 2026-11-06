@@ -11,10 +11,6 @@ from core import log
 from core.config import (
     AI_WINDOW_NAME,
     AI_WINDOW_POSITION,
-    DATASET_DB_BATCH,
-    DATASET_DB_DSN,
-    DATASET_DB_ENABLED,
-    DATASET_DB_SCHEMA,
     DEVICE_SERIAL,
     LOG_DIR,
     LOG_LEVEL,
@@ -131,51 +127,14 @@ def setup_window():
 
 
 def build_recorder(ai_collect=None):
-    """Gravador do dataset, ou None se desligado. O banco é opcional; sem ele o samples.jsonl continua completo."""
+    """Gravador local do dataset, ou None se desligado."""
 
     dataset_enabled = ai_collect if ai_collect is not None else DATASET_SAVE
 
     if not dataset_enabled:
         return None
 
-    store = None
-
-    if DATASET_DB_ENABLED:
-
-        if not DATASET_DB_DSN:
-
-            logger.error(
-                "DATASET_DB_ENABLED ligado mas "
-                "DATASET_DB_DSN vazio — gravando só em "
-                "arquivo. Ver docs/dataset.md."
-            )
-
-        else:
-
-            from dataset.store import PostgresStore
-
-            try:
-
-                store = PostgresStore(
-                    DATASET_DB_DSN,
-                    batch_size=DATASET_DB_BATCH,
-                    schema=DATASET_DB_SCHEMA,
-                ).connect()
-
-            except Exception as error:
-
-                # Banco fora não pode impedir a coleta: imagens não se recuperam depois.
-                logger.error(
-                    "Sem conexão com o banco (%s) — gravando "
-                    "só em arquivo. Depois dá para importar "
-                    "com tools/dataset_import.py.",
-                    error,
-                )
-
-                store = None
-
     return DatasetRecorder(
-        store=store,
         session=os.environ.get("EATVENTURE_SESSION_ID") or None,
     )
 
@@ -561,7 +520,7 @@ def main(argv=None, runtime=None):
 
         logger.info("Encerrando EatVenture AI...")
 
-        # Antes do resto: fecha a amostra pendente e grava o último lote no banco.
+        # Antes do resto: fecha a amostra pendente e termina a fila local.
         if recorder:
 
             recorder.stop()

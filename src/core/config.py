@@ -215,15 +215,6 @@ AI_TRAIN_CHECK_INTERVAL = 600.0
 AI_TRAIN_JOBS = min(max(1, (os.cpu_count() or 1) // 2), 64)
 AI_PAUSE_BOT_WHILE_TRAINING = True
 
-DATASET_DB_ENABLED = os.environ.get(
-    "EATVENTURE_DB_ENABLED",
-    "false",
-).strip().lower() in {"1", "true", "yes", "on"}
-DATASET_DB_DSN = os.environ.get("EATVENTURE_DB_DSN", "")
-DATASET_DB_SCHEMA = "public"
-DATASET_DB_BATCH = 20
-
-
 # ==== LOGGING ====
 
 LOG_LEVEL = "INFO"

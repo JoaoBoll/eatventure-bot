@@ -103,8 +103,7 @@ swipes de exploração.
 exploração, que chama o `ActionManager` por outro caminho e por
 isso tem gancho próprio em `_explore_screen`. A direção vai no
 **nome** e não num campo novo, porque para o treino subir e
-descer são rótulos diferentes — e assim o índice e o banco não
-mudam de forma.
+descer são rótulos diferentes e continuam distinguíveis no índice.
 
 `tests/test_dataset.py::test_todas_as_acoes_do_bot_entram`
 confere que nenhuma ação do `ACTION_TABLE` ficou de fora: uma
@@ -168,127 +167,7 @@ Notas que evitam armadilha:
   (ex: `/default/box/item_003.png` ou `/1080x2400/food/Pizza.png`).
   Permite rastrear a origem exata de cada amostra para o treino.
 
-O treino pode ler só isto. **O banco é opcional.**
-
----
-
-## Banco de dados (opcional)
-
-### O que vai, e o que não vai
-
-**Vai:** metadado. **Não vai:** pixel.
-
-Guardar imagem como BLOB parece organizado e é ruim na prática —
-o treino leria gigabytes por época através do driver, e o dataset
-deixaria de ser copiável com um `rsync`. O banco ganha o lugar
-dele como **índice consultável**:
-
-```sql
--- todo open_box que funcionou, com boa confiança
-SELECT image
-  FROM dataset_sample
- WHERE action = 'open_box'
-   AND outcome = 'changed'
-   AND target_confidence > 0.9;
-```
-
-### 1. Instalar o driver
-
-```bash
-pip install 'psycopg[binary]'
-```
-
-### 2. Criar as tabelas
-
-O DDL executável está em **[schema.sql](schema.sql)** — três
-tabelas (`dataset_session`, `dataset_sample`, `dataset_box`) e
-sete índices:
-
-```bash
-psql -h 192.168.1.100 -U admin -d eatventure -f docs/schema.sql
-```
-
-Ou cole o conteúdo no pgAdmin/DBeaver com o banco aberto. É
-seguro rodar de novo: tudo usa `IF NOT EXISTS`. No fim do script
-há duas consultas de conferência (esperado: 3 tabelas, 7
-índices).
-
-O DDL vive **só** ali, e não repetido aqui: duas cópias seriam
-duas fontes de verdade, e a divergência apareceria na primeira
-execução com banco. `tests/test_dataset.py::test_ddl_cobre_as_colunas_do_insert`
-confere que as colunas do `schema.sql` cobrem exatamente o que o
-`PostgresStore` insere.
-
-### 3. Configurar
-
-```python
-DATASET_DB_ENABLED = True
-DATASET_DB_DSN = "postgresql://usuario:senha@host:5432/banco"
-DATASET_DB_SCHEMA = "public"
-DATASET_DB_BATCH = 20
-```
-
-### 4. Carregar
-
-O caminho recomendado é **importar depois**, não gravar ao vivo:
-
-```bash
-python tools/dataset_import.py --jsonl dataset/data/1088x1742/samples.jsonl
-python tools/dataset_import.py --dsn postgresql://... --jsonl outro/samples.jsonl
-```
-
-Sem `--jsonl`, o importador procura o layout plano legado em
-`dataset/samples.jsonl`. Para coletas atuais, escolha cada shard em
-`dataset/data/<resolução>/samples.jsonl`.
-
-Funciona para sessões antigas, gravadas antes de existir banco.
-Reimportar é seguro: chave primária + `ON CONFLICT DO NOTHING`.
-
-Ligar `DATASET_DB_ENABLED` faz o bot indexar ao vivo, em lotes.
-É só conveniência — **falha de banco nunca derruba a gravação**,
-porque o arquivo é o que não se recupera depois.
-
----
-
-## Consultas úteis
-
-```sql
--- Quanto tenho de cada ação, e quanto disso funcionou?
-SELECT action,
-       COUNT(*)                                   AS total,
-       COUNT(*) FILTER (WHERE outcome='changed')  AS ok,
-       COUNT(*) FILTER (WHERE outcome='unchanged')AS falhou
-  FROM dataset_sample
- GROUP BY action
- ORDER BY total DESC;
-```
-
-```sql
--- Categorias com poucas caixas: onde o dataset está fraco.
-SELECT category, COUNT(*) AS caixas
-  FROM dataset_box
- GROUP BY category
- ORDER BY caixas;
-```
-
-```sql
--- Ações que NÃO funcionaram: os erros do professor, para
--- inspecionar à mão ou deixar fora do treino.
-SELECT s.image, s.action, s.target_template, s.target_confidence
-  FROM dataset_sample s
- WHERE s.outcome = 'unchanged'
- ORDER BY s.created_at DESC
- LIMIT 50;
-```
-
-```sql
--- Quase-duplicatas entre sessões diferentes.
-SELECT phash, COUNT(*), COUNT(DISTINCT session_id)
-  FROM dataset_sample
- GROUP BY phash
-HAVING COUNT(*) > 1
- ORDER BY 2 DESC;
-```
+O treino usa diretamente este índice local.
 
 ---
 
@@ -339,7 +218,7 @@ inteira (8,9 a 59,8 nos dados) enquanto o ruído de animação fica
 abaixo de 5,8. O que não dá é separar "nada mudou" de "mudou
 pouco", que é exatamente o que a deduplicação exigiria.
 
-## Ler no treino, sem banco
+## Ler no treino
 
 ```python
 import json
@@ -381,9 +260,8 @@ onde é fácil errar por um fator de 2.
 | Só ação que saiu de verdade é gravada | O gancho está em `_act`, o único ponto que sabe que a ação não foi barrada por cooldown nem por worker ocupado. |
 | Bot travado não enche o dataset | Corte por sequência de `unchanged` na mesma ação (`DATASET_MAX_UNCHANGED_STREAK`). Ver abaixo por que **não** é deduplicação por conteúdo. |
 | Negativas não enchem o disco | Espaçadas por **tempo** (`DATASET_NEGATIVE_INTERVAL`), não por sorteio: `observe()` roda ~30x/s, e 5% por passada gravou 11 GB/hora no ensaio. |
-| Banco fora do ar não perde dado | O JSONL é a fonte de verdade; o banco se preenche depois com `tools/dataset_import.py`. |
 
-Coberto por [tests/test_dataset.py](../tests/test_dataset.py) (20
+Coberto por [tests/test_dataset.py](../tests/test_dataset.py) (33
 testes), incluindo: o ponto do clique bate com o toque real, o
 ponto neutro escala em frame reduzido, `unchanged` não dispara
 por outra instância da mesma categoria em outro canto da tela, e

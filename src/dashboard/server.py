@@ -20,6 +20,7 @@ from core import config
 from core.device_profiles import ProfileStore, settings_schema, template_key
 from core.preview import MIN_FRAME_INTERVAL
 from dashboard.supervisor import BotSupervisor
+from dataset import layout
 from dataset.manager import DatasetManager
 
 
@@ -142,27 +143,17 @@ def training_catalog(root):
 
 
 def collected_catalog(root):
-    """Total de imagens usadas em treinos concluídos, por resolução."""
+    """Total de amostras já gravadas em cada `samples.jsonl`."""
     totals = {}
-    reports = Path(root) / "IA" / "training_reports"
-    if not reports.is_dir():
-        return totals
-    for path in reports.glob("*.json"):
+    dataset_root = Path(root) / "dataset"
+    for shard in layout.shard_roots(dataset_root):
+        resolution = shard.name if shard != dataset_root else "legacy"
         try:
-            if path.stat().st_size > 2_000_000:
-                continue
-            report = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError, UnicodeError):
+            with layout.index_path(shard).open(encoding="utf-8") as source:
+                totals[resolution] = sum(1 for line in source if line.strip())
+        except (OSError, UnicodeError):
             continue
-        if report.get("status") != "success":
-            continue
-        resolution = str(report.get("parameters", {}).get("resolution") or "all")
-        training = report.get("training", {})
-        # `new_images` evita contar novamente amostras reaproveitadas em treinos posteriores.
-        amount = training.get("new_images", training.get("images_used", 0))
-        totals[resolution] = totals.get(resolution, 0) + int(amount or 0)
     return totals
-
 
 def create_app(root=None, state_root=None, token=None, supervisor=None, require_token=False):
     root = Path(root or config.PROJECT_ROOT).resolve()

@@ -27,6 +27,7 @@ logger = log.get("dashboard.supervisor")
 _ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _HOSTNAME = re.compile(r"(?=.{1,253}\Z)[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?\Z")
 _MAX_STATUS_BYTES = 128 * 1024
+_MAX_REPORT_BYTES = 4096
 MAX_LOG_LINES = 500
 MAX_LOG_BYTES = 1024 * 1024
 MAX_LOG_LINE_BYTES = 4096
@@ -378,6 +379,8 @@ class _Run:
     group_cleaned: bool = False
     worker_pid: object = None
     template_snapshots: dict = field(default_factory=dict)
+    report_base: dict = field(default_factory=dict)
+    dataset_base: dict = field(default_factory=dict)
 
 
 class BotSupervisor:
@@ -394,6 +397,7 @@ class BotSupervisor:
         self._auto_training_lock = threading.RLock()
         self._operation_locks = {}
         self._runs = {}
+        self._reports = {}
         self._device_cache = {}
         self._auto_trainer = None
         self._closing = False
@@ -401,6 +405,108 @@ class BotSupervisor:
     def _operation_lock(self, device_id):
         with self._lock:
             return self._operation_locks.setdefault(device_id, threading.RLock())
+
+    def _report_path(self, device_id):
+        key = hashlib.sha256(device_id.encode("utf-8")).hexdigest()
+        return self.state_root / "reports" / f"{key}.json"
+
+    def _report(self, device_id):
+        report = self._reports.get(device_id)
+        if report is not None:
+            return report
+        report = {"voos": 0, "reformas": 0}
+        path = self._report_path(device_id)
+        try:
+            if path.stat().st_size <= _MAX_REPORT_BYTES:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(data, dict) and data.get("device_id") == device_id:
+                    for key in report:
+                        value = data.get(key, 0)
+                        if type(value) is int and value >= 0:
+                            report[key] = value
+        except (OSError, ValueError, UnicodeError):
+            pass
+        self._reports[device_id] = report
+        return report
+
+    def _save_report(self, device_id, report):
+        path = self._report_path(device_id)
+        temporary = None
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=path.parent, delete=False,
+            ) as output:
+                temporary = Path(output.name)
+                json.dump(
+                    {"device_id": device_id, **report}, output,
+                    ensure_ascii=False, allow_nan=False,
+                )
+            os.replace(temporary, path)
+        except OSError:
+            logger.warning("NÃ£o foi possÃ­vel salvar o relatÃ³rio de %s.", device_id)
+        finally:
+            if temporary is not None:
+                try:
+                    temporary.unlink(missing_ok=True)
+                except OSError:
+                    pass
+
+    @staticmethod
+    def _counter(metrics, key):
+        value = metrics.get(key, 0)
+        return value if type(value) is int and value >= 0 else 0
+
+    def _sample_count(self, resolution):
+        if not re.fullmatch(r"[1-9]\d*x[1-9]\d*", resolution):
+            return 0
+        path = self.root / "dataset" / "data" / resolution / "samples.jsonl"
+        try:
+            with path.open(encoding="utf-8") as source:
+                return sum(1 for line in source if line.strip())
+        except (OSError, UnicodeError):
+            return 0
+
+    def _sample_catalog(self):
+        data_dir = self.root / "dataset" / "data"
+        try:
+            resolutions = [
+                path.name for path in data_dir.iterdir()
+                if path.is_dir() and re.fullmatch(r"[1-9]\d*x[1-9]\d*", path.name)
+            ]
+        except OSError:
+            return {}
+        return {resolution: self._sample_count(resolution) for resolution in resolutions}
+
+    def _add_report_metrics(self, device_id, run, metrics):
+        report = self._report(device_id)
+        if run is None:
+            metrics.update({
+                "voos_total": report["voos"], "voos_delta": 0,
+                "reformas_total": report["reformas"], "reformas_delta": 0,
+            })
+            return
+        changed = False
+        for key in ("voos", "reformas"):
+            session_total = self._counter(metrics, key)
+            total = run.report_base.get(key, report[key]) + session_total
+            if total > report[key]:
+                report[key] = total
+                changed = True
+            metrics[f"{key}_total"] = report[key]
+            metrics[f"{key}_delta"] = session_total
+        if changed:
+            self._save_report(device_id, report)
+
+    def _add_dataset_metrics(self, run, metrics):
+        summary = metrics.get("summary")
+        resolution = summary.get("resolution") if isinstance(summary, dict) else None
+        if not isinstance(resolution, str) or not re.fullmatch(r"[1-9]\d*x[1-9]\d*", resolution):
+            return
+        session_total = self._counter(metrics, "dados_sessao")
+        if resolution not in run.dataset_base:
+            run.dataset_base[resolution] = max(0, self._sample_count(resolution) - session_total)
+        metrics["dados_coletados"] = run.dataset_base[resolution] + session_total
 
     def _catalog(self, refresh=False):
         catalog = {device["id"]: device for device in self.devices.list(refresh=refresh)}
@@ -521,8 +627,8 @@ class BotSupervisor:
                         except (KeyError, RuntimeError, OSError):
                             logger.exception("Não foi possível retomar o bot %s após o treino.", device_id)
 
-    def _metrics(self, device_id, run):
-        if run is None or run.process.poll() is not None:
+    def _metrics(self, device_id, run, allow_finished=False):
+        if run is None or (not allow_finished and run.process.poll() is not None):
             return {}
         try:
             with run.status_file.open("r", encoding="utf-8") as stream:
@@ -577,7 +683,12 @@ class BotSupervisor:
                 "status": status,
                 "profile": profile,
             })
-        device["metrics"] = self._metrics(device_id, run)
+        metrics = self._metrics(device_id, run)
+        with self._lock:
+            self._add_report_metrics(device_id, run if running else None, metrics)
+            if running:
+                self._add_dataset_metrics(run, metrics)
+        device["metrics"] = metrics
         return device
 
     def list_devices(self, refresh=False):
@@ -639,6 +750,16 @@ class BotSupervisor:
 
     def _watch_process(self, run):
         run.exit_code = run.process.wait()
+        with self._lock:
+            device_id = next(
+                (key for key, active in self._runs.items() if active is run),
+                None,
+            )
+            if device_id is not None:
+                self._add_report_metrics(
+                    device_id, run,
+                    self._metrics(device_id, run, allow_finished=True),
+                )
         self._cleanup_group(run)
 
     def _cleanup_group(self, run):
@@ -717,6 +838,7 @@ class BotSupervisor:
                     if running_id != device_id and active.serial in device["aliases"] and active.process.poll() is None:
                         raise RuntimeError("Este aparelho já está em execução por outra conexão ADB.")
                 try:
+                    dataset_base = self._sample_catalog()
                     process = subprocess.Popen(
                         command,
                         cwd=str(self.root),
@@ -736,6 +858,8 @@ class BotSupervisor:
                     process, started_at, session_id, device["serial"], status_file,
                     stop_file, pause_file=pause_file,
                 )
+                run.report_base = dict(self._report(device_id))
+                run.dataset_base = dataset_base
                 if previous:
                     run.lines.extend(previous.lines)
                     run.cursor = previous.cursor

@@ -406,8 +406,9 @@ function renderDevice(device) {
   const metrics = node("dl", "device-metrics");
   for (const [key, label, value] of metricValues(device)) {
     const item = node("div", "device-metric");
-    const output = node("dd", key === "templates" ? "accent" : "", value);
+    const output = node("dd", key === "templates" ? "accent" : "");
     output.dataset.metric = key;
+    setMetricValue(output, value);
     item.append(node("dt", "", label), output);
     metrics.append(item);
   }
@@ -441,18 +442,35 @@ function metricValues(device) {
   const level = numeric(typeof battery === "object" && battery ? battery.level : battery);
   const resolution = metric(device, "resolution");
   const trainings = resolution ? state.training[resolution] : null;
+  const collected = metric(device, "dados_coletados") ?? (resolution ? state.collected?.[resolution] : 0);
   return [
-    ["dados_coletados", "Dados coletados", count(state.collected?.[resolution] || 0)],
+    ["dados_coletados", "Dados coletados", count(collected || 0)],
     ["dados_sessao", "Dados da sessão", count(metric(device, "dados_sessao"))],
     ["treinamentos", "Treinamentos", trainings === null ? "—" : count(trainings)],
-    ["voos", "Voou", count(metric(device, "voos"))],
-    ["reformas", "Renovou", count(metric(device, "reformas"))],
+    ["voos", "Voou", eventMetric(device, "voos")],
+    ["reformas", "Renovou", eventMetric(device, "reformas")],
     ["battery", "Bateria", level === null ? "—" : `${level}%${battery?.charging ? " ↯" : ""}`]
   ];
 }
 
+function eventMetric(device, key) {
+  const total = metric(device, `${key}_total`) ?? metric(device, key);
+  const delta = numeric(metric(device, `${key}_delta`));
+  if (!(delta > 0)) return count(total);
+  return { total: count(total), delta: count(delta) };
+}
+
+function setMetricValue(output, value) {
+  if (!value || typeof value !== "object") {
+    output.textContent = value;
+    return;
+  }
+  output.replaceChildren(document.createTextNode(value.total));
+  if (value.delta) output.append(document.createTextNode(" "), node("span", "metric-delta", `(+${value.delta})`));
+}
+
 function updateDeviceMetrics(card, device) {
-  for (const [key, , value] of metricValues(device)) card.querySelector(`[data-metric="${key}"]`).textContent = value;
+  for (const [key, , value] of metricValues(device)) setMetricValue(card.querySelector(`[data-metric="${key}"]`), value);
   card.querySelector(".device-runtime").textContent = runtime(device);
   const botState = metric(device, "state") || metric(device, "estado");
   const stateLabel = card.querySelector(".bot-state");
