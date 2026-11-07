@@ -232,13 +232,28 @@ class DeviceManager:
                     for service in services
                     for alias in self._mdns_aliases(service)
                 }
+                hardware_ids = {
+                    info.get("hardware")
+                    for info in (*properties.values(), *known.values())
+                    if info.get("hardware")
+                }
+
+                def service_hardware(service):
+                    if service is None:
+                        return None
+                    instance = service["instance"]
+                    return next((
+                        hardware for hardware in hardware_ids
+                        if instance.startswith(f"adb-{hardware}-")
+                    ), None)
+
                 network_ids = dict(self._network_ids)
                 for serial in online:
                     host = self._network_host(serial)
                     if not host:
                         continue
-                    hardware = properties.get(serial, {}).get("hardware")
                     service = mdns_by_alias.get(serial)
+                    hardware = properties.get(serial, {}).get("hardware") or service_hardware(service)
                     if hardware:
                         network_ids[host] = hardware
                     elif service is not None:
@@ -250,8 +265,9 @@ class DeviceManager:
                     info = properties.get(serial, known.get(serial, {}))
                     service = mdns_by_alias.get(serial)
                     host = self._network_host(serial) if _wifi(serial) else None
-                    if info.get("hardware"):
-                        device_id = info["hardware"]
+                    hardware = info.get("hardware") or service_hardware(service)
+                    if hardware:
+                        device_id = hardware
                     elif host:
                         device_id = network_ids[host]
                     elif service is not None:
@@ -510,14 +526,41 @@ class BotSupervisor:
 
     def _catalog(self, refresh=False):
         catalog = {device["id"]: device for device in self.devices.list(refresh=refresh)}
+
+        def adopt_identity(identifier, serial=None):
+            def identifies(device):
+                aliases = device.get("aliases", ())
+                return (
+                    identifier in aliases
+                    or any(alias.startswith(f"adb-{identifier}-") for alias in aliases)
+                    or serial is not None and (
+                        serial == device.get("serial") or serial in aliases
+                    )
+                )
+
+            match = next((
+                key for key, device in catalog.items()
+                if key != identifier and identifies(device)
+            ), None)
+            if match is None:
+                return
+            discovered = catalog.pop(match)
+            previous = catalog.get(identifier, {})
+            aliases = list(dict.fromkeys([
+                *previous.get("aliases", ()), *discovered.get("aliases", ()), match,
+            ]))
+            catalog[identifier] = {**previous, **discovered, "id": identifier, "aliases": aliases}
+
         for profile in self.store.list_profiles():
             device_id = profile["device_id"]
+            adopt_identity(device_id)
             catalog.setdefault(device_id, {
                 "id": device_id, "serial": None, "model": None,
                 "connection": None, "adb_state": "disconnected", "aliases": [], "connected": False,
             })
         with self._lock:
             for device_id, run in self._runs.items():
+                adopt_identity(device_id, run.serial)
                 catalog.setdefault(device_id, {
                     "id": device_id, "serial": run.serial, "model": None,
                     "connection": "wifi" if _wifi(run.serial) else "usb",
