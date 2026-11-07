@@ -43,6 +43,7 @@ let templateRetry = null;
 let templateSnapshot = null;
 let sessionLoading = false;
 let datasetSession = null;
+let datasetResolution = null;
 let datasetOffset = 0;
 let datasetTotal = 0;
 let datasetGeneration = 0;
@@ -250,6 +251,11 @@ function metric(device, key) {
   return value === null || value === undefined ? null : value;
 }
 
+function datasetResolutionOf(device) {
+  const resolution = metric(device, "resolution");
+  return typeof resolution === "string" && /^[1-9]\d*x[1-9]\d*$/.test(resolution) ? resolution : null;
+}
+
 function numeric(value) { return Number.isFinite(Number(value)) && value !== null && value !== "" ? Number(value) : null; }
 function count(value) { const valueNumber = numeric(value); return valueNumber === null ? "—" : numberFormat.format(valueNumber); }
 
@@ -424,8 +430,14 @@ function renderDevice(device) {
   const settings = button("⚙", "button ghost settings-button", () => openDetails(device.id, "settings"), "Configurações, itens e logs");
   settings.setAttribute("aria-label", `Configurar ${deviceName(device)}`);
   settings.dataset.role = "settings";
-  const dataset = button("▦ Dados", "button ghost dataset-button", () => openDatasets(device.session_id), "Ver datasets por sessão");
+  const resolution = datasetResolutionOf(device);
+  const dataset = button("▦ Dados", "button ghost dataset-button", () => {
+    const current = deviceById(device.id) || device;
+    openDatasets(current.session_id, datasetResolutionOf(current));
+  }, "Ver datasets por sessão");
   dataset.setAttribute("aria-label", `Ver datasets de ${deviceName(device)}`);
+  dataset.disabled = !resolution && !device.session_id;
+  if (!resolution) dataset.title = "A resolução será obtida da última sessão do dispositivo.";
   dataset.dataset.role = "dataset";
   footer.append(start, restart, dataset, settings);
   card.append(header, status);
@@ -471,6 +483,10 @@ function setMetricValue(output, value) {
 
 function updateDeviceMetrics(card, device) {
   for (const [key, , value] of metricValues(device)) setMetricValue(card.querySelector(`[data-metric="${key}"]`), value);
+  const dataset = card.querySelector(".dataset-button");
+  const resolution = datasetResolutionOf(device);
+  dataset.disabled = !resolution && !device.session_id;
+  dataset.title = resolution ? "Ver datasets por sessão" : "A resolução será obtida da última sessão do dispositivo.";
   card.querySelector(".device-runtime").textContent = runtime(device);
   const botState = metric(device, "state") || metric(device, "estado");
   const stateLabel = card.querySelector(".bot-state");
@@ -1426,8 +1442,22 @@ function datasetDate(value) {
   return date && !Number.isNaN(date.getTime()) ? date.toLocaleString("pt-BR") : "Data desconhecida";
 }
 
-async function openDatasets(preferredSession = null) {
+async function openDatasets(preferredSession = null, resolution = null) {
+  if ((typeof resolution !== "string" || !/^[1-9]\d*x[1-9]\d*$/.test(resolution)) && preferredSession) {
+    try {
+      const result = await api(`/api/datasets/sessions?session_id=${encodeURIComponent(preferredSession)}`);
+      resolution = result.sessions?.[0]?.resolution;
+    } catch (error) {
+      if (authenticated) toast(error.message, true);
+      return;
+    }
+  }
+  if (typeof resolution !== "string" || !/^[1-9]\d*x[1-9]\d*$/.test(resolution)) {
+    toast("Nenhuma resolução com dados coletados foi encontrada.", true);
+    return;
+  }
   datasetSession = preferredSession || null;
+  datasetResolution = resolution;
   $("dataset-dialog").showModal();
   await refreshDatasetSessions(preferredSession);
 }
@@ -1437,7 +1467,7 @@ async function refreshDatasetSessions(preferredSession = datasetSession) {
   $("dataset-refresh").disabled = true;
   $("dataset-session-list").replaceChildren(node("p", "muted", "Carregando sessões…"));
   try {
-    const result = await api("/api/datasets/sessions");
+    const result = await api(`/api/datasets/sessions?resolution=${encodeURIComponent(datasetResolution)}`);
     if (generation !== datasetGeneration) return;
     const sessions = Array.isArray(result.sessions) ? result.sessions : [];
     const buttons = sessions.map((session) => {
@@ -1485,11 +1515,11 @@ async function selectDatasetSession(session, append = false) {
     for (const item of $("dataset-session-list").children) item.classList.toggle("active", item.title === session);
   }
   try {
-    const result = await api(`/api/datasets/sessions/${encodeURIComponent(session)}?offset=${datasetOffset}&limit=200`);
+    const result = await api(`/api/datasets/sessions/${encodeURIComponent(session)}?offset=${datasetOffset}&limit=200&resolution=${encodeURIComponent(datasetResolution)}`);
     if (generation !== datasetGeneration || datasetSession !== session) return;
     datasetTotal = result.total;
     $("dataset-session-title").textContent = `Sessão com ${count(datasetTotal)} imagens`;
-    $("dataset-session-detail").textContent = session;
+    $("dataset-session-detail").textContent = `${session} · ${datasetResolution}`;
     $("dataset-range-start").max = datasetTotal;
     $("dataset-range-end").max = datasetTotal;
     if (!append) {
@@ -1506,7 +1536,7 @@ async function selectDatasetSession(session, append = false) {
       caption.append(node("strong", "", item.action || "Sem ação"), node("small", "", datasetDate(item.created_at)));
       figure.append(image, node("span", "image-index", `#${item.index}`), caption);
       fragment.append(figure);
-      apiBlob(`/api/datasets/sessions/${encodeURIComponent(session)}/images/${encodeURIComponent(item.id)}`).then((blob) => {
+      apiBlob(`/api/datasets/sessions/${encodeURIComponent(session)}/images/${encodeURIComponent(item.id)}?resolution=${encodeURIComponent(datasetResolution)}`).then((blob) => {
         if (generation !== datasetGeneration || datasetSession !== session) return;
         const url = URL.createObjectURL(blob);
         datasetUrls.push(url);
@@ -1530,12 +1560,12 @@ async function selectDatasetSession(session, append = false) {
 async function deleteDataset(payload) {
   if (!datasetSession) return;
   const active = state.devices.some((device) => device.running && device.session_id === datasetSession);
-  const description = payload.all ? `toda a sessão (${datasetTotal} imagens)` : `as imagens de #${payload.start} até #${payload.end}`;
+  const description = payload.all ? `toda a sessão nesta resolução (${datasetTotal} imagens)` : `as imagens de #${payload.start} até #${payload.end}`;
   const warning = active ? " O bot desta sessão ainda está coletando e poderá criar novas imagens." : "";
   if (!confirm(`Excluir ${description}? Essa ação remove os registros e os arquivos sem outra referência.${warning}`)) return;
   $("dataset-selected").inert = true;
   try {
-    const result = await api(`/api/datasets/sessions/${encodeURIComponent(datasetSession)}`, { method: "DELETE", body: JSON.stringify(payload) });
+    const result = await api(`/api/datasets/sessions/${encodeURIComponent(datasetSession)}?resolution=${encodeURIComponent(datasetResolution)}`, { method: "DELETE", body: JSON.stringify(payload) });
     toast(`${count(result.deleted)} registros e ${count(result.images_deleted)} imagens excluídos.`);
     await refreshDatasetSessions(datasetSession);
   } catch (error) { if (authenticated) toast(error.message, true); }
@@ -1545,6 +1575,7 @@ async function deleteDataset(payload) {
 function closeDatasets() {
   datasetGeneration += 1;
   clearDatasetSelection();
+  datasetResolution = null;
   $("dataset-dialog").close();
 }
 

@@ -32,32 +32,42 @@ class DatasetManager:
                         continue
                     grouped[session].append(record)
                     identifier = str(record.get("id") or Path(record["_path"]).stem)
-                    images[(session, identifier)] = record
+                    images[(session, record.get("_shard"), identifier)] = record
                 self._by_session = grouped
                 self._images = images
                 self._records = records
             return self._records
 
-    def sessions(self):
+    def sessions(self, resolution=None, session_id=None):
         self._load(refresh=True)
         result = []
         for session, records in self._by_session.items():
+            if session_id is not None and session != session_id:
+                continue
+            if resolution is not None:
+                records = [record for record in records if record.get("_shard") == resolution]
+            if not records:
+                continue
             result.append({
                 "id": session,
                 "count": len(records),
                 "created_at": records[0].get("created_at"),
                 "updated_at": records[-1].get("created_at"),
                 "device_id": next((item.get("device_id") for item in records if item.get("device_id")), None),
+                "resolution": records[-1].get("_shard"),
                 "resolutions": sorted({str(item.get("_shard")) for item in records if item.get("_shard")}),
             })
         return sorted(result, key=lambda item: (item["created_at"] or "", item["id"]), reverse=True)
 
-    def records(self, session):
+    def records(self, session, resolution=None):
         self._load()
-        return list(self._by_session.get(session, ()))
+        records = list(self._by_session.get(session, ()))
+        if resolution is not None:
+            records = [record for record in records if record.get("_shard") == resolution]
+        return records
 
-    def page(self, session, offset=0, limit=200):
-        records = self.records(session)
+    def page(self, session, offset=0, limit=200, resolution=None):
+        records = self.records(session, resolution)
         if not records:
             raise KeyError(session)
         page = records[offset:offset + limit]
@@ -78,17 +88,23 @@ class DatasetManager:
             ],
         }
 
-    def image(self, session, identifier):
+    def image(self, session, identifier, resolution=None):
         self._load()
-        record = self._images.get((session, identifier))
+        if resolution is None:
+            record = next((
+                item for (item_session, _, item_id), item in self._images.items()
+                if item_session == session and item_id == identifier
+            ), None)
+        else:
+            record = self._images.get((session, resolution, identifier))
         if record is not None:
             path = Path(record["_path"]).resolve()
             if path.is_relative_to(self.root) and path.is_file():
                 return path
         raise KeyError(identifier)
 
-    def delete(self, session, start=None, end=None, delete_all=False):
-        records = self.records(session)
+    def delete(self, session, start=None, end=None, delete_all=False, resolution=None):
+        records = self.records(session, resolution)
         if not records:
             raise KeyError(session)
         if delete_all:

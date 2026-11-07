@@ -257,6 +257,11 @@ def create_app(root=None, state_root=None, token=None, supervisor=None, require_
     def known(device_id):
         supervisor.require_device(device_id)
 
+    def dataset_resolution(value):
+        if value is not None and re.fullmatch(r"[1-9]\d*x[1-9]\d*", value) is None:
+            raise ValueError("Resolução do dataset inválida.")
+        return value
+
     async def body(request):
         raw = bytearray()
         async for chunk in request.stream():
@@ -304,34 +309,35 @@ def create_app(root=None, state_root=None, token=None, supervisor=None, require_
         return supervisor.runtime_state()
 
     @app.get("/api/datasets/sessions")
-    def dataset_sessions():
-        return {"sessions": datasets.sessions()}
+    def dataset_sessions(resolution: str | None = None, session_id: str | None = None):
+        return {"sessions": datasets.sessions(dataset_resolution(resolution), session_id)}
 
     @app.get("/api/datasets/sessions/{session_id}")
-    def dataset_session(session_id: str, offset: int = 0, limit: int = 200):
+    def dataset_session(session_id: str, offset: int = 0, limit: int = 200, resolution: str | None = None):
         if offset < 0 or not 1 <= limit <= 500:
             raise ValueError("Paginação inválida.")
         try:
-            return datasets.page(session_id, offset, limit)
+            return datasets.page(session_id, offset, limit, dataset_resolution(resolution))
         except KeyError as error:
             raise HTTPException(status_code=404, detail="Sessão do dataset não encontrada.") from error
 
     @app.get("/api/datasets/sessions/{session_id}/images/{sample_id}")
-    def dataset_image(session_id: str, sample_id: str):
+    def dataset_image(session_id: str, sample_id: str, resolution: str | None = None):
         try:
-            path = datasets.image(session_id, sample_id)
+            path = datasets.image(session_id, sample_id, dataset_resolution(resolution))
         except KeyError as error:
             raise HTTPException(status_code=404, detail="Imagem do dataset não encontrada.") from error
         media_type = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
         return FileResponse(path, media_type=media_type)
 
     @app.delete("/api/datasets/sessions/{session_id}")
-    async def delete_dataset_session(session_id: str, request: Request):
+    async def delete_dataset_session(session_id: str, request: Request, resolution: str | None = None):
         from starlette.concurrency import run_in_threadpool
         data = await body(request)
         try:
             return await run_in_threadpool(
-                datasets.delete, session_id, data.get("start"), data.get("end"), data.get("all") is True,
+                datasets.delete, session_id, data.get("start"), data.get("end"),
+                data.get("all") is True, dataset_resolution(resolution),
             )
         except KeyError as error:
             raise HTTPException(status_code=404, detail="Sessão do dataset não encontrada.") from error
