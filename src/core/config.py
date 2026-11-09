@@ -294,6 +294,10 @@ CATEGORY_ROIS = {
     "engine": (0.0, 0.0, 1.0, 0.10),
 }
 
+# Regiões (x, y, largura, altura) proporcionais à tela nas quais nenhum
+# template pode ser reconhecido. Perfis do painel substituem esta lista.
+BLOCK_REGIONS = []
+
 # Guarda o último recorte aprovado; defaults já cobertos são atualizados
 # apenas na thread de aprendizado, sem busca duplicada na visão principal.
 LEARN_RESOLUTION_TEMPLATES = True

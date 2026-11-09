@@ -520,9 +520,9 @@ class BotSupervisor:
         if not isinstance(resolution, str) or not re.fullmatch(r"[1-9]\d*x[1-9]\d*", resolution):
             return
         session_total = self._counter(metrics, "dados_sessao")
-        if resolution not in run.dataset_base:
-            run.dataset_base[resolution] = max(0, self._sample_count(resolution) - session_total)
-        metrics["dados_coletados"] = run.dataset_base[resolution] + session_total
+        # `dataset_base` é o snapshot global feito antes de iniciar o worker.
+        # Depois disso, o card soma apenas o contador em memória desta sessão.
+        metrics["dados_coletados"] = run.dataset_base.get(resolution, 0) + session_total
 
     def _catalog(self, refresh=False):
         catalog = {device["id"]: device for device in self.devices.list(refresh=refresh)}

@@ -144,6 +144,19 @@ python src/main.py --device SERIAL_DO_DISPOSITIVO
 
 Escolhe o dispositivo pelo serial exibido em `adb devices`. Sem um dispositivo definido pela opção ou pela configuração, o programa pergunta quando há mais de um conectado. Os demais comandos abaixo e o visualizador de captura também aceitam `--device`.
 
+Para impedir o reconhecimento de templates em partes da tela, abra o seletor
+visual de BLOCKs:
+
+```bash
+python tools/block_selector.py
+```
+
+Arraste sobre quantas áreas quiser no mesmo frame. Use `Enter` ou `s` para
+salvar, `u`, `Backspace` ou o botão direito para desfazer a última área e
+`r` ou `F5` para atualizar a captura. No painel web, abra **Visão IA**, use
+**Adicionar BLOCK**, selecione várias áreas e confirme. Depois, salve o perfil
+e reinicie o bot. Os BLOCKs acompanham a resolução do dispositivo.
+
 ```bash
 python src/main_layouts.py
 ```

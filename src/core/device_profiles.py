@@ -13,6 +13,7 @@ from collections.abc import Mapping
 MAX_PROFILE_BYTES = 256 * 1024
 MAX_CATEGORY_THRESHOLDS = 128
 MAX_ITEM_THRESHOLDS = 2000
+MAX_BLOCK_REGIONS = 32
 _CATEGORY = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
 _PROFILE_NAME = re.compile(r"[0-9a-f]{64}\.json\Z")
 _SOURCE_PREFIX = re.compile(r"^(\d+x\d+)_(.+)$")
@@ -119,8 +120,8 @@ def template_key(category, name):
 
 def validate_profile(device_id, data):
     device_id = _device_id(device_id)
-    data = _mapping(data, "Perfil", 6)
-    unknown = data.keys() - {"device_id", "name", "settings", "category_thresholds", "item_thresholds", "run"}
+    data = _mapping(data, "Perfil", 7)
+    unknown = data.keys() - {"device_id", "name", "settings", "category_thresholds", "item_thresholds", "block_regions", "run"}
     if unknown:
         raise ValueError("O perfil contém campos desconhecidos.")
     if data.get("device_id", device_id) != device_id:
@@ -155,6 +156,21 @@ def validate_profile(device_id, data):
             raise ValueError("O perfil contém fidelidades duplicadas para o mesmo template.")
         items[canonical] = _number(value, f"Fidelidade de {key}", 0.0, 1.0)
 
+    raw_blocks = data.get("block_regions", [])
+    if not isinstance(raw_blocks, list) or len(raw_blocks) > MAX_BLOCK_REGIONS:
+        raise ValueError(f"BLOCKs: informe uma lista com até {MAX_BLOCK_REGIONS} regiões.")
+    blocks = []
+    for index, region in enumerate(raw_blocks, 1):
+        if not isinstance(region, (list, tuple)) or len(region) != 4:
+            raise ValueError(f"BLOCK {index}: informe x, y, largura e altura.")
+        x, y, width, height = (
+            _number(value, f"BLOCK {index}", 0.0, 1.0)
+            for value in region
+        )
+        if width <= 0 or height <= 0 or x + width > 1.0 + 1e-9 or y + height > 1.0 + 1e-9:
+            raise ValueError(f"BLOCK {index}: a região deve ficar dentro da tela.")
+        blocks.append([x, y, min(width, 1.0 - x), min(height, 1.0 - y)])
+
     run = dict(_RUN_DEFAULTS)
     for key, value in _mapping(data.get("run", {}), "Execução", len(_RUN_DEFAULTS)).items():
         if key not in run or not isinstance(value, bool):
@@ -166,6 +182,7 @@ def validate_profile(device_id, data):
         "settings": settings,
         "category_thresholds": categories,
         "item_thresholds": items,
+        "block_regions": blocks,
         "run": run,
     }
 
@@ -246,6 +263,7 @@ class ProfileStore:
 
 def apply_environment_profile(namespace):
     namespace.setdefault("ITEM_THRESHOLDS", {})
+    namespace.setdefault("BLOCK_REGIONS", [])
     namespace.setdefault("DEVICE_PROFILE_ID", None)
     namespace.setdefault("DEVICE_TEMPLATE_DIR", None)
     profile_path = os.environ.get("EATVENTURE_PROFILE")
@@ -258,6 +276,7 @@ def apply_environment_profile(namespace):
     namespace.update({SETTING_SPECS[key]["config"]: value for key, value in profile["settings"].items()})
     namespace["CATEGORY_THRESHOLDS"] = {**namespace.get("CATEGORY_THRESHOLDS", {}), **profile["category_thresholds"]}
     namespace["ITEM_THRESHOLDS"] = dict(profile["item_thresholds"])
+    namespace["BLOCK_REGIONS"] = [tuple(region) for region in profile["block_regions"]]
     namespace["DATASET_SAVE"] = profile["run"]["ai_collect"]
     namespace["DEVICE_PROFILE_ID"] = profile["device_id"]
     serial = os.environ.get("EATVENTURE_DEVICE_SERIAL")

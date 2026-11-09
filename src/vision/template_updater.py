@@ -13,6 +13,7 @@ class DefaultTemplateScanner(Detector):
             color_threshold=parent.color_threshold,
             category_thresholds=dict(parent.category_thresholds),
             category_rois=dict(parent.category_rois),
+            block_regions=parent.block_regions,
             coarse_scale=parent.coarse_scale,
             coarse_margin=parent.coarse_margin,
             learn_resolution_templates=False,

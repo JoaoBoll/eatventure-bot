@@ -252,7 +252,10 @@ dialog::backdrop { background: #05080dbf; backdrop-filter: blur(5px); }
 .vision-toolbar { display: flex; flex-shrink: 0; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
 .vision-toolbar h3 { margin-bottom: 5px; font-size: 15px; }
 .vision-toolbar p { margin: 0; font-size: 12px; }
+.vision-toolbar > div:last-child { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .vision-panel > .section-description { flex-shrink: 0; margin-bottom: 16px; }
+.block-regions { display: grid; flex-shrink: 0; gap: 6px; margin: -6px 0 14px; }
+.block-region { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 7px 10px; border: 1px solid #714956; border-radius: 7px; background: #2a1820; color: #efc4cc; font: 11px/1.4 ui-monospace, "Cascadia Code", Consolas, monospace; }
 .vision-panel:has(.vision-live) > .section-description { display: none; }
 .vision-stage { position: relative; display: grid; min-height: 240px; flex: 1; place-items: center; overflow: hidden; border: 1px solid #3b4b64; border-radius: 12px; background: #080c12; }
 .vision-stage.vision-live { border-color: #536d96; background: #080b10; }
@@ -276,6 +279,7 @@ dialog::backdrop { background: #05080dbf; backdrop-filter: blur(5px); }
 .template-stage > .loading-spinner { position: absolute; }
 .template-stage img { display: block; width: auto; height: auto; max-width: 100%; max-height: 100%; cursor: crosshair; touch-action: none; user-select: none; -webkit-user-drag: none; }
 .template-selection-box { position: absolute; z-index: 2; border: 2px solid #76a7ff; background: #4f8fff24; box-shadow: 0 0 0 9999px #02050a75, 0 0 0 1px #07101e; pointer-events: none; }
+.template-block-box { position: absolute; z-index: 2; display: grid; place-items: center; overflow: hidden; border: 2px solid #ef5368; background: #d92f4852; color: #fff; font: 700 11px/1 ui-monospace, "Cascadia Code", Consolas, monospace; text-shadow: 0 1px 3px #000; pointer-events: none; }
 .template-live-preview { position: absolute; z-index: 3; top: 16px; right: 16px; display: grid; width: 264px; min-height: 120px; place-items: center; gap: 8px; padding: 12px; border: 1px solid #526b92; border-radius: 10px; background: #101925ed; box-shadow: 0 12px 38px #0009; pointer-events: none; }
 .template-live-preview[hidden] { display: none; }
 .template-live-preview span { justify-self: start; color: #b9c9e1; font-size: 10px; text-transform: uppercase; letter-spacing: .08em; }

@@ -80,6 +80,13 @@ As opções de coleta de IA, uso exclusivo dos templates da resolução e grava�
 
 Na aba **Visão IA**, use **Adicionar template** para capturar um frame bruto, arrastar sobre o item e salvá-lo na categoria informada. O recorte é salvo em `src/vision/templates/default/<categoria>/`, com a resolução de origem no nome, e fica disponível para todos os dispositivos; o detector o recarrega sem reiniciar o bot.
 
+Use **Adicionar BLOCK** para marcar várias regiões no mesmo frame nas quais
+nenhum template deve ser reconhecido. Continue arrastando para adicionar áreas,
+use **Desfazer último** se necessário e confirme o conjunto. As coordenadas
+ficam proporcionais à tela no perfil do dispositivo. Depois de salvar o perfil,
+reinicie o bot para aplicar. As regiões ativas aparecem em vermelho na prévia e
+podem ser removidas na mesma aba.
+
 Os arquivos ficam em:
 
 ```text

@@ -7,7 +7,7 @@ import subprocess
 import sys
 import time
 
-from core import log
+from core import config, log
 from core.config import (
     AI_WINDOW_NAME,
     AI_WINDOW_POSITION,
@@ -75,6 +75,7 @@ from capture.screen import ScreenCapture
 from core import devices
 from core.app_guard import EatventureGuard
 from core.battery import BatteryMonitor
+from core.block_regions import load_block_regions
 from core.state_machine import StateMachine
 from core.status import StatusPanel, formata_bateria
 from dataset.recorder import DatasetRecorder
@@ -427,7 +428,12 @@ def main(argv=None, runtime=None):
     capture = ScreenCapture(device_id)
 
     # O aprendizado por resolução independe da coleta do dataset.
-    detector = Detector()
+    terminal_blocks = (
+        []
+        if config.DEVICE_PROFILE_ID
+        else load_block_regions(device_id)
+    )
+    detector = Detector(block_regions=[*config.BLOCK_REGIONS, *terminal_blocks])
 
     vision = VisionWorker(detector)
 

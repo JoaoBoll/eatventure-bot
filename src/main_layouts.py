@@ -18,7 +18,8 @@ import time
 import cv2
 
 from capture.screen import ScreenCapture
-from core import devices, log
+from core import config, devices, log
+from core.block_regions import load_block_regions
 from core.config import (
     AI_WINDOW_NAME,
     AI_WINDOW_POSITION,
@@ -217,7 +218,8 @@ def main(argv=None):
 
     capture = ScreenCapture(device_id)
 
-    detector = Detector()
+    terminal_blocks = [] if config.DEVICE_PROFILE_ID else load_block_regions(device_id)
+    detector = Detector(block_regions=[*config.BLOCK_REGIONS, *terminal_blocks])
 
     logger.info(
         "Atualizador de layouts rodando para %s — encerrar com %s",

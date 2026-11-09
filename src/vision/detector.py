@@ -86,6 +86,7 @@ class Detector:
         color_threshold=COLOR_THRESHOLD,
         category_thresholds=None,
         category_rois=None,
+        block_regions=None,
         coarse_scale=COARSE_SCALE,
         coarse_margin=COARSE_MARGIN,
         learn_resolution_templates=None,
@@ -113,6 +114,11 @@ class Detector:
             CATEGORY_ROIS
             if category_rois is None
             else category_rois
+        )
+
+        self.block_regions = tuple(
+            tuple(region)
+            for region in (config.BLOCK_REGIONS if block_regions is None else block_regions)
         )
 
         self.coarse_scale = coarse_scale
@@ -2326,6 +2332,22 @@ class Detector:
             neginf=0.0,
         )
 
+        # Invalida toda posição na qual o retângulo do template tocaria
+        # um BLOCK. Isso vale tanto para a busca grossa quanto para a fina.
+        result_height, result_width = result.shape[:2]
+        image_height, image_width = image.shape[:2]
+        for block_x, block_y, block_width, block_height in self.block_regions:
+            bx1 = int(block_x * image_width)
+            by1 = int(block_y * image_height)
+            bx2 = int(math.ceil((block_x + block_width) * image_width))
+            by2 = int(math.ceil((block_y + block_height) * image_height))
+            rx1 = max(0, bx1 - template_width + 1 - x1)
+            ry1 = max(0, by1 - template_height + 1 - y1)
+            rx2 = min(result_width, bx2 - x1)
+            ry2 = min(result_height, by2 - y1)
+            if rx1 < rx2 and ry1 < ry2:
+                result[ry1:ry2, rx1:rx2] = -1.0
+
         # Máximo bruto antes do corte — é a informação que o threshold
         # esconde e que o diagnóstico precisa.
         if DETECTOR_DEBUG_MISSES and result.size:
@@ -2617,6 +2639,23 @@ class Detector:
         """stats: capture_fps, detect_fps, detect_ms, lag, battery, cycle — chaves ausentes não aparecem. `scale` reconverte detecções (em coords de frame cheio) para o frame reduzido que chega aqui, senão as caixas aparecem fora de lugar."""
 
         output = frame
+
+        output_height, output_width = output.shape[:2]
+        for index, (x, y, width, height) in enumerate(self.block_regions, 1):
+            x1 = int(x * output_width)
+            y1 = int(y * output_height)
+            x2 = int(math.ceil((x + width) * output_width))
+            y2 = int(math.ceil((y + height) * output_height))
+            blocked = output[y1:y2, x1:x2]
+            if blocked.size:
+                color = (20, 20, 180) if blocked.ndim == 3 else 80
+                red = np.full_like(blocked, color)
+                cv2.addWeighted(red, 0.35, blocked, 0.65, 0, blocked)
+            cv2.rectangle(output, (x1, y1), (x2, y2), (30, 30, 230), 2)
+            cv2.putText(
+                output, f"BLOCK {index}", (x1 + 6, min(y2 - 6, y1 + 24)),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (230, 230, 255), 2, cv2.LINE_AA,
+            )
 
         for detection in detections:
 

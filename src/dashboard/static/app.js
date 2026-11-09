@@ -41,6 +41,8 @@ let templateDevice = null;
 let templatePointerId = null;
 let templateRetry = null;
 let templateSnapshot = null;
+let templateMode = "template";
+let templateBlockSelections = [];
 let sessionLoading = false;
 let datasetSession = null;
 let datasetResolution = null;
@@ -539,7 +541,7 @@ async function executeAction(action, ids) {
 }
 
 function normalizeProfile(profile = {}) {
-  return { device_id: profile.device_id || detailId, name: profile.name || "", settings: { ...profile.settings }, category_thresholds: { ...profile.category_thresholds }, item_thresholds: { ...profile.item_thresholds }, run: { ai_collect: !!profile.run?.ai_collect, layout_only: !!profile.run?.layout_only, save_log: !!profile.run?.save_log } };
+  return { device_id: profile.device_id || detailId, name: profile.name || "", settings: { ...profile.settings }, category_thresholds: { ...profile.category_thresholds }, item_thresholds: { ...profile.item_thresholds }, block_regions: Array.isArray(profile.block_regions) ? profile.block_regions.map((region) => [...region]) : [], run: { ai_collect: !!profile.run?.ai_collect, layout_only: !!profile.run?.layout_only, save_log: !!profile.run?.save_log } };
 }
 
 function clone(value) { return JSON.parse(JSON.stringify(value)); }
@@ -552,6 +554,7 @@ function changeCount() {
     const keys = new Set([...Object.keys(draft[section]), ...Object.keys(savedProfile[section])]);
     for (const key of keys) if (draft[section][key] !== savedProfile[section][key]) changes += 1;
   }
+  if (JSON.stringify(draft.block_regions) !== JSON.stringify(savedProfile.block_regions)) changes += 1;
   return changes;
 }
 
@@ -583,6 +586,7 @@ async function openDetails(id, tab = "vision") {
     $("item-search").value = "";
     renderProfile();
     renderItems();
+    renderBlockRegions();
     resetLogs();
     detailSession = deviceById(id)?.started_at || null;
     updatePending();
@@ -681,6 +685,27 @@ function renderProfile() {
     fields.forEach((field) => section.content.append(settingField(field)));
     $("profile-fields").append(section.section);
   }
+}
+
+function renderBlockRegions() {
+  if (!draft) return;
+  const regions = draft.block_regions || [];
+  const items = regions.map((region, index) => {
+    const [x, y, width, height] = region;
+    const item = node("div", "block-region");
+    item.append(
+      node("span", "", `BLOCK ${index + 1}: x ${(x * 100).toFixed(1)}%, y ${(y * 100).toFixed(1)}%, ${
+        (width * 100).toFixed(1)}% × ${(height * 100).toFixed(1)}%`),
+      button("Remover", "text-button danger-text", () => {
+        draft.block_regions.splice(index, 1);
+        renderBlockRegions();
+        updatePending();
+      })
+    );
+    return item;
+  });
+  $("block-regions").replaceChildren(...items);
+  $("block-regions").hidden = !items.length;
 }
 
 function settingField(field) {
@@ -855,6 +880,7 @@ async function saveProfile() {
     draft = clone(savedProfile);
     renderProfile();
     renderItems();
+    renderBlockRegions();
     toast("Perfil salvo neste dispositivo. Aplique ao iniciar ou reiniciar o bot.");
     await refreshState();
   } catch (error) { if (authenticated) showError("profile-error", error.message); }
@@ -872,6 +898,7 @@ async function resetProfile() {
     draft = clone(savedProfile);
     renderProfile();
     renderItems();
+    renderBlockRegions();
     showError("profile-error", "");
     toast("Perfil restaurado. Os padrões serão usados na próxima execução.");
     await refreshState();
@@ -965,7 +992,7 @@ function stopVision({ mode = "off", message = "", pause = false } = {}) {
   return released;
 }
 
-async function startTemplateSelector() {
+async function startTemplateSelector(mode = "template") {
   if (!detailId) return;
   const id = detailId;
   await stopVision();
@@ -975,14 +1002,19 @@ async function startTemplateSelector() {
   templateStart = null;
   templatePointerId = null;
   templateSnapshot = null;
+  templateMode = mode;
+  templateBlockSelections = [];
   $("template-selection-step").hidden = false;
   $("template-category-step").hidden = true;
   $("template-selection-box").hidden = true;
   $("template-live-preview").hidden = true;
   $("template-confirm").disabled = true;
+  $("template-undo").hidden = mode !== "block";
+  $("template-undo").disabled = true;
   $("template-category").value = "";
-  $("template-title").textContent = "Selecione o item";
-  $("template-instruction").textContent = "Arraste com o botão esquerdo sobre o item.";
+  $("template-kind").textContent = mode === "block" ? "NOVA ÁREA BLOCK" : "NOVO TEMPLATE";
+  $("template-title").textContent = mode === "block" ? "Selecione as áreas bloqueadas" : "Selecione o item";
+  $("template-instruction").textContent = mode === "block" ? "Arraste quantas áreas quiser; nenhum template será reconhecido dentro delas." : "Arraste com o botão esquerdo sobre o item.";
   $("template-selection-status").textContent = "Capturando frame sem marcações…";
   $("template-stage").querySelector(".loading-spinner").hidden = false;
   const dialog = $("template-dialog");
@@ -1004,7 +1036,8 @@ function loadTemplateFrame() {
     const box = image.getBoundingClientRect();
     image.style.width = `${box.width}px`;
     image.style.height = `${box.height}px`;
-    $("template-selection-status").textContent = "Frame congelado. Arraste sobre o item para marcar a área do template.";
+    renderTemplateBlockSelections();
+    $("template-selection-status").textContent = templateMode === "block" ? "Frame congelado. Arraste para marcar uma ou mais áreas BLOCK." : "Frame congelado. Arraste sobre o item para marcar a área do template.";
   };
   image.onerror = () => {
     templateSnapshot = null;
@@ -1020,9 +1053,12 @@ function refreshTemplateFrame() {
   templateStart = null;
   templatePointerId = null;
   templateSnapshot = null;
+  templateBlockSelections = [];
   $("template-selection-box").hidden = true;
   $("template-live-preview").hidden = true;
-  $("template-confirm").disabled = true;
+  $("template-confirm").disabled = templateMode === "block" ? !templateBlockSelections.length : true;
+  $("template-undo").disabled = true;
+  renderTemplateBlockSelections();
   $("template-image").style.width = "";
   $("template-image").style.height = "";
   $("template-image").hidden = true;
@@ -1040,6 +1076,7 @@ function closeTemplateSelector() {
   templateStart = null;
   templatePointerId = null;
   templateSnapshot = null;
+  templateBlockSelections = [];
   const image = $("template-image");
   image.onload = null;
   image.onerror = null;
@@ -1048,6 +1085,7 @@ function closeTemplateSelector() {
   image.style.height = "";
   image.hidden = true;
   if ($("template-dialog").open) $("template-dialog").close();
+  renderTemplateBlockSelections();
   if (id) releaseVision(id);
 }
 
@@ -1075,6 +1113,34 @@ function updateTemplateSelection(start, end) {
   updateTemplatePreview();
 }
 
+function renderTemplateBlockSelections() {
+  const stage = $("template-stage");
+  stage.querySelectorAll(".template-block-box").forEach((element) => element.remove());
+  const image = $("template-image");
+  if (!templateBlockSelections.length || !image.naturalWidth || image.hidden) return;
+  const stageBox = stage.getBoundingClientRect();
+  const imageBox = image.getBoundingClientRect();
+  templateBlockSelections.forEach((region, index) => {
+    const box = node("div", "template-block-box");
+    box.style.left = `${imageBox.left - stageBox.left + region.x * imageBox.width / image.naturalWidth}px`;
+    box.style.top = `${imageBox.top - stageBox.top + region.y * imageBox.height / image.naturalHeight}px`;
+    box.style.width = `${region.width * imageBox.width / image.naturalWidth}px`;
+    box.style.height = `${region.height * imageBox.height / image.naturalHeight}px`;
+    box.textContent = `BLOCK ${index + 1}`;
+    stage.append(box);
+  });
+}
+
+function undoTemplateBlockSelection() {
+  templateBlockSelections.pop();
+  renderTemplateBlockSelections();
+  $("template-undo").disabled = !templateBlockSelections.length;
+  $("template-confirm").disabled = !templateBlockSelections.length;
+  $("template-selection-status").textContent = templateBlockSelections.length
+    ? `${templateBlockSelections.length} área(s) BLOCK selecionada(s). Continue arrastando ou confirme.`
+    : "Arraste para marcar uma ou mais áreas BLOCK.";
+}
+
 function updateTemplatePreview() {
   const { x, y, width, height } = templateSelection || {};
   const preview = $("template-live-preview");
@@ -1092,6 +1158,24 @@ function updateTemplatePreview() {
 }
 
 function reviewTemplateSelection() {
+  if (templateMode === "block") {
+    if (!templateBlockSelections.length) return;
+    if (draft.block_regions.length + templateBlockSelections.length > 32) { toast("O perfil aceita no máximo 32 BLOCKs.", true); return; }
+    const image = $("template-image");
+    for (const { x, y, width, height } of templateBlockSelections) {
+      draft.block_regions.push([
+        x / image.naturalWidth,
+        y / image.naturalHeight,
+        width / image.naturalWidth,
+        height / image.naturalHeight
+      ]);
+    }
+    renderBlockRegions();
+    updatePending();
+    closeTemplateSelector();
+    toast("BLOCKs adicionados. Salve o perfil e reinicie o bot para aplicar.");
+    return;
+  }
   if (!templateSelection || templateSelection.width < 6 || templateSelection.height < 6) return;
   const { x, y, width, height } = templateSelection;
   const canvas = $("template-preview");
@@ -1666,11 +1750,13 @@ $("log-pause").addEventListener("click", () => { logPaused = !logPaused; $("log-
 $("log-download").addEventListener("click", downloadLogs);
 $("vision-toggle").addEventListener("click", () => { if (visionWanted) stopVision(); else startVision(); });
 $("template-select").addEventListener("click", () => startTemplateSelector().catch((error) => { closeTemplateSelector(); toast(error.message, true); }));
+$("block-select").addEventListener("click", () => startTemplateSelector("block").catch((error) => { closeTemplateSelector(); toast(error.message, true); }));
 $("template-save").addEventListener("click", saveTemplateSelection);
 $("template-close").addEventListener("click", closeTemplateSelector);
 $("template-cancel").addEventListener("click", closeTemplateSelector);
 $("template-category-cancel").addEventListener("click", closeTemplateSelector);
 $("template-refresh").addEventListener("click", refreshTemplateFrame);
+$("template-undo").addEventListener("click", undoTemplateBlockSelection);
 $("template-confirm").addEventListener("click", reviewTemplateSelection);
 $("template-back").addEventListener("click", returnToTemplateSelection);
 $("template-dialog").addEventListener("cancel", (event) => { event.preventDefault(); closeTemplateSelector(); });
@@ -1681,7 +1767,7 @@ $("template-image").addEventListener("pointerdown", (event) => {
   templatePointerId = event.pointerId;
   templateSelection = null;
   $("template-live-preview").hidden = true;
-  $("template-confirm").disabled = true;
+  $("template-confirm").disabled = templateMode === "block" ? !templateBlockSelections.length : true;
   $("template-image").setPointerCapture(event.pointerId);
 });
 $("template-image").addEventListener("pointermove", (event) => {
@@ -1693,6 +1779,21 @@ $("template-image").addEventListener("pointerup", (event) => {
   updateTemplateSelection(templateStart, templatePoint(event));
   templateStart = null;
   templatePointerId = null;
+  if (templateMode === "block") {
+    if (templateSelection.width >= 6 && templateSelection.height >= 6) {
+      templateBlockSelections.push({ ...templateSelection });
+    }
+    templateSelection = null;
+    $("template-selection-box").hidden = true;
+    $("template-live-preview").hidden = true;
+    renderTemplateBlockSelections();
+    $("template-undo").disabled = !templateBlockSelections.length;
+    $("template-confirm").disabled = !templateBlockSelections.length;
+    $("template-selection-status").textContent = templateBlockSelections.length
+      ? `${templateBlockSelections.length} área(s) BLOCK selecionada(s). Continue arrastando ou confirme.`
+      : "A seleção precisa ter pelo menos 6×6px.";
+    return;
+  }
   $("template-confirm").disabled = templateSelection.width < 6 || templateSelection.height < 6;
   $("template-selection-status").textContent = `Seleção: ${templateSelection.width}×${templateSelection.height}px. Confira o preview e confirme.`;
 });
