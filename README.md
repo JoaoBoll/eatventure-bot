@@ -1,6 +1,12 @@
 # EatVenture AI/BOT
 
-[Leia em português](README.pt-BR.md)
+## Languages
+
+- [English](README.md)
+- [Português do Brasil](README.pt-BR.md)
+
+Would you like to add or update a translation? See
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 Bot that automates EatVenture actions on an Android device. The default mode recognizes elements using templates (reference images); the AI model is still experimental.
 
@@ -15,7 +21,7 @@ modes. AI mode requires a trained category model; automatic selection uses
 the capture resolution. Region proposals can come from templates or the
 experimental color/contour proposer.
 
-BLOCK regions affect only `box`, `food`, `new_point` and `up_food`. Other
+BLOCK regions affect only `box`, `food` and `new_point`. Other
 categories, including `engine`, keep their normal search areas. Use
 `python tools/block_selector.py` to select multiple regions visually, or use
 **Add BLOCK** in the dashboard. Both use the same device profile under

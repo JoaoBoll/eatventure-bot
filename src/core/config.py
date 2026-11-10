@@ -297,7 +297,7 @@ CATEGORY_ROIS = {
 # Regiões (x, y, largura, altura) proporcionais à tela, excluídas apenas
 # para BLOCK_CATEGORIES. Perfis do painel substituem esta lista.
 BLOCK_REGIONS = []
-BLOCK_CATEGORIES = frozenset({"box", "food", "new_point", "up_food"})
+BLOCK_CATEGORIES = frozenset({"box", "food", "new_point"})
 
 DETECTOR_MODE = "templates"
 AI_MODEL = "auto"

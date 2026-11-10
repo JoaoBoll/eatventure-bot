@@ -1,6 +1,12 @@
 # EatVenture AI/BOT
 
-[Read in English](README.md)
+## Idiomas
+
+- [English](README.md)
+- [Português do Brasil](README.pt-BR.md)
+
+Quer adicionar ou atualizar uma tradução? Consulte o
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 Bot para automatizar ações no EatVenture em um dispositivo Android. O uso padrão reconhece elementos por templates (imagens de referência); o modelo de IA ainda é experimental.
 
@@ -169,7 +175,7 @@ salvar, `u`, `Backspace` ou o botão direito para desfazer a última área e
 **Adicionar BLOCK**, selecione várias áreas e confirme. Depois, salve o perfil
 e reinicie o bot. Os BLOCKs acompanham a resolução do dispositivo.
 
-O BLOCK é aplicado **somente a `box`, `food`, `new_point` e `up_food`**.
+O BLOCK é aplicado **somente a `box`, `food` e `new_point`**.
 As outras categorias, incluindo `engine`, ignoram os BLOCKs e mantêm suas
 áreas normais de busca. As posições bloqueadas são excluídas antes do
 template matching, inclusive quando há sobreposição parcial do item.
