@@ -28,7 +28,7 @@ STATIC = Path(__file__).resolve().parent / "static"
 MAX_BODY = 300_000
 
 
-async def vision_stream_frames(request, supervisor, device_id, session_id):
+async def vision_stream_frames(request, supervisor, device_id, session_id, mode):
     from starlette.concurrency import run_in_threadpool
 
     previous = None
@@ -38,7 +38,7 @@ async def vision_stream_frames(request, supervisor, device_id, session_id):
         renew = started_at - renewed_at >= 2
         try:
             frame = await run_in_threadpool(
-                supervisor.next_vision_frame, device_id, session_id, previous, renew,
+                supervisor.next_vision_frame, device_id, session_id, previous, renew, mode,
             )
         except (KeyError, RuntimeError):
             return
@@ -300,6 +300,9 @@ def create_app(root=None, state_root=None, token=None, supervisor=None, require_
         server = app.state.web_server
         if server is None:
             raise HTTPException(status_code=503, detail="Encerramento do painel indisponível.")
+        # A transmissão da Visão IA mantém uma resposta HTTP aberta. Pare os bots
+        # antes de encerrar o Uvicorn para que a transmissão não retenha o shutdown.
+        supervisor.shutdown()
         server.should_exit = True
         return {"message": "Encerramento do painel solicitado."}
 
@@ -381,7 +384,7 @@ def create_app(root=None, state_root=None, token=None, supervisor=None, require_
         if type(data.get("enabled")) is not bool:
             raise ValueError("Informe enabled como verdadeiro ou falso.")
         mode = data.get("mode", "vision")
-        if mode not in ("vision", "template"):
+        if mode not in ("vision", "template", "clean"):
             raise ValueError("Modo de prévia inválido.")
         return await run_in_threadpool(supervisor.request_vision, device_id, data["enabled"], mode)
 
@@ -411,12 +414,13 @@ def create_app(root=None, state_root=None, token=None, supervisor=None, require_
         )
 
     @app.get("/api/devices/{device_id}/vision/stream")
-    async def vision_stream(device_id: str, request: Request):
+    async def vision_stream(device_id: str, request: Request, mode: str = "vision"):
         from starlette.concurrency import run_in_threadpool
-
-        stream = await run_in_threadpool(supervisor.open_vision_stream, device_id)
+        if mode not in ("vision", "clean"):
+            raise ValueError("Modo de prévia inválido.")
+        stream = await run_in_threadpool(supervisor.open_vision_stream, device_id, mode)
         return StreamingResponse(
-            vision_stream_frames(request, supervisor, stream["device_id"], stream["session_id"]),
+            vision_stream_frames(request, supervisor, stream["device_id"], stream["session_id"], mode),
             media_type="multipart/x-mixed-replace; boundary=frame",
             headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
         )

@@ -381,7 +381,7 @@ def run_loop(
         if web_vision:
             runtime.preview.submit(
                 frame,
-                None if runtime.preview.mode() == "template" else partial(
+                None if runtime.preview.mode() in {"template", "clean"} else partial(
                     render_ai_frame, detector=detector, detections=detections, stats=stats,
                 ),
             )

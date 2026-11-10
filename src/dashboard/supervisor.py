@@ -1037,7 +1037,7 @@ class BotSupervisor:
                 return self.start(device["id"])
 
     def request_vision(self, device_id, enabled, mode="vision"):
-        if mode not in {"vision", "template"}:
+        if mode not in {"vision", "template", "clean"}:
             raise ValueError("Modo de prévia inválido.")
         device_id = self._runtime_device_id(device_id)
         with self._operation_lock(device_id):
@@ -1188,7 +1188,9 @@ class BotSupervisor:
                     raise RuntimeError("Template salvo, mas não foi possível retomar o bot.") from error
         return {"path": str(destination), "category": category, "width": width, "height": height}
 
-    def open_vision_stream(self, device_id):
+    def open_vision_stream(self, device_id, mode="vision"):
+        if mode not in {"vision", "clean"}:
+            raise ValueError("Modo de prévia inválido.")
         if not isinstance(device_id, str) or not device_id or len(device_id) > 512:
             raise KeyError(device_id)
         with self._lock:
@@ -1212,10 +1214,10 @@ class BotSupervisor:
                 if run is None or run.process.poll() is not None:
                     raise RuntimeError("Inicie o bot para abrir a visão IA.")
                 session_id = run.session_id
-            self.request_vision(identifier, True)
+            self.request_vision(identifier, True, mode)
             return {"device_id": identifier, "session_id": session_id}
 
-    def next_vision_frame(self, device_id, session_id, after=None, renew=False):
+    def next_vision_frame(self, device_id, session_id, after=None, renew=False, mode="vision"):
         def current_run():
             with self._lock:
                 run = self._runs.get(device_id)
@@ -1227,7 +1229,7 @@ class BotSupervisor:
         if renew:
             with self._operation_lock(device_id):
                 run = current_run()
-                self.request_vision(device_id, True)
+                self.request_vision(device_id, True, mode)
         if run.worker_pid is None:
             self._metrics(device_id, run)
         paths = preview_paths(run.status_file)

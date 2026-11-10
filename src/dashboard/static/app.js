@@ -3,6 +3,8 @@
 const $ = (id) => document.getElementById(id);
 const sessionKey = "eatventure.dashboard.token";
 const adbAddressKey = "eatventure.dashboard.adbAddress";
+const themeKey = "eatventure.dashboard.theme";
+const visionDetailsKey = "eatventure.dashboard.visionDetails";
 const numberFormat = new Intl.NumberFormat("pt-BR");
 const state = { devices: [], schema: [], templates: { total: 0, categories: [] }, training: {}, models: [] };
 const selected = new Set();
@@ -43,6 +45,9 @@ let templateRetry = null;
 let templateSnapshot = null;
 let templateMode = "template";
 let templateBlockSelections = [];
+let templateBlocksLoaded = false;
+let templateBlockEdited = false;
+let visionShowDetails = true;
 let sessionLoading = false;
 let datasetSession = null;
 let datasetResolution = null;
@@ -74,6 +79,34 @@ function rememberAdbAddress(value) {
   try {
     if (value) localStorage.setItem(adbAddressKey, value);
   } catch { /* A conexão continua disponível sem armazenamento local. */ }
+}
+
+function setTheme(theme) {
+  const dark = theme === "dark";
+  document.documentElement.dataset.theme = dark ? "dark" : "light";
+  const toggle = $("theme-toggle");
+  toggle.setAttribute("aria-pressed", String(dark));
+  toggle.textContent = dark ? "☀" : "☾";
+  const label = dark ? "Ativar tema claro" : "Ativar tema escuro";
+  toggle.setAttribute("aria-label", label);
+  toggle.title = label;
+  try { localStorage.setItem(themeKey, dark ? "dark" : "light"); } catch { /* O tema permanece nesta página. */ }
+}
+
+function restoreTheme() {
+  try { setTheme(localStorage.getItem(themeKey) || "light"); }
+  catch { setTheme("light"); }
+}
+
+function restoreVisionDetails() {
+  try { visionShowDetails = localStorage.getItem(visionDetailsKey) !== "false"; } catch { visionShowDetails = true; }
+  $("vision-details").checked = visionShowDetails;
+}
+
+function setVisionDetails(value) {
+  visionShowDetails = !!value;
+  $("vision-details").checked = visionShowDetails;
+  try { localStorage.setItem(visionDetailsKey, String(visionShowDetails)); } catch { /* A opção permanece nesta página. */ }
 }
 
 function lastAdbAddress() {
@@ -232,10 +265,11 @@ function deviceById(id) { return state.devices.find((device) => device.id === id
 function deviceName(device) { return device.name || device.profile?.name || device.model || device.serial || device.id; }
 function connected(device) { return device.connected === true; }
 function statusOf(device) {
-  if (device.status === "stopping") return { key: "ready", label: "Encerrando…" };
+  if (device.status === "stopping") return { key: "stopping", label: "Encerrando…" };
   if (device.running) return { key: "running", label: "Em execução" };
   if (device.adb_state === "unauthorized") return { key: "error", label: "Autorize no Android" };
   if (device.status === "error") return { key: "error", label: "Encerrado com erro" };
+  if (device.status === "stopped" && device.session_id) return { key: "stopped", label: "Parado" };
   if (connected(device)) return { key: "ready", label: "Pronto para iniciar" };
   return { key: "offline", label: "Desconectado" };
 }
@@ -298,7 +332,6 @@ async function refreshRuntime() {
     const changed = JSON.stringify(state.devices.map(deviceLayout)) !== JSON.stringify(result.devices.map(deviceLayout));
     state.devices = result.devices;
     for (const id of selected) if (!deviceById(id)) selected.delete(id);
-    $("last-update").textContent = `Atualizado ${new Date().toLocaleTimeString("pt-BR")}`;
     if (changed) renderDevices();
     else {
       renderSummary(visibleDevices());
@@ -329,7 +362,6 @@ async function refreshState(force = false) {
     state.collected = result.collected || {};
     renderTemplateCategorySuggestions();
     for (const id of selected) if (!deviceById(id)) selected.delete(id);
-    $("last-update").textContent = `Atualizado ${new Date().toLocaleTimeString("pt-BR")}`;
     showError("state-error", result.error || "");
     renderDevices();
     renderDetailStatus();
@@ -409,7 +441,7 @@ function renderDevice(device) {
     card.classList.toggle("selected", checkbox.checked);
     updateSelection();
   });
-  header.append(node("span", "device-icon", "▥"), identity, checkbox);
+  header.append(node("span", "device-icon", "📱"), identity, checkbox);
   const status = node("div", "device-status-row");
   status.append(badge(device), node("span", "device-runtime", runtime(device)));
   const metrics = node("dl", "device-metrics");
@@ -426,7 +458,7 @@ function renderDevice(device) {
   const start = button(busy ? "Aguarde…" : device.running ? "□ Parar" : "▷ Iniciar", `button ${device.running ? "ghost danger-text" : "primary"} start-button`, () => executeAction(device.running ? "stop" : "start", [device.id]));
   start.dataset.role = "start";
   start.disabled = busy || (!device.running && !connected(device));
-  const restart = button("↻", "button ghost", () => executeAction("restart", [device.id]), "Reiniciar bot");
+  const restart = button("↻", "button warning restart-button", () => executeAction("restart", [device.id]), "Reiniciar bot");
   restart.setAttribute("aria-label", `Reiniciar ${deviceName(device)}`);
   restart.dataset.role = "restart";
   restart.disabled = busy || !device.running || !connected(device);
@@ -526,6 +558,9 @@ async function executeAction(action, ids) {
   if (action !== "stop" && detailId && eligible.includes(detailId) && changeCount()) {
     toast("Salve o perfil antes de iniciar ou reiniciar para aplicar as alterações.", true);
     return;
+  }
+  if (action === "stop" && visionDevice && eligible.includes(visionDevice)) {
+    stopVision({ mode: "stopped", message: "O bot está sendo encerrado." });
   }
   eligible.forEach((id) => busyDevices.add(id));
   renderDevices();
@@ -755,23 +790,13 @@ function renderProfile() {
 
 function renderBlockRegions() {
   if (!draft) return;
-  const regions = draft.block_regions || [];
-  const items = regions.map((region, index) => {
-    const [x, y, width, height] = region;
-    const item = node("div", "block-region");
-    item.append(
-      node("span", "", `BLOCK ${index + 1}: x ${(x * 100).toFixed(1)}%, y ${(y * 100).toFixed(1)}%, ${
-        (width * 100).toFixed(1)}% × ${(height * 100).toFixed(1)}%`),
-      button("Remover", "text-button danger-text", () => {
-        draft.block_regions.splice(index, 1);
-        renderBlockRegions();
-        updatePending();
-      })
-    );
-    return item;
-  });
-  $("block-regions").replaceChildren(...items);
-  $("block-regions").hidden = !items.length;
+  const total = (draft.block_regions || []).length;
+  const summary = node("div", "block-region block-summary");
+  summary.append(
+    node("strong", "", total ? `${total} área${total === 1 ? "" : "s"} ignorada${total === 1 ? "" : "s"}` : "Nenhuma área ignorada"),
+    node("span", "", "Edite a seleção para adicionar ou remover regiões diretamente no quadro.")
+  );
+  $("block-regions").replaceChildren(summary);
 }
 
 function settingField(field) {
@@ -1074,6 +1099,8 @@ async function startTemplateSelector(mode = "template") {
   templateSnapshot = null;
   templateMode = mode;
   templateBlockSelections = [];
+  templateBlocksLoaded = false;
+  templateBlockEdited = false;
   $("template-selection-step").hidden = false;
   $("template-category-step").hidden = true;
   $("template-selection-box").hidden = true;
@@ -1084,9 +1111,9 @@ async function startTemplateSelector(mode = "template") {
   $("template-category").value = "";
   $("template-name").value = "";
   $("template-name-field").hidden = true;
-  $("template-kind").textContent = mode === "block" ? "NOVA ÁREA BLOCK" : "NOVO TEMPLATE";
-  $("template-title").textContent = mode === "block" ? "Selecione as áreas bloqueadas" : "Selecione o item";
-  $("template-instruction").textContent = mode === "block" ? "Arraste quantas áreas quiser. O BLOCK afeta somente box, food, new_point e up_food." : "Arraste com o botão esquerdo sobre o item.";
+  $("template-kind").textContent = mode === "block" ? "NOVA ÁREA IGNORADA" : "NOVO TEMPLATE";
+  $("template-title").textContent = mode === "block" ? "Edite as áreas ignoradas" : "Selecione o item";
+  $("template-instruction").textContent = mode === "block" ? "Arraste quantas áreas quiser. Elas afetam somente box, food, new_point e up_food." : "Arraste com o botão esquerdo sobre o item.";
   $("template-selection-status").textContent = "Capturando frame sem marcações…";
   $("template-stage").querySelector(".loading-spinner").hidden = false;
   const dialog = $("template-dialog");
@@ -1108,8 +1135,17 @@ function loadTemplateFrame() {
     const box = image.getBoundingClientRect();
     image.style.width = `${box.width}px`;
     image.style.height = `${box.height}px`;
+    if (templateMode === "block" && !templateBlocksLoaded) {
+      templateBlockSelections = (draft.block_regions || []).map(([x, y, width, height]) => ({
+        x: x * image.naturalWidth, y: y * image.naturalHeight,
+        width: width * image.naturalWidth, height: height * image.naturalHeight
+      }));
+      templateBlocksLoaded = true;
+    }
     renderTemplateBlockSelections();
-    $("template-selection-status").textContent = templateMode === "block" ? "Frame congelado. Arraste para marcar uma ou mais áreas BLOCK." : "Frame congelado. Arraste sobre o item para marcar a área do template.";
+    $("template-undo").disabled = templateMode === "block" && !templateBlockSelections.length;
+    $("template-confirm").disabled = templateMode === "block" ? !templateBlockSelections.length && !templateBlockEdited : true;
+    $("template-selection-status").textContent = templateMode === "block" ? "Arraste para adicionar uma área. Clique em uma área marcada para removê-la." : "Frame congelado. Arraste sobre o item para marcar a área do template.";
   };
   image.onerror = () => {
     templateSnapshot = null;
@@ -1198,19 +1234,35 @@ function renderTemplateBlockSelections() {
     box.style.top = `${imageBox.top - stageBox.top + region.y * imageBox.height / image.naturalHeight}px`;
     box.style.width = `${region.width * imageBox.width / image.naturalWidth}px`;
     box.style.height = `${region.height * imageBox.height / image.naturalHeight}px`;
-    box.textContent = `BLOCK ${index + 1}`;
+    box.textContent = `Área ${index + 1}`;
+    box.tabIndex = 0;
+    box.setAttribute("role", "button");
+    box.setAttribute("aria-label", `Remover área ignorada ${index + 1}`);
+    const remove = () => {
+      templateBlockSelections.splice(index, 1);
+      templateBlockEdited = true;
+      renderTemplateBlockSelections();
+      $("template-undo").disabled = !templateBlockSelections.length;
+      $("template-confirm").disabled = !templateBlockSelections.length && !templateBlockEdited;
+      $("template-selection-status").textContent = "Área removida. Arraste para adicionar outra ou confirme a seleção.";
+    };
+    box.addEventListener("click", remove);
+    box.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") { event.preventDefault(); remove(); }
+    });
     stage.append(box);
   });
 }
 
 function undoTemplateBlockSelection() {
   templateBlockSelections.pop();
+  templateBlockEdited = true;
   renderTemplateBlockSelections();
   $("template-undo").disabled = !templateBlockSelections.length;
-  $("template-confirm").disabled = !templateBlockSelections.length;
+  $("template-confirm").disabled = !templateBlockSelections.length && !templateBlockEdited;
   $("template-selection-status").textContent = templateBlockSelections.length
-    ? `${templateBlockSelections.length} área(s) BLOCK selecionada(s). Continue arrastando ou confirme.`
-    : "Arraste para marcar uma ou mais áreas BLOCK.";
+    ? `${templateBlockSelections.length} área(s) ignorada(s) selecionada(s). Continue arrastando ou confirme.`
+    : "Arraste para marcar uma ou mais áreas ignoradas.";
 }
 
 function updateTemplatePreview() {
@@ -1231,21 +1283,19 @@ function updateTemplatePreview() {
 
 function reviewTemplateSelection() {
   if (templateMode === "block") {
-    if (!templateBlockSelections.length) return;
-    if (draft.block_regions.length + templateBlockSelections.length > 32) { toast("O perfil aceita no máximo 32 BLOCKs.", true); return; }
+    if (!templateBlockSelections.length && !templateBlockEdited) return;
+    if (templateBlockSelections.length > 32) { toast("O perfil aceita no máximo 32 áreas ignoradas.", true); return; }
     const image = $("template-image");
-    for (const { x, y, width, height } of templateBlockSelections) {
-      draft.block_regions.push([
+    draft.block_regions = templateBlockSelections.map(({ x, y, width, height }) => [
         x / image.naturalWidth,
         y / image.naturalHeight,
         width / image.naturalWidth,
         height / image.naturalHeight
       ]);
-    }
     renderBlockRegions();
     updatePending();
     closeTemplateSelector();
-    toast("BLOCKs adicionados. Salve o perfil e reinicie o bot para aplicar.");
+    toast("Áreas ignoradas atualizadas. Salve o perfil e reinicie o bot para aplicar.");
     return;
   }
   if (!templateSelection || templateSelection.width < 6 || templateSelection.height < 6) return;
@@ -1306,7 +1356,8 @@ async function startVision() {
   try {
     await visionReleases.get(id);
     if (generation !== visionGeneration) return;
-    const result = await api(`/api/devices/${encodeURIComponent(id)}/vision`, { method: "POST", body: JSON.stringify({ enabled: true }) });
+    const mode = visionShowDetails ? "vision" : "clean";
+    const result = await api(`/api/devices/${encodeURIComponent(id)}/vision`, { method: "POST", body: JSON.stringify({ enabled: true, mode }) });
     if (generation !== visionGeneration) {
       if (!visionWanted || visionDevice !== id) releaseVision(id);
       return;
@@ -1474,7 +1525,8 @@ async function streamVision(generation) {
   visionStream = stream;
   renewVisionTimeout(stream);
   try {
-    const response = await fetch(`/api/devices/${encodeURIComponent(visionDevice)}/vision/stream`, {
+    const mode = visionShowDetails ? "vision" : "clean";
+    const response = await fetch(`/api/devices/${encodeURIComponent(visionDevice)}/vision/stream?mode=${mode}`, {
       headers: { Accept: "multipart/x-mixed-replace", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
       signal: controller.signal,
       cache: "no-store"
@@ -1773,10 +1825,12 @@ async function pairAndroid() {
 
 $("login-form").addEventListener("submit", login);
 $("session-retry").addEventListener("click", bootstrapSession);
+$("theme-toggle").addEventListener("click", () => setTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark"));
 $("logout").addEventListener("click", () => logout());
 $("refresh").addEventListener("click", () => refreshState(true));
 $("shutdown-server").addEventListener("click", async () => {
   if (!confirm("Encerrar o painel web e parar os bots em execução?")) return;
+  stopVision({ mode: "stopped", message: "O painel está sendo encerrado." });
   $("shutdown-server").disabled = true;
   try {
     const result = await api("/api/server/shutdown", { method: "POST" });
@@ -1823,8 +1877,19 @@ for (const tab of document.querySelectorAll("[data-tab]")) {
 $("log-pause").addEventListener("click", () => { logPaused = !logPaused; $("log-pause").textContent = logPaused ? "Retomar" : "Pausar"; if (!logPaused) pollLogs(); });
 $("log-download").addEventListener("click", downloadLogs);
 $("vision-toggle").addEventListener("click", () => { if (visionWanted) stopVision(); else startVision(); });
+$("vision-details").addEventListener("change", () => {
+  setVisionDetails($("vision-details").checked);
+  if (visionWanted) { stopVision(); startVision(); }
+});
 $("template-select").addEventListener("click", () => startTemplateSelector().catch((error) => { closeTemplateSelector(); toast(error.message, true); }));
-$("block-select").addEventListener("click", () => startTemplateSelector("block").catch((error) => { closeTemplateSelector(); toast(error.message, true); }));
+$("block-manage").addEventListener("click", () => { renderBlockRegions(); $("block-dialog").showModal(); });
+$("block-close").addEventListener("click", () => $("block-dialog").close());
+$("block-cancel").addEventListener("click", () => $("block-dialog").close());
+$("block-dialog").addEventListener("cancel", () => $("block-dialog").close());
+$("block-select").addEventListener("click", () => {
+  $("block-dialog").close();
+  startTemplateSelector("block").catch((error) => { closeTemplateSelector(); toast(error.message, true); });
+});
 $("template-save").addEventListener("click", saveTemplateSelection);
 $("template-category").addEventListener("input", () => {
   const isFood = $("template-category").value.trim() === "food";
@@ -1861,15 +1926,16 @@ $("template-image").addEventListener("pointerup", (event) => {
   if (templateMode === "block") {
     if (templateSelection.width >= 6 && templateSelection.height >= 6) {
       templateBlockSelections.push({ ...templateSelection });
+      templateBlockEdited = true;
     }
     templateSelection = null;
     $("template-selection-box").hidden = true;
     $("template-live-preview").hidden = true;
     renderTemplateBlockSelections();
     $("template-undo").disabled = !templateBlockSelections.length;
-    $("template-confirm").disabled = !templateBlockSelections.length;
+    $("template-confirm").disabled = !templateBlockSelections.length && !templateBlockEdited;
     $("template-selection-status").textContent = templateBlockSelections.length
-      ? `${templateBlockSelections.length} área(s) BLOCK selecionada(s). Continue arrastando ou confirme.`
+      ? `${templateBlockSelections.length} área(s) ignorada(s) selecionada(s). Continue arrastando ou confirme.`
       : "A seleção precisa ter pelo menos 6×6px.";
     return;
   }
@@ -1916,4 +1982,6 @@ document.addEventListener("visibilitychange", () => {
   }
 });
 window.addEventListener("pagehide", () => stopVision());
+restoreTheme();
+restoreVisionDetails();
 bootstrapSession();

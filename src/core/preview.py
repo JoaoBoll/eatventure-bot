@@ -79,7 +79,7 @@ class FramePreview:
                     if (self.session_id and request.get("session_id") == self.session_id
                             and math.isfinite(expires_at) and 0 < expires_at - now <= 15):
                         self._expires_at = expires_at
-                        self._mode = request.get("mode") if request.get("mode") in {"vision", "template"} else "vision"
+                        self._mode = request.get("mode") if request.get("mode") in {"vision", "template", "clean"} else "vision"
                 except (OSError, ValueError, TypeError, UnicodeError):
                     pass
             active = now < self._expires_at <= now + 15
