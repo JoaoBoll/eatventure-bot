@@ -18,6 +18,17 @@ _EXE_SUFFIX = ".exe" if _IS_WINDOWS else ""
 DEVICE_SERIAL = None
 
 
+# ==== EATVENTURE ====
+
+# Após inatividade, o guardião confere processo e o template `engine` uma vez.
+# Ajuste pelo ambiente quando a variante instalada usar outro package name.
+EATVENTURE_PACKAGE = os.environ.get("EATVENTURE_PACKAGE", "com.hwqgrhhjfd.idlefastfood")
+EATVENTURE_GUARD_ENABLED = True
+EATVENTURE_GUARD_IDLE_SECONDS = 30.0
+EATVENTURE_GUARD_STARTUP_GRACE = 10.0
+EATVENTURE_LOCK_PORTRAIT = True
+
+
 # ==== SCRCPY ====
 
 _scrcpy_dir = PROJECT_ROOT / "tools" / "scrcpy"
@@ -200,18 +211,9 @@ DATASET_MAX_DISK_MB = 20_000
 
 AI_AUTO_TRAIN = True
 AI_TRAIN_BATCH_SIZE = 10_000
-AI_TRAIN_CHECK_INTERVAL = 5.0
-AI_TRAIN_JOBS = 1
+AI_TRAIN_CHECK_INTERVAL = 600.0
+AI_TRAIN_JOBS = min(max(1, (os.cpu_count() or 1) // 2), 64)
 AI_PAUSE_BOT_WHILE_TRAINING = True
-
-DATASET_DB_ENABLED = os.environ.get(
-    "EATVENTURE_DB_ENABLED",
-    "false",
-).strip().lower() in {"1", "true", "yes", "on"}
-DATASET_DB_DSN = os.environ.get("EATVENTURE_DB_DSN", "")
-DATASET_DB_SCHEMA = "public"
-DATASET_DB_BATCH = 20
-
 
 # ==== LOGGING ====
 
@@ -277,23 +279,48 @@ CATEGORY_THRESHOLDS = {
     "box": 0.95,
     "delivery": 0.95,
     "helper": 0.95,
+    "engine": 0.90
 }
 
 CATEGORY_COLOR_THRESHOLDS = {
-    "delivery": 0.99
+    "delivery": 0.99,
+    "engine": 0.95
 }
 
 
-CATEGORY_ROIS = {}
+# (x1, y1, x2, y2) como frações do frame. O ícone engine é o indicador de
+# que o jogo está visível e só pode existir na faixa superior da tela.
+CATEGORY_ROIS = {
+    "engine": (0.0, 0.0, 1.0, 0.10),
+}
+
+# Regiões (x, y, largura, altura) proporcionais à tela, excluídas apenas
+# para BLOCK_CATEGORIES. Perfis do painel substituem esta lista.
+BLOCK_REGIONS = []
+BLOCK_CATEGORIES = frozenset({"box", "food", "new_point"})
+
+DETECTOR_MODE = "templates"
+AI_MODEL = "auto"
+AI_SOURCE = "templates"
+AI_MIN_CONFIDENCE = 0.60
+
+# Total de recuperações por execução; uma parada manual nunca é recuperada.
+BOT_RESTART_LIMIT = 3
+BOT_RESTART_DELAY = 3.0
+VISION_FAILURE_LIMIT = 5
 
 # Guarda o último recorte aprovado; defaults já cobertos são atualizados
 # apenas na thread de aprendizado, sem busca duplicada na visão principal.
 LEARN_RESOLUTION_TEMPLATES = True
-TEMPLATE_REFRESH_INTERVAL = 1.0
+TEMPLATE_REFRESH_INTERVAL = 5.0
+
+# Recortes aprendidos entram em uso imediatamente na memória. O disco só
+# recebe checkpoints periódicos, reduzindo escrita repetida no SSD.
+TEMPLATE_PERSIST_INTERVAL = 900.0
 
 # De quanto em quanto tempo checar se a pasta de templates mudou (template
 # novo, editado ou removido) e recarregar sem reiniciar o bot. 0 desliga.
-TEMPLATES_WATCH_INTERVAL = 2.0
+TEMPLATES_WATCH_INTERVAL = 10.0
 
 
 # ==== DETECTOR ====
@@ -391,3 +418,9 @@ STATE_TIMEOUTS = {
     "NEW_POINT": 5.0,
     "FOOD": 5.0,
 }
+
+
+# Overrides do painel são locais ao processo, antes dos imports consumidores.
+from core.device_profiles import apply_environment_profile as _apply_environment_profile
+
+_apply_environment_profile(globals())

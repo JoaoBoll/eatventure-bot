@@ -1,6 +1,7 @@
 """Detector por template matching: 2-stage search, ROI/category filters, NMS."""
 
 from pathlib import Path
+from functools import partial
 
 import json
 import math
@@ -12,7 +13,8 @@ import time
 import cv2
 import numpy as np
 
-from core import log
+from core import config, log
+from core.device_profiles import template_key
 from core.metrics import formata_duracao
 from core.config import (
     CATEGORY_COLOR_THRESHOLDS,
@@ -29,6 +31,7 @@ from core.config import (
     ESCALA_UNICA_POR_TEMPLATE,
     LEARN_RESOLUTION_TEMPLATES,
     TEMPLATE_REFRESH_INTERVAL,
+    TEMPLATE_PERSIST_INTERVAL,
     MAX_DETECTION_AGE,
     TEMPLATES_WATCH_INTERVAL,
     MAX_MATCHES_PER_TEMPLATE,
@@ -57,12 +60,13 @@ logger = log.get("detector")
 
 
 # Relativo ao arquivo, não ao cwd — não depende de rodar da raiz do repo.
-TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
+SHARED_TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
+TEMPLATES_DIR = Path(config.DEVICE_TEMPLATE_DIR) if config.DEVICE_TEMPLATE_DIR else SHARED_TEMPLATES_DIR
 
 # Templates comuns a todo device. Pastas irmãs desta, nomeadas "LARGURAxALTURA"
 # (na resolução real do frame, sem normalizar orientação), guardam extras/
 # overrides só daquele device — mescladas com estas em runtime.
-DEFAULT_TEMPLATES_DIR = TEMPLATES_DIR / "default"
+DEFAULT_TEMPLATES_DIR = SHARED_TEMPLATES_DIR / "default"
 
 # Capturas manuais fora da resolução de referência (tools/template_selector.py):
 # ficam aqui, cruas, sem entrar no default nem em nenhuma resolução — não são
@@ -83,17 +87,11 @@ class Detector:
         color_threshold=COLOR_THRESHOLD,
         category_thresholds=None,
         category_rois=None,
+        block_regions=None,
         coarse_scale=COARSE_SCALE,
         coarse_margin=COARSE_MARGIN,
-        use_defaults=True,
-        learn_only_actions=False,
         learn_resolution_templates=None,
     ):
-
-        # False: busca somente overrides; os existentes seguem atualizados no worker.
-        self.use_defaults = use_defaults
-        # Restringe a descoberta inicial; os existentes continuam atualizados.
-        self.learn_only_actions = learn_only_actions
         self.learn_resolution_templates = (
             LEARN_RESOLUTION_TEMPLATES
             if learn_resolution_templates is None
@@ -105,6 +103,7 @@ class Detector:
 
         # Similaridade das cores
         self.color_threshold = color_threshold
+        self.item_thresholds = dict(config.ITEM_THRESHOLDS)
 
         self.category_thresholds = (
             CATEGORY_THRESHOLDS
@@ -116,6 +115,11 @@ class Detector:
             CATEGORY_ROIS
             if category_rois is None
             else category_rois
+        )
+
+        self.block_regions = tuple(
+            tuple(region)
+            for region in (config.BLOCK_REGIONS if block_regions is None else block_regions)
         )
 
         self.coarse_scale = coarse_scale
@@ -183,6 +187,8 @@ class Detector:
         # Fidelidade do último recorte aprovado, sem exigir melhora histórica.
         self._fidelity = {}
         self._learned_sequence = {}
+        self._last_template_persist = {}
+        self._dirty_templates = {}
         self._defaults_generation = 0
         self._learn_writing = False
 
@@ -258,6 +264,9 @@ class Detector:
 
         if not stopped:
             logger.warning("Aprendizado ainda encerrando após %.1fs", timeout)
+
+        if stopped:
+            self._flush_dirty_templates()
 
         return stopped
 
@@ -347,7 +356,10 @@ class Detector:
                     [],
                 ).append(template)
 
-        for resolution_dir in sorted(TEMPLATES_DIR.iterdir()):
+        resolution_dirs = list(TEMPLATES_DIR.iterdir())
+        if config.DEVICE_TEMPLATE_DIR and TEMPLATES_DIR != SHARED_TEMPLATES_DIR and SHARED_TEMPLATES_DIR.is_dir():
+            resolution_dirs = list(SHARED_TEMPLATES_DIR.iterdir()) + resolution_dirs
+        for resolution_dir in resolution_dirs:
 
             if (
                 not resolution_dir.is_dir()
@@ -388,7 +400,11 @@ class Detector:
 
             if por_categoria:
 
-                self._resolution_templates[resolucao] = por_categoria
+                existing = self._resolution_templates.setdefault(resolucao, {})
+                for category, items in por_categoria.items():
+                    merged = {self._base_name(item["name"]): item for item in existing.get(category, [])}
+                    merged.update({self._base_name(item["name"]): item for item in items})
+                    existing[category] = list(merged.values())
 
                 self._load_fidelity(resolucao, resolution_dir)
 
@@ -414,13 +430,11 @@ class Detector:
             overrides,
         )
 
-        # Sem template não há detecção — mesmo sintoma de detector quebrado (bot parado).
         if not self.templates:
 
             logger.error(
-                "NENHUM template carregado de %s — o detector "
-                "não tem com o que comparar, e o bot não vai "
-                "agir.",
+                "NENHUM template default carregado de %s — a thread "
+                "de atualização não poderá gerar templates novos.",
                 DEFAULT_TEMPLATES_DIR,
             )
 
@@ -461,7 +475,11 @@ class Detector:
         if not TEMPLATES_DIR.exists():
             return pastas
 
-        for pasta in sorted(TEMPLATES_DIR.iterdir()):
+        roots = [TEMPLATES_DIR]
+        if config.DEVICE_TEMPLATE_DIR and TEMPLATES_DIR != SHARED_TEMPLATES_DIR:
+            roots.append(SHARED_TEMPLATES_DIR)
+        folders = [folder for root in roots if root.is_dir() for folder in root.iterdir()]
+        for pasta in sorted(folders):
 
             if not pasta.is_dir():
                 continue
@@ -624,11 +642,16 @@ class Detector:
 
     def template_count(self):
         with self._learn_lock:
-            return len(self.templates) + sum(
+            return sum(
                 len(items)
                 for categories in self._resolution_templates.values()
                 for items in categories.values()
             )
+
+    def _threshold_for(self, category, name):
+        return self.item_thresholds.get(
+            template_key(category, name), self.category_thresholds.get(category, self.threshold),
+        )
 
     def template_coverage(self, frame_width=None, frame_height=None):
         """(quantos defaults já têm override nesta resolução, total de defaults).
@@ -969,7 +992,7 @@ class Detector:
         )
 
     def _templates_for(self, frame_width, frame_height):
-        """Overrides nativos e defaults apenas onde ainda falta override."""
+        """Templates gerados nativos da resolução, sem fallback default."""
 
         chave = (frame_width, frame_height)
 
@@ -979,8 +1002,7 @@ class Detector:
             return cacheados
 
         # Snapshot rápido sob lock: a thread de aprendizado também escreve
-        # em _resolution_templates/_scaled_cache, e o resto desta função
-        # (reescala, merge) é caro demais pra fazer com o lock preso.
+        # em _resolution_templates/_scaled_cache.
         with self._learn_lock:
 
             versao = self._overrides_versao
@@ -996,35 +1018,14 @@ class Detector:
                 }
             )
 
-        cobertos = {
-            (categoria, self._base_name(template["name"]))
-            for categoria, lista in (extras or {}).items()
-            for template in lista
-        }
-        faltantes = [
-            template for template in self.templates
-            if (template["category"], self._base_name(template["name"])) not in cobertos
-        ] if self.use_defaults else []
-        default_categorias = self._defaults_for(frame_width, frame_height, faltantes)
-
-        # Sempre uma cópia, nunca o próprio dict de _defaults_cache: os dois
-        # caches são invalidados em momentos diferentes (override aprendido
-        # descarta só este), e compartilhar as listas fazia um pop() aqui
-        # mutilar o cache de defaults.
         cacheados = {
             categoria: list(lista)
-            for categoria, lista in default_categorias.items()
+            for categoria, lista in (extras or {}).items()
         }
-
-        if extras:
-
-            for categoria, lista in extras.items():
-
-                cacheados[categoria] = lista + cacheados.get(categoria, [])
 
         with self._learn_lock:
 
-            # Override commitado enquanto este merge era calculado: o pop
+            # Override commitado enquanto o snapshot era copiado: o pop
             # dele não achou nada para invalidar, e publicar agora deixaria
             # o cache sem o override, sem nada pendente para corrigi-lo.
             if versao == self._overrides_versao:
@@ -1180,7 +1181,7 @@ class Detector:
         if template.get("origin", "default") != "default":
             return
 
-        if not self.category_thresholds.get(categoria, self.threshold) <= confidence <= 1.0:
+        if not self._threshold_for(categoria, nome) <= confidence <= 1.0:
             return
 
         altura = template["height"]
@@ -1248,19 +1249,12 @@ class Detector:
         if not self.learn_resolution_templates:
             return None
 
-        chave = (frame.shape[1], frame.shape[0])
-        with self._learn_lock:
-            coberto = bool(self._resolution_templates.get(chave))
-
         with self._learn_queue_lock:
             if self._learn_stopping:
                 return None
 
             self._learn_sequence += 1
             sequence = self._learn_sequence
-
-            if not coberto:
-                return sequence
 
             now = time.monotonic()
             if (
@@ -1293,7 +1287,7 @@ class Detector:
             )
 
     def _learn_worker(self):
-        """Atualiza defaults cobertos e grava recortes fora da visão principal."""
+        """Gera e atualiza templates por resolução fora da visão principal."""
 
         while True:
 
@@ -1341,7 +1335,7 @@ class Detector:
 
         fidelity_id = (chave, categoria, nome)
 
-        if not self.category_thresholds.get(categoria, self.threshold) <= confidence <= 1.0:
+        if not self._threshold_for(categoria, nome) <= confidence <= 1.0:
             return
 
         with self._learn_lock:
@@ -1367,9 +1361,50 @@ class Detector:
             with self._learn_lock:
                 self._learn_writing = False
 
-    def _write_learn_candidate(self, categoria, nome, chave, crop, confidence, sequence):
+    def _write_learn_candidate(
+        self, categoria, nome, chave, crop, confidence, sequence, force=False,
+    ):
         fidelity_id = (chave, categoria, nome)
         frame_width, frame_height = chave
+        novo = self._build_template(
+            categoria,
+            nome,
+            crop,
+            None,
+            "override",
+        )
+        now = time.monotonic()
+
+        # A detecção passa a usar o recorte novo imediatamente. Persistir é
+        # apenas um checkpoint: não deve ficar escrevendo o SSD a cada frame.
+        with self._learn_lock:
+            self._fidelity[fidelity_id] = confidence
+            if sequence is not None:
+                self._learned_sequence[fidelity_id] = sequence
+
+            lista = self._resolution_templates.setdefault(
+                chave, {}
+            ).setdefault(categoria, [])
+            lista[:] = [
+                template for template in lista
+                if self._base_name(template["name"]) != nome
+            ]
+            lista.append(novo)
+            self._scaled_cache.pop(chave, None)
+            self._ordem_cache.clear()
+            self._overrides_versao += 1
+            self._dirty_templates[fidelity_id] = (
+                categoria, nome, chave, crop, confidence, sequence,
+            )
+            persist = force or (
+                now - self._last_template_persist.get(
+                    fidelity_id,
+                    float("-inf"),
+                ) >= max(0.0, TEMPLATE_PERSIST_INTERVAL)
+            )
+
+        if not persist:
+            return
 
         destino_dir = (
             TEMPLATES_DIR
@@ -1389,14 +1424,6 @@ class Detector:
             )
 
             return
-
-        novo = self._build_template(
-            categoria,
-            nome,
-            crop,
-            None,
-            "override",
-        )
 
         with self._learn_lock:
 
@@ -1430,6 +1457,10 @@ class Detector:
         self._save_fidelity(chave)
         self._reassina_overrides()
 
+        with self._learn_lock:
+            self._last_template_persist[fidelity_id] = now
+            self._dirty_templates.pop(fidelity_id, None)
+
         logger.info(
             "Override %dx%d %s/%s: fidelidade %s -> %.4f",
             frame_width,
@@ -1439,6 +1470,12 @@ class Detector:
             "-" if anterior is None else f"{anterior:.4f}",
             confidence,
         )
+
+    def _flush_dirty_templates(self):
+        with self._learn_lock:
+            pending = list(self._dirty_templates.values())
+        for candidate in pending:
+            self._write_learn_candidate(*candidate, force=True)
 
     def _color_similarity(
         self,
@@ -1785,7 +1822,7 @@ class Detector:
             + frios[:giro]
         )
 
-    def detect(self, frame, categories=None):
+    def detect(self, frame, categories=None, exhaustive=False):
         """Detecções aprovadas, ordenadas por confiança (maior primeiro). `categories` filtra a busca (permite a StateMachine procurar 2 templates em vez de 43)."""
 
         self._maybe_reload_templates()
@@ -1871,7 +1908,7 @@ class Detector:
                 if category in por_categoria:
                     ordem.append(category)
 
-            parar_na_prioridade = VISION_PRIORITY_STOP
+            parar_na_prioridade = VISION_PRIORITY_STOP and not exhaustive
 
         else:
 
@@ -1883,7 +1920,7 @@ class Detector:
         # (cobertura do main_layouts, overlay de diagnóstico): nem teto de
         # detecções nem sonda de escala — as duas existem para poupar
         # trabalho que não viraria ação, e aqui não há ação nenhuma.
-        exaustiva = categories is None
+        exaustiva = categories is None or exhaustive
 
         # Quantos templates a passada de fato olhou: é o
         # número que explica um HUD vazio ("procurou 0").
@@ -1987,6 +2024,9 @@ class Detector:
 
                 olhados += 1
 
+                min_threshold = self._threshold_for(
+                    category, template.get("nome_base") or template["name"],
+                )
                 candidates = self._search(
                     frame_gray,
                     coarse_for(template["coarse_scale"]),
@@ -2059,6 +2099,9 @@ class Detector:
                             "min_threshold": float(
                                 min_threshold
                             ),
+                            "template_scale": float(
+                                template.get("escala", 1.0)
+                            ),
 
                             "x": int(x),
                             "y": int(y),
@@ -2067,23 +2110,6 @@ class Detector:
                             "height": template["height"],
                         }
                     )
-
-                    if (
-                        self.learn_resolution_templates
-                        and not self.learn_only_actions
-                        and origin == "default"
-                    ):
-
-                        self._queue_learn_candidate(
-                            frame_color,
-                            template,
-                            x,
-                            y,
-                            frame_width,
-                            frame_height,
-                            confidence,
-                            learn_sequence,
-                        )
 
                 if template.get("nome_base") is not None:
 
@@ -2167,11 +2193,15 @@ class Detector:
         """Devolve [(x, y, confiança)] em resolução cheia."""
 
         coarse_template = template["coarse_gray"]
+        match = partial(
+            self._match,
+            blocked=template["category"] in config.BLOCK_CATEGORIES,
+        )
 
         # Sem estágio grosso: busca direta.
         if coarse_frame is None or coarse_template is None:
 
-            return self._match(
+            return match(
                 frame_gray,
                 template["gray"],
                 template["mask"],
@@ -2197,7 +2227,7 @@ class Detector:
             ),
         )
 
-        coarse_hits = self._match(
+        coarse_hits = match(
             coarse_frame,
             coarse_template,
             template["coarse_mask"],
@@ -2216,29 +2246,27 @@ class Detector:
         template_height = template["height"]
         template_width = template["width"]
 
-        frame_height, frame_width = frame_gray.shape[:2]
-
         for coarse_x, coarse_y, _ in coarse_hits:
 
             estimated_x = int(coarse_x / scale)
             estimated_y = int(coarse_y / scale)
 
             window = (
-                max(0, estimated_x - REFINE_SLACK),
-                max(0, estimated_y - REFINE_SLACK),
+                max(roi[0], estimated_x - REFINE_SLACK),
+                max(roi[1], estimated_y - REFINE_SLACK),
                 min(
-                    frame_width,
+                    roi[2],
                     estimated_x + template_width
                     + REFINE_SLACK,
                 ),
                 min(
-                    frame_height,
+                    roi[3],
                     estimated_y + template_height
                     + REFINE_SLACK,
                 ),
             )
 
-            refined = self._match(
+            refined = match(
                 frame_gray,
                 template["gray"],
                 template["mask"],
@@ -2261,6 +2289,7 @@ class Detector:
         min_threshold,
         roi,
         max_matches,
+        blocked=False,
     ):
         """matchTemplate numa região; devolve os máximos locais acima do threshold em coordenada absoluta da imagem."""
 
@@ -2275,6 +2304,52 @@ class Detector:
             or y2 - y1 < template_height
         ):
             return []
+
+        if blocked and self.block_regions:
+            # Particiona posições possíveis do canto do template, não a
+            # imagem: cada região inclui apenas janelas sem tocar BLOCKs.
+            positions = [(x1, y1, x2 - template_width + 1, y2 - template_height + 1)]
+            image_height, image_width = image.shape[:2]
+            for bx, by, bw, bh in self.block_regions:
+                forbidden = (
+                    int(bx * image_width) - template_width + 1,
+                    int(by * image_height) - template_height + 1,
+                    math.ceil((bx + bw) * image_width),
+                    math.ceil((by + bh) * image_height),
+                )
+                remaining = []
+                for left, top, right, bottom in positions:
+                    ix1, iy1 = max(left, forbidden[0]), max(top, forbidden[1])
+                    ix2, iy2 = min(right, forbidden[2]), min(bottom, forbidden[3])
+                    if ix1 >= ix2 or iy1 >= iy2:
+                        remaining.append((left, top, right, bottom))
+                        continue
+                    remaining.extend(
+                        rect for rect in (
+                            (left, top, right, iy1), (left, iy2, right, bottom),
+                            (left, iy1, ix1, iy2), (ix2, iy1, right, iy2),
+                        ) if rect[0] < rect[2] and rect[1] < rect[3]
+                    )
+                positions = remaining
+            hits = []
+            for left, top, right, bottom in positions:
+                hits.extend(self._match(
+                    image, template_image, mask, min_threshold,
+                    (left, top, right + template_width - 1, bottom + template_height - 1),
+                    max_matches,
+                ))
+            hits.sort(key=lambda hit: hit[2], reverse=True)
+            selected = []
+            for hit in hits:
+                if not any(
+                    abs(hit[0] - other[0]) < template_width * 0.5
+                    and abs(hit[1] - other[1]) < template_height * 0.5
+                    for other in selected
+                ):
+                    selected.append(hit)
+                    if len(selected) >= max_matches:
+                        break
+            return selected
 
         region = image[y1:y2, x1:x2]
 
@@ -2599,6 +2674,23 @@ class Detector:
 
         output = frame
 
+        output_height, output_width = output.shape[:2]
+        for index, (x, y, width, height) in enumerate(self.block_regions, 1):
+            x1 = int(x * output_width)
+            y1 = int(y * output_height)
+            x2 = int(math.ceil((x + width) * output_width))
+            y2 = int(math.ceil((y + height) * output_height))
+            blocked = output[y1:y2, x1:x2]
+            if blocked.size:
+                color = (20, 20, 180) if blocked.ndim == 3 else 80
+                red = np.full_like(blocked, color)
+                cv2.addWeighted(red, 0.35, blocked, 0.65, 0, blocked)
+            cv2.rectangle(output, (x1, y1), (x2, y2), (30, 30, 230), 2)
+            cv2.putText(
+                output, f"BLOCK {index}", (x1 + 6, min(y2 - 6, y1 + 24)),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (230, 230, 255), 2, cv2.LINE_AA,
+            )
+
         for detection in detections:
 
             x = int(detection["x"] * scale)
@@ -2627,7 +2719,8 @@ class Detector:
 
             # Em food o nome do item vale mais que a categoria (são 70+
             # templates numa categoria só); nas outras a categoria já diz tudo.
-            if category == "food":
+            from_model = detection.get("name", "").startswith("modelo:")
+            if category == "food" and not from_model:
                 rotulo = self._base_name(detection["name"]).removesuffix(".png")
             else:
                 rotulo = category
@@ -2637,8 +2730,9 @@ class Detector:
                 for linha in (
                     self._layout_label(detection),
                     (
-                        f"{rotulo} "
-                        f"F:{detection['confidence']:.2f} "
+                        f"{rotulo} IA:{detection['confidence']:.2f}"
+                        if from_model else
+                        f"{rotulo} F:{detection['confidence']:.2f} "
                         f"C:{detection.get('color_similarity', 0.0):.2f}"
                     ),
                 )
@@ -2672,6 +2766,13 @@ class Detector:
             return output
 
         y = 50
+
+        mode = stats.get("detector_mode", "templates")
+        self._hud_text(output, "MODO: IA" if mode == "ai" else "MODO: TEMPLATES", y, self.HUD_NEUTRAL)
+        y += 40
+        if mode == "ai" and stats.get("model"):
+            self._hud_text(output, str(stats["model"])[:70], y, self.HUD_NEUTRAL, scale=0.5)
+            y += 30
 
         # Dois números distintos de propósito: a captura pode ir a 60 fps
         # enquanto o detector faz 3 passadas por segundo — quem manda na
@@ -2794,11 +2895,12 @@ class Detector:
                 # categoria a passada olha de propósito uma fração da lista,
                 # e só "12" pareceria detector quebrado.
                 na_lista = stats.get("searchable")
+                search_label = "regioes" if mode == "ai" else "templates"
 
                 label += (
-                    f"  ({procurados} templates)"
+                    f"  ({procurados} {search_label})"
                     if not na_lista
-                    else f"  ({procurados}/{na_lista} templates)"
+                    else f"  ({procurados}/{na_lista} {search_label})"
                 )
 
             self._hud_text(

@@ -2,7 +2,9 @@
 
 import hashlib
 import json
+import os
 import queue
+import re
 import threading
 import time
 import uuid
@@ -14,7 +16,12 @@ import numpy as np
 
 from core import log
 from dataset import layout
-from dataset.training_files import index_lock, raw_dataset_bytes
+from dataset.training_files import (
+    cleanup_records,
+    index_lock,
+    raw_dataset_bytes,
+    snapshot_records,
+)
 from core.config import (
     AI_AUTO_TRAIN,
     AI_PAUSE_BOT_WHILE_TRAINING,
@@ -76,7 +83,6 @@ class DatasetRecorder:
     def __init__(
         self,
         directory=None,
-        store=None,
         session=None,
         enabled=True,
         auto_train=None,
@@ -86,15 +92,14 @@ class DatasetRecorder:
             DATASET_DIR if directory is None else directory
         )
 
-        # Índice consultável (Postgres). None = só arquivos.
-        self.store = store
-        self._store_closed = False
-
         self.session = session or uuid.uuid4().hex
+        self.created_at = time.time()
 
         self.enabled = enabled
         self.auto_trainer = None
-        enable_auto_train = AI_AUTO_TRAIN if auto_train is None else auto_train
+        enable_auto_train = (
+            AI_AUTO_TRAIN if auto_train is None else auto_train
+        ) and os.environ.get("EATVENTURE_AUTO_TRAIN_EXTERNAL") != "1"
         if enable_auto_train:
             from dataset.auto_train import AutoTrainer
 
@@ -124,6 +129,7 @@ class DatasetRecorder:
         self.unchanged_streak = 0
 
         self.saved = 0
+        self._resolution_count_cache = {}
         self.dropped = 0
         self.duplicates = 0
         self.by_action = {}
@@ -137,6 +143,37 @@ class DatasetRecorder:
         self.last_disk_check = 0.0
 
         self.disk_warned = False
+        self._discard_ranges = []
+        self.discarded = 0
+
+    def samples_for_resolution(self, resolution):
+        """Total atualmente registrado no shard da resolução."""
+        if not isinstance(resolution, str) or not re.fullmatch(
+            r"[1-9]\d*x[1-9]\d*", resolution
+        ):
+            return 0
+
+        index = layout.index_path(self.data_dir / resolution)
+        try:
+            signature = (index.stat().st_mtime_ns, index.stat().st_size)
+        except OSError:
+            self._resolution_count_cache.pop(resolution, None)
+            return 0
+
+        cached = self._resolution_count_cache.get(resolution)
+        if cached and cached[0] == signature:
+            return cached[1]
+
+        try:
+            with index_lock(self.root):
+                signature = (index.stat().st_mtime_ns, index.stat().st_size)
+                with index.open(encoding="utf-8") as file:
+                    total = sum(1 for line in file if line.strip())
+        except OSError:
+            return 0
+
+        self._resolution_count_cache[resolution] = (signature, total)
+        return total
 
     def start(self):
 
@@ -149,7 +186,6 @@ class DatasetRecorder:
 
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
-        self._store_closed = False
         self.running = True
 
         self.thread = threading.Thread(
@@ -179,7 +215,6 @@ class DatasetRecorder:
             if self.thread is None or not self.thread.is_alive():
 
                 self.thread = None
-                self._close_store()
 
             return
 
@@ -201,9 +236,6 @@ class DatasetRecorder:
             else:
 
                 self.thread = None
-
-        if self.thread is None:
-            self._close_store()
 
         logger.info(
             "Dataset: %d gravadas (%.1f MB), %d duplicadas, "
@@ -240,6 +272,9 @@ class DatasetRecorder:
 
         if not self.running:
             return
+
+        if action_kind not in ("scroll", "swipe"):
+            self._resume_collection(time.time())
 
         if action not in DATASET_ACTIONS:
             return
@@ -439,53 +474,96 @@ class DatasetRecorder:
                     self.dropped,
                 )
 
-    def _run(self):
+    def discard_since(self, timestamp=None):
+        """Descarta o intervalo sem ação útil, inclusive fila e arquivos já gravados."""
+        cutoff = self.created_at if timestamp is None else float(timestamp)
+        with self.lock:
+            if not self._discard_ranges or self._discard_ranges[-1][1] is not None:
+                self._discard_ranges.append([cutoff, None])
+            if (
+                self.pending is not None
+                and self.pending.created.timestamp() > cutoff
+            ):
+                self.pending = None
 
         try:
+            records, _ = snapshot_records(self.root)
+        except OSError as error:
+            logger.warning("Não foi possível revisar o intervalo inválido: %s", error)
+            return 0
+        discarded = [
+            record for record in records
+            if self._record_timestamp(record) > cutoff
+        ]
+        if not discarded:
+            return 0
+        ids = {record["id"] for record in discarded if record.get("id")}
+        result = cleanup_records(self.root, discarded, ids)
+        removed = result.get("records_removed", 0)
+        self.discarded += removed
+        self.saved = max(0, self.saved - removed)
+        self.disk_bytes = max(0, self.disk_bytes - result.get("bytes_freed", 0))
+        logger.warning(
+            "Dataset: descartadas %d amostras sem ação relevante (%d imagens).",
+            removed, result.get("images_removed", 0),
+        )
+        return removed
 
-            # stop() interrompe a coleta; o que já entrou na fila ainda vale.
-            while self.running or not self.queue.empty():
+    @staticmethod
+    def _record_timestamp(record):
+        try:
+            return datetime.fromisoformat(record["created_at"]).timestamp()
+        except (KeyError, TypeError, ValueError):
+            return 0.0
 
-                try:
-
-                    sample = self.queue.get(timeout=0.2)
-
-                except queue.Empty:
-                    continue
-
-                try:
-
-                    self._write(sample)
-
-                except Exception as error:
-
-                    logger.exception(
-                        "Erro gravando amostra: %s",
-                        error,
-                    )
-
-                finally:
-
-                    self.queue.task_done()
-
-        finally:
-
-            self._close_store()
-
-    def _close_store(self):
-
+    def _discarded(self, sample):
         with self.lock:
+            created_at = sample.created.timestamp()
+            return any(
+                created_at > start and (end is None or created_at < end)
+                for start, end in self._discard_ranges
+            )
 
-            if self.store and not self._store_closed:
+    def _resume_collection(self, timestamp):
+        with self.lock:
+            if self._discard_ranges and self._discard_ranges[-1][1] is None:
+                self._discard_ranges[-1][1] = timestamp
 
-                self._store_closed = True
-                self.store.close()
+    def _run(self):
+
+        # stop() interrompe a coleta; o que já entrou na fila ainda vale.
+        while self.running or not self.queue.empty():
+
+            try:
+
+                sample = self.queue.get(timeout=0.2)
+
+            except queue.Empty:
+                continue
+
+            try:
+
+                self._write(sample)
+
+            except Exception as error:
+
+                logger.exception(
+                    "Erro gravando amostra: %s",
+                    error,
+                )
+
+            finally:
+
+                self.queue.task_done()
 
     def _write(self, sample):
 
         frame = sample.frame
 
         if frame is None:
+            return
+
+        if self._discarded(sample):
             return
 
         # A coleta pode enfileirar várias amostras antes de saved avançar.
@@ -581,13 +659,13 @@ class DatasetRecorder:
         registro = self._record(sample, caminho, chave, shard)
 
         with index_lock(self.root):
+            if self._discarded(sample):
+                caminho.unlink(missing_ok=True)
+                return
             with layout.index_path(shard).open(
                 "a", encoding="utf-8",
             ) as arquivo:
                 arquivo.write(json.dumps(registro, ensure_ascii=False) + "\n")
-
-        if self.auto_trainer is not None:
-            self.auto_trainer.notify()
 
         self.saved += 1
 
@@ -599,20 +677,6 @@ class DatasetRecorder:
 
         self.by_action[rotulo] = self.by_action.get(rotulo, 0) + 1
 
-        # Índice no banco é opcional; falha aqui não pode derrubar a gravação (JSONL é a fonte de verdade).
-        if self.store:
-
-            try:
-
-                self.store.insert(registro)
-
-            except Exception as error:
-
-                logger.warning(
-                    "Falha ao indexar no banco (o arquivo "
-                    "foi gravado): %s",
-                    error,
-                )
 
     def _disk_full(self):
         limite = DATASET_MAX_DISK_MB * 1_000_000
@@ -637,6 +701,7 @@ class DatasetRecorder:
         return {
             "id": sample.id,
             "session": self.session,
+            "device_id": os.environ.get("EATVENTURE_DEVICE_ID") or None,
             "created_at": sample.created.isoformat(),
 
             # Relativo à raiz DA RESOLUÇÃO: a pasta daquela resolução

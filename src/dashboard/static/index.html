@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="pt-BR" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#111714">
+  <title>EatVenture · Controle</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <section id="login" class="login-screen">
+    <div id="session-loading" class="login-card session-loading"><div class="brand-mark" aria-hidden="true">e<span>.</span></div><span id="session-spinner" class="loading-spinner" aria-hidden="true"></span><h1>Abrindo painel</h1><p id="session-status" class="muted" role="status">Conectando ao servidor…</p><button id="session-retry" class="button primary" type="button" hidden>Tentar novamente</button></div>
+    <form id="login-form" class="login-card" hidden>
+      <div class="brand-mark" aria-hidden="true">e<span>.</span></div>
+      <p class="eyebrow">EATVENTURE AI</p>
+      <h1>Seu bot, sob controle.</h1>
+      <p class="muted">Entre com o token salvo em <span class="mono">local/dashboard.token</span> no servidor.</p>
+      <label for="token">Token de acesso</label>
+      <input id="token" type="password" autocomplete="current-password" required placeholder="Cole o token do servidor">
+      <p id="login-error" class="form-error" role="alert"></p>
+      <button class="button primary" type="submit">Acessar painel <span aria-hidden="true">→</span></button>
+      <p class="login-note">O token permanece apenas nesta sessão do navegador.</p>
+    </form>
+  </section>
+
+  <div id="app" class="app-shell" hidden>
+    <aside class="sidebar" hidden>
+      <a href="#" class="brand" aria-label="EatVenture, início"><span class="brand-mark small">e<span>.</span></span><span>EatVenture<small>CONTROLE LOCAL</small></span></a>
+      <a class="nav-item active" href="#"><span aria-hidden="true">▦</span> Dispositivos <span id="nav-count" class="nav-count">0</span></a>
+      <div class="sidebar-bottom"><span class="server-dot" id="server-dot"></span><div><strong id="server-status">Conectando</strong><small id="server-detail">Painel local</small></div></div>
+    </aside>
+    <main>
+      <div class="page-content">
+        <section class="page-heading"><div><h1>Dispositivos</h1><p class="muted">Execute, acompanhe e ajuste cada bot em um só lugar.</p></div><div class="page-heading-actions"><button id="shutdown-server" class="button ghost danger-text" type="button" title="Encerrar o painel e os bots ativos"><span aria-hidden="true">⏻</span> Encerrar painel</button><button id="theme-toggle" class="button ghost theme-toggle" type="button" aria-label="Ativar tema escuro" title="Ativar tema escuro" aria-pressed="false">☾</button><button id="logout" class="button ghost compact" type="button">Sair</button></div></section>
+        <section class="kpi-grid" aria-label="Resumo da operação">
+          <article class="kpi"><span class="kpi-label"><span class="mini-dot green"></span> Bots em execução</span><strong id="kpi-running">—</strong><span id="kpi-running-detail" class="kpi-detail">Aguardando dados</span></article>
+          <article class="kpi"><span class="kpi-label">Dispositivos conectados</span><strong id="kpi-connected">—</strong><span class="kpi-detail">Disponíveis via ADB</span></article>
+        </section>
+        <section class="device-section" aria-label="Seus dispositivos">
+          <div class="section-toolbar"><div class="search-box"><span aria-hidden="true">⌕</span><input id="search" type="search" aria-label="Buscar dispositivo" placeholder="Buscar nome, modelo ou serial…"></div><select id="status-filter" aria-label="Filtrar por status"><option value="all">Todos os status</option><option value="running">Em execução</option><option value="ready">Prontos</option><option value="offline">Desconectados</option></select><span id="device-count" class="muted">0 dispositivos</span><button id="connect-open" class="button primary compact connect-button" type="button"><span aria-hidden="true">＋</span> Conectar Android</button></div>
+          <div class="selection-toolbar"><label class="check-label"><input type="checkbox" id="select-all"><span id="selection-label">Selecionar todos</span></label><div class="bulk-actions"><button id="refresh" class="button ghost compact" type="button" title="Atualizar dispositivos ADB">↻ Atualizar</button><button id="reconnect-open" class="button ghost compact" type="button" title="Editar IP e porta do último dispositivo">Reconectar</button><button id="bulk-start" class="button primary compact" type="button" disabled>▷ Iniciar</button><button id="bulk-restart" class="button warning compact" type="button" disabled>↻ Reiniciar</button><button id="bulk-stop" class="button danger compact" type="button" disabled>□ Parar</button></div></div>
+          <div id="state-error" class="notice error" role="alert" hidden></div>
+          <div id="devices" class="device-grid" aria-live="polite"><div class="empty-state"><span class="loading-spinner"></span><h2>Buscando dispositivos</h2><p>Consultando o servidor e o ADB.</p></div></div>
+        </section>
+        <footer class="page-footer"><span><span class="mini-dot green"></span> Métricas a cada segundo · dispositivos a cada 5 segundos</span><span>Perfis salvos localmente por dispositivo</span></footer>
+      </div>
+    </main>
+  </div>
+
+  <dialog id="device-dialog" class="device-dialog" aria-labelledby="detail-title">
+    <div class="drawer-heading"><div><p class="eyebrow">CONTROLE DO DISPOSITIVO</p><h2 id="detail-title">Dispositivo</h2><p id="detail-serial" class="mono muted"></p></div><button id="detail-close" class="icon-button" aria-label="Fechar detalhes" type="button">×</button></div>
+    <div id="detail-status" class="detail-status"></div>
+    <div class="tabs" role="tablist" aria-label="Detalhes do dispositivo"><button id="tab-settings" class="tab active" role="tab" aria-controls="panel-settings" aria-selected="true" data-tab="settings">Configurações</button><button id="tab-items" class="tab" role="tab" aria-controls="panel-items" aria-selected="false" data-tab="items" tabindex="-1">Itens e fidelidade</button><button id="tab-vision" class="tab" role="tab" aria-controls="panel-vision" aria-selected="false" data-tab="vision" tabindex="-1">Visão IA</button><button id="tab-logs" class="tab" role="tab" aria-controls="panel-logs" aria-selected="false" data-tab="logs" tabindex="-1">Logs</button></div>
+    <div class="drawer-body">
+      <div id="profile-error" class="notice error" role="alert" hidden></div>
+      <section id="panel-settings" role="tabpanel" aria-labelledby="tab-settings"><p class="section-description">Ajustes exclusivos deste dispositivo. Ative “Personalizar” para substituir um valor padrão.</p><div id="profile-fields"></div></section>
+      <section id="panel-items" role="tabpanel" aria-labelledby="tab-items" hidden><div class="notice subtle">A fidelidade é a confiança mínima para reconhecer um item. Valores maiores exigem uma correspondência mais exata.</div><div class="items-toolbar"><input id="item-search" type="search" placeholder="Buscar categoria ou item…" aria-label="Buscar item"><button id="reset-thresholds" class="button ghost compact" type="button">Restaurar fidelidades</button></div><div id="item-fields"></div></section>
+      <section id="panel-vision" class="vision-panel" role="tabpanel" aria-labelledby="tab-vision" hidden><div class="vision-toolbar"><div><h3>Visão da IA</h3><p id="vision-status" class="muted" role="status">Transmissão desligada</p></div><div><label class="check-label vision-details-toggle"><input id="vision-details" type="checkbox" checked> Mostrar dados</label><button id="block-manage" class="button ghost compact" type="button">Áreas ignoradas</button><button id="template-select" class="button ghost compact" type="button">Adicionar template</button><button id="vision-toggle" class="button secondary compact" type="button">Ver visão</button></div></div><p class="section-description">Acompanhe o jogo com as marcações de reconhecimento, direto do servidor, sem interface gráfica. Ative ou encerre a transmissão com o bot em execução, sem reiniciá-lo.</p><div id="vision-stage" class="vision-stage"><img id="vision-image" alt="Visão atual do Android com as detecções da IA" hidden><div id="vision-placeholder" class="vision-placeholder"><span id="vision-symbol" class="empty-symbol" aria-hidden="true">◎</span><h3 id="vision-placeholder-title">Transmissão desligada</h3><p id="vision-placeholder-message">Ative a visão para acompanhar as detecções deste dispositivo.</p></div></div><p class="vision-footnote muted">Transmissão contínua de até 20 quadros por segundo, sempre exibindo o frame mais recente. Ao sair desta aba, a transmissão é encerrada; ao ocultar o navegador, ela fica pausada.</p></section>
+      <section id="panel-logs" class="logs-panel" role="tabpanel" aria-labelledby="tab-logs" hidden><div class="log-toolbar"><label class="check-label"><input id="log-autoscroll" type="checkbox" checked> Rolar automaticamente</label><div><button id="log-pause" class="button ghost compact" type="button">Pausar</button><button id="log-download" class="button ghost compact" type="button">Baixar</button></div></div><p class="log-hint muted">Até 500 linhas e 512 KiB em memória; cada linha tem até 4 KiB. Linhas antigas são descartadas. O download inclui apenas as linhas retidas.</p><div id="log-output" class="log-output" tabindex="0" aria-label="Saída do bot"></div><p id="log-status" class="muted log-hint" aria-live="polite">Aguardando logs.</p></section>
+    </div>
+    <footer class="drawer-footer"><div><strong id="pending-count">Sem alterações pendentes</strong><small>Alterações aplicadas ao iniciar/reiniciar.</small></div><div class="drawer-footer-actions"><button id="reset-profile" class="button ghost" type="button">Restaurar perfil</button><button id="save-profile" class="button primary" type="button" disabled>Salvar perfil</button></div></footer>
+  </dialog>
+
+  <dialog id="block-dialog" class="block-dialog" aria-labelledby="block-title"><header class="modal-heading"><div><p class="eyebrow">CONFIGURAÇÃO DE VISÃO</p><h2 id="block-title">Áreas ignoradas</h2><p class="muted">Uma seleção editável de regiões que o reconhecimento deve desconsiderar.</p></div><button id="block-close" class="icon-button" type="button" aria-label="Fechar áreas ignoradas">×</button></header><div id="block-regions" class="block-regions"></div><footer class="block-footer"><button id="block-cancel" class="button ghost" type="button">Fechar</button><button id="block-select" class="button primary" type="button">Editar seleção</button></footer></dialog>
+
+  <dialog id="template-dialog" class="template-dialog" aria-labelledby="template-title">
+    <header class="template-heading"><div><p id="template-kind" class="eyebrow">NOVO TEMPLATE</p><h2 id="template-title">Selecione o item</h2><p id="template-instruction" class="muted">Arraste com o botão esquerdo sobre o item.</p></div><button id="template-close" class="icon-button" type="button" aria-label="Fechar seleção">×</button></header>
+    <section id="template-selection-step" class="template-step">
+      <div id="template-stage" class="template-stage"><span class="loading-spinner" aria-label="Carregando frame"></span><img id="template-image" alt="Frame do dispositivo para selecionar o template" draggable="false" hidden><div id="template-selection-box" class="template-selection-box" hidden></div><aside id="template-live-preview" class="template-live-preview" hidden><span>Preview do recorte</span><canvas id="template-live-canvas"></canvas><strong id="template-live-size"></strong></aside></div>
+      <footer class="template-footer"><p id="template-selection-status" class="muted" role="status">Capturando frame sem marcações…</p><div><button id="template-cancel" class="button ghost" type="button">Cancelar</button><button id="template-undo" class="button ghost" type="button" hidden>Desfazer último</button><button id="template-refresh" class="button secondary" type="button">Atualizar frame</button><button id="template-confirm" class="button primary" type="button" disabled>Confirmar seleção</button></div></footer>
+    </section>
+    <section id="template-category-step" class="template-step template-category-step" hidden>
+      <div class="template-review"><div class="template-crop"><canvas id="template-preview"></canvas></div><div class="template-category-form"><p class="eyebrow">RECORTE SELECIONADO</p><h3>Escolha a categoria</h3><p id="template-review-size" class="muted"></p><label for="template-category">Categoria</label><input id="template-category" list="template-categories" placeholder="Ex.: engine" maxlength="64" autocomplete="off"><datalist id="template-categories"></datalist><p class="setting-hint">Use uma categoria existente ou informe uma nova usando letras minúsculas, números e sublinhado.</p><div id="template-name-field" hidden><label for="template-name">Nome (opcional)</label><input id="template-name" placeholder="Ex.: Pizza" maxlength="64" autocomplete="off"><p class="setting-hint">O nome será incluído no arquivo junto à resolução. Se ficar vazio, será usado “item”.</p></div></div></div>
+      <footer class="template-footer"><button id="template-back" class="button ghost" type="button">← Refazer seleção</button><div><button id="template-category-cancel" class="button ghost" type="button">Cancelar</button><button id="template-save" class="button primary" type="button">Salvar template</button></div></footer>
+    </section>
+  </dialog>
+
+  <dialog id="connect-dialog" class="connect-dialog" aria-labelledby="connect-title"><form id="connect-form"><div class="modal-heading"><div><p class="eyebrow">ANDROID VIA WI-FI</p><h2 id="connect-title">Conectar dispositivo</h2></div><button id="connect-close" class="icon-button" type="button" aria-label="Fechar conexão">×</button></div><p class="muted">Informe o IP e a porta atual da depuração sem fio. Após conectar, o painel tenta mudar para a porta 5555 e reconectar automaticamente.</p><label for="connect-address">IP e porta atuais</label><input id="connect-address" required placeholder="192.168.1.4:42819" autocomplete="off" spellcheck="false"><details class="pair-details"><summary>Precisa parear primeiro?</summary><p class="muted">Abra “Parear dispositivo com código” no Android. A porta de pareamento costuma ser diferente da porta de conexão.</p><label for="pair-address">Endereço de pareamento</label><input id="pair-address" placeholder="192.168.1.4:37123" autocomplete="off" spellcheck="false"><label for="pair-code">Código de pareamento</label><div class="pair-code-row"><input id="pair-code" inputmode="numeric" autocomplete="off" placeholder="123456" maxlength="6"><button id="pair-submit" class="button secondary" type="button">Parear</button></div></details><p id="connect-result" class="form-error" role="status"></p><button id="connect-submit" type="submit" class="button primary full-width">Conectar e usar porta 5555</button></form></dialog>
+  <dialog id="dataset-dialog" class="dataset-dialog" aria-labelledby="dataset-title">
+    <header class="dataset-heading"><div><p class="eyebrow">DADOS COLETADOS</p><h2 id="dataset-title">Datasets por sessão</h2><p class="muted">Imagens em ordem de criação, agrupadas pelo ID da execução.</p></div><button id="dataset-close" class="icon-button" type="button" aria-label="Fechar datasets">×</button></header>
+    <div class="dataset-layout">
+      <aside class="dataset-sessions"><div class="dataset-session-heading"><strong>Sessões</strong><button id="dataset-refresh" class="button ghost compact" type="button">Atualizar</button></div><div id="dataset-session-list" class="dataset-session-list"></div></aside>
+      <section class="dataset-content">
+        <div id="dataset-empty" class="empty-state"><span class="empty-symbol" aria-hidden="true">▦</span><h2>Nenhuma sessão selecionada</h2><p>Escolha uma sessão para revisar as imagens coletadas.</p></div>
+        <div id="dataset-selected" hidden>
+          <div class="dataset-toolbar"><div><h3 id="dataset-session-title"></h3><p id="dataset-session-detail" class="mono muted"></p></div><button id="dataset-delete-session" class="button ghost compact danger-text" type="button">Excluir sessão</button></div>
+          <form id="dataset-range-form" class="dataset-range-form"><span>Excluir intervalo</span><label>De <input id="dataset-range-start" type="number" min="1" required></label><label>até <input id="dataset-range-end" type="number" min="1" required></label><button class="button ghost compact danger-text" type="submit">Excluir imagens</button></form>
+          <p id="dataset-status" class="muted" role="status"></p>
+          <div id="dataset-images" class="dataset-images"></div>
+          <button id="dataset-more" class="button ghost" type="button" hidden>Carregar mais imagens</button>
+        </div>
+      </section>
+    </div>
+  </dialog>
+  <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
+</body>
+</html>

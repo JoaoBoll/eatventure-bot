@@ -188,7 +188,10 @@ def group_key(registro, mode="phash"):
     # "phash": quadros visualmente iguais no mesmo lado (56% das amostras repetem).
     # "session": sessão inteira num lado só — mede generalizar p/ outra partida
     if mode == "session":
-        return registro.get("session") or "sem-sessao"
+        # Dados legados não têm sessão. Agrupá-los todos em "sem-sessao"
+        # inviabiliza o split; nesses casos ainda preservamos frames idênticos
+        # juntos pelo phash.
+        return registro.get("session") or registro.get("phash") or registro.get("id")
 
     return registro.get("phash") or registro.get("id")
 
@@ -268,6 +271,25 @@ def state_baseline(registros):
     return acertos / len(registros)
 
 
+def state_baseline_on_holdout(treino, teste):
+    """Baseline aprendido no treino e medido em frames nunca vistos."""
+    if not treino or not teste:
+        return 0.0
+
+    por_estado = defaultdict(Counter)
+    geral = Counter()
+    for registro in treino:
+        rotulo = action_label(registro)
+        por_estado[registro.get("state")][rotulo] += 1
+        geral[rotulo] += 1
+    acertos = 0
+    for registro in teste:
+        previsoes = por_estado.get(registro.get("state"), geral)
+        previsto = previsoes.most_common(1)[0][0]
+        acertos += action_label(registro) == previsto
+    return acertos / len(teste)
+
+
 def ceiling_state_categories(registros):
     """Teto: acerto de conhecer estado + categorias na tela — justifica a
     arquitetura: se isso resolve a escolha de ação, o modelo só precisa DETECTAR."""
@@ -294,6 +316,32 @@ def ceiling_state_categories(registros):
     )
 
     return acertos / len(registros)
+
+
+def ceiling_state_categories_on_holdout(treino, teste):
+    """Teto estado+categorias, sem consultar rótulos do holdout."""
+    if not treino or not teste:
+        return 0.0
+
+    combinacoes = defaultdict(Counter)
+    geral = Counter()
+    for registro in treino:
+        categorias = frozenset(
+            caixa.get("category") for caixa in registro.get("boxes") or []
+        )
+        rotulo = action_label(registro)
+        combinacoes[(registro.get("state"), categorias)][rotulo] += 1
+        geral[rotulo] += 1
+    padrao = geral.most_common(1)[0][0]
+    acertos = 0
+    for registro in teste:
+        categorias = frozenset(
+            caixa.get("category") for caixa in registro.get("boxes") or []
+        )
+        previsoes = combinacoes.get((registro.get("state"), categorias), geral)
+        previsto = previsoes.most_common(1)[0][0] if previsoes else padrao
+        acertos += action_label(registro) == previsto
+    return acertos / len(teste)
 
 
 def iou(a, b):
