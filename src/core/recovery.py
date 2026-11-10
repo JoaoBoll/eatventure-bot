@@ -1,0 +1,61 @@
+"""Recuperação limitada da execução pelo terminal."""
+
+import threading
+import os
+import subprocess
+import sys
+
+from core import config, devices, log
+
+
+logger = log.get("recovery")
+
+
+def run_with_retries(run):
+    if os.environ.get("EATVENTURE_BOT_CHILD") == "1":
+        return run()
+    environment = {**os.environ, "EATVENTURE_BOT_CHILD": "1"}
+    command = [sys.executable, *sys.argv]
+    if not any(arg == "--device" or arg.startswith("--device=") for arg in sys.argv[1:]):
+        try:
+            command.extend(["--device", devices.resolver(config.DEVICE_SERIAL)])
+        except KeyboardInterrupt:
+            logger.info("Inicialização cancelada pelo usuário.")
+            return 0
+    for attempt in range(config.BOT_RESTART_LIMIT + 1):
+        process = None
+        try:
+            process = subprocess.Popen(command, env=environment)
+            if attempt:
+                logger.info("Processo reiniciado na tentativa %d/%d (PID %d).", attempt, config.BOT_RESTART_LIMIT, process.pid)
+            returncode = process.wait()
+            if returncode == 0:
+                return 0
+            raise RuntimeError(f"Processo do bot encerrou com código {returncode}.")
+        except KeyboardInterrupt:
+            if process is not None:
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait(timeout=5)
+            logger.info("Recuperação cancelada pelo usuário.")
+            return 0
+        except Exception:
+            logger.exception("Falha na execução do bot.")
+            if attempt >= config.BOT_RESTART_LIMIT:
+                logger.error("Limite de %d recuperações atingido; bot encerrado.", config.BOT_RESTART_LIMIT)
+                return 1
+            logger.warning(
+                "Recuperação %d/%d em %.1fs.",
+                attempt + 1, config.BOT_RESTART_LIMIT, config.BOT_RESTART_DELAY,
+            )
+            try:
+                threading.Event().wait(config.BOT_RESTART_DELAY)
+            except KeyboardInterrupt:
+                logger.info("Recuperação cancelada pelo usuário.")
+                return 0

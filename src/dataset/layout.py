@@ -3,12 +3,13 @@
     dataset/data/<LARGURAxALTURA>/samples.jsonl
     dataset/data/<LARGURAxALTURA>/images/<AAAA-MM-DD>/<id>.<ext>
 
-A resolução separa só a COLETA. Para o treino ela não significa nada: ele
-junta todas as raízes. Cada raiz é auto-contida (índice + imagens) e o campo
+A resolução separa a coleta e os treinos automáticos. Cada raiz é
+auto-contida (índice + imagens) e o campo
 `image` de cada registro é relativo à raiz DELE, então dá para mover, copiar
 ou apagar uma resolução sem invalidar as outras.
 """
 
+import re
 from pathlib import Path
 
 DATA_DIRNAME = "data"
@@ -59,3 +60,13 @@ def shard_roots(dataset_root):
         encontradas.append(raiz)
 
     return encontradas
+
+
+def record_resolution(record):
+    shard = record.get("_shard")
+    if isinstance(shard, str) and re.fullmatch(r"[1-9]\d*x[1-9]\d*", shard):
+        return shard
+    width, height = record.get("frame_width"), record.get("frame_height")
+    if type(width) is int and width > 0 and type(height) is int and height > 0:
+        return f"{width}x{height}"
+    return "legacy"

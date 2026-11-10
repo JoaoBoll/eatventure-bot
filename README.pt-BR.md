@@ -1,8 +1,19 @@
 # EatVenture AI/BOT
 
-[Read in English](README.md)
+## Idiomas
+
+- [English](README.md)
+- [Português do Brasil](README.pt-BR.md)
+
+Quer adicionar ou atualizar uma tradução? Consulte o
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 Bot para automatizar ações no EatVenture em um dispositivo Android. O uso padrão reconhece elementos por templates (imagens de referência); o modelo de IA ainda é experimental.
+
+Este projeto é **exclusivamente para uso local/pessoal**, incluindo a rede local.
+Não foi pensado como produto, serviço público ou plataforma para usuários.
+Por esse motivo, o painel dispensa autenticação por padrão; o token opcional
+continua disponível para quem quiser utilizá-lo.
 
 ## Requisitos
 
@@ -77,6 +88,52 @@ Habilita a conexão pela mesma rede Wi-Fi. Confirme com `adb devices` antes de r
 
 ## Comandos para rodar
 
+### Painel web
+
+Com o ambiente virtual ativado, instale as dependências do painel e inicie-o:
+
+```powershell
+python -m pip install -r requirements-web.txt
+```
+
+Abra `http://localhost:8765` no mesmo computador. Para permitir acesso apenas local, use `nohup .venv/bin/python src/web.py --host 127.0.0.1 > /dev/null 2>&1 < /dev/null &`. O painel detecta os dispositivos autorizados pelo ADB e permite iniciar, parar e configurar os bots. Veja [docs/painel-web.md](docs/painel-web.md) para token de acesso, outra porta e operação pela rede local.
+
+Em um servidor Linux, use este comando para iniciar o painel em segundo plano:
+
+```bash
+nohup .venv/bin/python src/web.py > /dev/null 2>&1 < /dev/null &
+```
+
+O painel continua executando após encerrar a sessão SSH, sem salvar saída em arquivo. Use o botão **Encerrar painel** na interface para pará-lo. Para mantê-lo ativo também após reinicializações do servidor, use o serviço `systemd` descrito em [docs/painel-web.md](docs/painel-web.md).
+
+Para encerrar pelo terminal:
+
+```bash
+python src/stop-web.py
+```
+
+Em Debian ou Ubuntu, se o `pip` informar `externally-managed-environment`, instale o suporte a ambientes virtuais e use `.venv`; não use `--break-system-packages`:
+
+```bash
+sudo apt update
+sudo apt install -y python3-venv
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements-web.txt
+nohup .venv/bin/python src/web.py > /dev/null 2>&1 < /dev/null &
+```
+
+Se a versão do Python for instalada separadamente e o comando `venv` ainda falhar, instale o pacote correspondente, por exemplo `sudo apt install -y python3.14-venv`.
+
+Para controlar vários aparelhos pelo navegador, iniciar/parar bots e salvar ajustes locais por dispositivo, use o [painel web opcional](docs/painel-web.md). Ele roda no servidor sem interface gráfica; os comandos de terminal abaixo continuam disponíveis.
+
+O painel permite escolher **Bot por templates** ou **Modelo de IA** em
+**Configurações → Modo de reconhecimento**. No modo de IA, selecione um modelo
+treinado e a fonte de regiões, salve o perfil e reinicie. A aba **Visão** mostra
+as detecções do modo em execução nos dois casos, incluindo o modelo ativo
+quando usar IA. A seleção automática exige um modelo para a resolução da
+captura. Veja os detalhes no [guia do painel](docs/painel-web.md).
+
 Mantenha o EatVenture aberto, com a tela ligada e desbloqueada.
 
 ```bash
@@ -105,6 +162,39 @@ python src/main.py --device SERIAL_DO_DISPOSITIVO
 
 Escolhe o dispositivo pelo serial exibido em `adb devices`. Sem um dispositivo definido pela opção ou pela configuração, o programa pergunta quando há mais de um conectado. Os demais comandos abaixo e o visualizador de captura também aceitam `--device`.
 
+Para impedir o reconhecimento de templates em partes da tela, abra o seletor
+visual de BLOCKs:
+
+```bash
+python tools/block_selector.py
+```
+
+Arraste sobre quantas áreas quiser no mesmo frame. Use `Enter` ou `s` para
+salvar, `u`, `Backspace` ou o botão direito para desfazer a última área e
+`r` ou `F5` para atualizar a captura. No painel web, abra **Visão IA**, use
+**Adicionar BLOCK**, selecione várias áreas e confirme. Depois, salve o perfil
+e reinicie o bot. Os BLOCKs acompanham a resolução do dispositivo.
+
+O BLOCK é aplicado **somente a `box`, `food` e `new_point`**.
+As outras categorias, incluindo `engine`, ignoram os BLOCKs e mantêm suas
+áreas normais de busca. As posições bloqueadas são excluídas antes do
+template matching, inclusive quando há sobreposição parcial do item.
+
+Painel e seletor local compartilham os BLOCKs no perfil em
+`local/devices/<hash-do-aparelho>.json`, usando a identidade do aparelho para
+agrupar USB e Wi-Fi quando ela estiver disponível. O seletor também aceita
+`--state-dir CAMINHO` para usar a mesma pasta de um painel personalizado.
+Arquivos antigos em `local/blocks/` são importados quando o perfil ainda não
+tem o campo `block_regions`; os arquivos originais são preservados.
+
+Se o bot falhar, tenta se recuperar até **3 vezes**, com **3 segundos** entre
+tentativas. Cada falha, tentativa e esgotamento do limite aparece no log.
+Isso inclui processos encerrados com erro no painel e no terminal.
+Cinco falhas consecutivas do detector ou a interrupção inesperada
+da captura também acionam a recuperação. Paradas manuais não reiniciam o bot.
+Os limites ficam em `src/core/config.py`: `BOT_RESTART_LIMIT`,
+`BOT_RESTART_DELAY` e `VISION_FAILURE_LIMIT`.
+
 ```bash
 python src/main_layouts.py
 ```
@@ -121,7 +211,7 @@ Executa o bot usando somente os templates já aprendidos para a resolução atua
 python src/main.py --ai-collect
 ```
 
-Executa o bot por templates e coleta imagens e registros em `dataset/data/<resolução>/`. A cada 10 mil registros novos, somando as resoluções, treina a IA e salva um relatório JSON por execução. Durante o treino, mantém os processos e janelas abertos, pausa as ações e a coleta e retoma automaticamente ao terminar ou falhar. Após o sucesso, remove os registros e imagens aproveitados, preservando o cache de treinamento. Veja os [comandos da IA](IA/README.md) para treinar manualmente e usar o modelo atualizado.
+Executa o bot por templates e coleta imagens e registros em `dataset/data/<resolução>/`. A cada 10 mil registros novos de uma mesma resolução, treina a IA e salva um relatório JSON por execução. Durante o treino no terminal, pausa ações e coleta e retoma automaticamente ao terminar ou falhar. Após a promoção do candidato, remove somente os registros e imagens aproveitados no snapshot, preservando o cache de treinamento. Veja os [comandos da IA](IA/README.md) para treinar manualmente e usar o modelo atualizado.
 
 Para continuar jogando e coletando durante o treino automático, defina `AI_PAUSE_BOT_WHILE_TRAINING = False` em [src/core/config.py](src/core/config.py).
 

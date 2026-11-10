@@ -4,9 +4,11 @@
 import argparse
 import hashlib
 import json
+import re
 import sys
 import time
 from collections import Counter, defaultdict
+from copy import copy
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -22,7 +24,15 @@ DEFAULT_MODEL = ROOT / "IA" / "model.joblib"
 # em core/state_machine.py). `fly` tem poucas caixas e a maior forma do
 # dataset (414x141 vs 95x94 da mediana), então some fácil num --limit ou
 # --outcome apertado sem que a acurácia agregada avise.
-CATEGORIAS_CRITICAS = ("renovate", "fly")
+
+
+
+def _parse_resolution(value):
+    if value == "legacy" or re.fullmatch(r"[1-9]\d*x[1-9]\d*", value):
+        return value
+    raise argparse.ArgumentTypeError(
+        "Informe a resolução como LARGURAxALTURA ou use legacy."
+    )
 
 
 def check_dependencies():
@@ -100,6 +110,7 @@ def extract_category_rows(
     registros,
     negativos_por_frame,
     tamanhos,
+    label_source="all",
     fase="extraindo features",
 ):
     """(X, y, donos, info) — donos[i] é o id da amostra que gerou a linha i.
@@ -133,7 +144,17 @@ def extract_category_rows(
             progress(indice, total, fase)
             continue
 
-        for caixa, categoria, _agiu in box_labels(registro):
+        caixas = box_labels(registro)
+        if label_source == "confirmed":
+            # A coleta nasce do matcher de templates. Só o alvo que sumiu após
+            # o clique tem um sinal adicional de que aquela caixa era útil;
+            # as demais detecções ainda podem ser falsos positivos do matcher.
+            caixas = [
+                (caixa, categoria, agiu)
+                for caixa, categoria, agiu in caixas
+                if registro.get("outcome") == "changed" and agiu
+            ]
+        for caixa, categoria, _agiu in caixas:
             vetor = box_features(imagem, caixa)
             if vetor is None:
                 vazios += 1
@@ -182,6 +203,7 @@ def category_dataset(
     cache_root,
     usar_cache=True,
     metadata_records=None,
+    label_source="all",
 ):
     """Junta as features novas e a memória, preservando metadados de cada frame."""
 
@@ -199,6 +221,7 @@ def category_dataset(
         PATCH_SIZE,
         PATCH_MARGIN,
         HSV_BINS,
+        label_source,
     )
 
     por_shard = defaultdict(list)
@@ -251,7 +274,8 @@ def category_dataset(
                 novos,
                 negativos_por_frame,
                 tamanhos,
-                f"extraindo {shard} ({len(novos)} novas)",
+                label_source=label_source,
+                fase=f"extraindo {shard} ({len(novos)} novas)",
             )
 
             info["ilegiveis"] += extra["ilegiveis"]
@@ -337,201 +361,70 @@ def build_classifier(trees, seed, jobs):
     )
 
 
-def report(clf, X_teste, y_teste, y_treino, referencias, kind="category"):
-    from sklearn.metrics import (
-        accuracy_score,
-        classification_report,
-        confusion_matrix,
-    )
-
-    from dataset_io import majority_baseline
-    from collections import Counter
+def validation_metrics(clf, X_teste, y_teste):
+    from sklearn.metrics import accuracy_score, classification_report, f1_score
 
     previsto = clf.predict(X_teste)
-
-    acuracia = accuracy_score(y_teste, previsto)
-
-    base, classe_base = majority_baseline(list(y_teste))
-
-    treino_dist = Counter(str(v) for v in y_treino)
-    teste_dist = Counter(str(v) for v in y_teste)
-
-    print()
-    print("=" * 62)
-    print("  RESULTADO")
-    print("=" * 62)
-    print()
-    print(f"  acurácia do modelo ............. {acuracia:7.2%}")
-    print(f"  chutar a maior classe ('{classe_base}') "
-          f"{'':>{max(0, 8 - len(str(classe_base)))}}{base:7.2%}")
-
-    for nome, valor in referencias.items():
-        print(f"  {nome:<30} {valor:7.2%}")
-
-    print()
-
-    if acuracia <= base:
-        print("  !! Modelo não bate o chute na classe majoritária.")
-        print("     Formulação ou features erradas.")
-        print()
-
-    print("-" * 62)
-    print("  POR CLASSE")
-    print("-" * 62)
-    print()
-
-    print(classification_report(y_teste, previsto, zero_division=0, digits=3))
-
-    print("-" * 62)
-    print("  CONFUSÃO (linha = verdade, coluna = previsto)")
-    print("-" * 62)
-    print()
-
-    classes = sorted(set(y_teste) | set(previsto))
-
-    matriz = confusion_matrix(y_teste, previsto, labels=classes)
-
-    largura = max(len(c) for c in classes) + 1
-
-    cabecalho = " " * largura + "".join(
-        f"{c[:6]:>7}" for c in classes
+    metricas = classification_report(
+        y_teste, previsto, output_dict=True, zero_division=0,
     )
+    return {
+        "accuracy": float(accuracy_score(y_teste, previsto)),
+        "macro_f1": float(f1_score(y_teste, previsto, average="macro", zero_division=0)),
+        "class_metrics": metricas,
+    }
 
-    print(cabecalho)
 
-    for nome, linha in zip(classes, matriz):
+def promotion_decision(metricas, args):
+    if getattr(args, "allow_unsafe_promotion", False):
+        return True, ["promoção forçada pela linha de comando"]
 
-        print(
-            f"{nome:<{largura}}"
-            + "".join(f"{v:>7d}" for v in linha)
+    min_macro_f1 = getattr(args, "min_macro_f1", 0.55)
+    min_critical_recall = getattr(args, "min_critical_recall", 0.40)
+    critical_categories = getattr(args, "critical_categories", ["renovate", "fly"])
+    reasons = []
+    if metricas["macro_f1"] < min_macro_f1:
+        reasons.append(
+            f"macro F1 {metricas['macro_f1']:.2%} abaixo de {min_macro_f1:.2%}"
         )
-
-    print()
-
-    # pares de erro: diz se é confusão específica (resolvível) ou ruído geral
-    erros = Counter()
-
-    for verdade, palpite in zip(y_teste, previsto):
-
-        if verdade != palpite:
-            erros[(str(verdade), str(palpite))] += 1
-
-    # só faz sentido em category: em action os rótulos já são ações
-    if kind == "category":
-        _report_criticas(y_teste, y_treino, previsto)
-
-    if erros:
-
-        print("  maiores confusões:")
-
-        for (verdade, palpite), quantas in erros.most_common(8):
-
-            print(
-                f"    {verdade:<16} previsto como "
-                f"{palpite:<16} {quantas:5d}"
-            )
-
-        print()
-
-    _check_distribution_divergence(treino_dist, teste_dist)
-
-    return acuracia
-
-
-def _check_distribution_divergence(treino_dist, teste_dist):
-    print("-" * 62)
-    print("  VERIFICAÇÃO: DISTRIBUIÇÃO TREINO vs TESTE")
-    print("-" * 62)
-    print()
-
-    todas_classes = set(treino_dist.keys()) | set(teste_dist.keys())
-
-    desvios = []
-
-    for classe in sorted(todas_classes):
-        treino_pct = (treino_dist.get(classe, 0) / sum(treino_dist.values())) * 100
-        teste_pct = (teste_dist.get(classe, 0) / sum(teste_dist.values())) * 100
-
-        desvio = abs(treino_pct - teste_pct)
-        desvios.append((desvio, classe, treino_pct, teste_pct))
-
-    desvios.sort(reverse=True)
-
-    problemas = []
-
-    for desvio, classe, treino_pct, teste_pct in desvios[:5]:
-
-        if desvio > 10:
-            problemas.append(
-                f"  {classe:<16} treino {treino_pct:5.1f}% | "
-                f"teste {teste_pct:5.1f}%  (desvio {desvio:.1f}%)"
-            )
-
-    if problemas:
-        print("  maiores divergências:")
-        for p in problemas:
-            print(p)
-        print()
-        print("  ⚠ Split desigual: o modelo foi treinado numa "
-              "distribuição diferente da que vai testar.")
-    else:
-        print("  ✓ distribuições balanceadas entre treino e teste")
-
-    print()
-
-
-def _report_criticas(y_teste, y_treino, previsto):
-    # recall 0% em `fly` custa ~0.1% de acurácia agregada — invisível no
-    # número, fatal no bot; por isso reportado nominalmente aqui
-    print("-" * 62)
-    print("  CATEGORIAS QUE FECHAM RENOVATE")
-    print("-" * 62)
-    print()
-
-    treino_contagem = Counter(str(v) for v in y_treino)
-    teste_contagem = Counter(str(v) for v in y_teste)
-
-    for categoria in CATEGORIAS_CRITICAS:
-
-        no_treino = treino_contagem.get(categoria, 0)
-        no_teste = teste_contagem.get(categoria, 0)
-
-        acertos = sum(
-            1
-            for verdade, palpite in zip(y_teste, previsto)
-            if str(verdade) == categoria and str(palpite) == categoria
+    classes = metricas["class_metrics"]
+    critical_present = [
+        category for category in critical_categories if category in classes
+    ]
+    low_recall = [
+        category for category in critical_present
+        if classes[category].get("recall", 0.0) < min_critical_recall
+    ]
+    if low_recall:
+        reasons.append(
+            "recall insuficiente nas categorias críticas: " + ", ".join(low_recall)
         )
-
-        recall = (acertos / no_teste) if no_teste else None
-
-        linha = (
-            f"  {categoria:<12} treino {no_treino:6d} | "
-            f"teste {no_teste:6d} | recall "
-            + (f"{recall:7.2%}" if recall is not None else "     n/d")
-        )
-
-        if not no_treino:
-            linha += "   <- NÃO TREINADA"
-
-        elif recall is not None and recall < 0.5:
-            linha += "   <- perde mais da metade"
-
-        print(linha)
-
-    print()
+    return not reasons, reasons
 
 
-def train(args):
+def _train_one_resolution(args):
     from dataset.training_files import snapshot_records, training_lock
+    from dataset.layout import record_resolution
     from dataset_io import filter_by_outcome
     from training_run import record_key, trained_sample_ids
 
+    if args.model_out is None:
+        args.model_out = (
+            ROOT / "IA" / "models" / args.resolution / "category.joblib"
+            if args.resolution is not None
+            else DEFAULT_MODEL
+        )
     raiz = Path(args.dataset_root).expanduser().resolve()
     automatico = getattr(args, "automatic", False)
     try:
         with training_lock(raiz):
             snapshot, aviso = snapshot_records(raiz)
             registros = filter_by_outcome(snapshot, args.outcome)
+            if args.resolution is not None:
+                registros = [
+                    record for record in registros
+                    if record_resolution(record) == args.resolution
+                ]
             registros = list({record_key(r): r for r in registros}.values())
             if automatico:
                 treinados = trained_sample_ids(raiz, args.cache_root)
@@ -540,7 +433,9 @@ def train(args):
                 if len(registros) < minimo:
                     print(f"Treino automático aguardando: {len(registros)}/{minimo} amostras novas.")
                     return 0
-                registros = registros[:getattr(args, "batch_size", 10000)]
+                batch_size = getattr(args, "batch_size", None)
+                if batch_size is not None:
+                    registros = registros[:batch_size]
             if args.limit:
                 registros = registros[:args.limit]
             return _train_snapshot(args, raiz, registros, snapshot, aviso)
@@ -549,6 +444,31 @@ def train(args):
         return 0 if automatico else 1
     except (Exception, SystemExit, KeyboardInterrupt) as error:
         return _failed_training(args, error)
+
+
+def train(args):
+    if args.resolution is not None or args.combine_resolutions or args.model_out is not None:
+        return _train_one_resolution(args)
+
+    from dataset.layout import record_resolution
+    from dataset.training_files import snapshot_records
+
+    records, _ = snapshot_records(args.dataset_root)
+    resolutions = sorted({record_resolution(record) for record in records})
+    if not resolutions:
+        return 0 if args.automatic else _train_one_resolution(args)
+
+    result = 0
+    for resolution in resolutions:
+        resolution_args = copy(args)
+        resolution_args.resolution = resolution
+        resolution_args.model_out = (
+            ROOT / "IA" / "models" / resolution / "category.joblib"
+        )
+        status = _train_one_resolution(resolution_args)
+        if status and not result:
+            result = status
+    return result
 
 
 def _failed_training(args, error, execucao=None):
@@ -580,16 +500,19 @@ def _fit_snapshot(args, raiz, registros, snapshot, aviso, execucao):
     check_dependencies()
 
     import numpy as np
-    from sklearn.metrics import classification_report
-
     from dataset.training_files import cleanup_records
-    from dataset_io import ceiling_state_categories, split_groups, state_baseline
+    from dataset_io import (
+        ceiling_state_categories_on_holdout,
+        split_groups,
+        state_baseline_on_holdout,
+    )
     from training_run import (
         activate_model, compact_record, publish_model,
         record_id, record_key, summarize,
     )
 
     automatico = getattr(args, "automatic", False)
+    label_source = getattr(args, "label_source", "all")
     compativel_limpeza = args.kind == "category" and not args.no_cache
     pedido_limpeza = getattr(args, "cleanup", None)
     if pedido_limpeza is True and not compativel_limpeza:
@@ -599,7 +522,11 @@ def _fit_snapshot(args, raiz, registros, snapshot, aviso, execucao):
     if automatico and args.limit is not None:
         raise ValueError("Use --batch-size para limitar lotes automáticos; --limit é apenas manual.")
     limpar = compativel_limpeza if pedido_limpeza is None else pedido_limpeza
-    if getattr(args, "min_samples", 10000) <= 0 or getattr(args, "batch_size", 10000) <= 0:
+    batch_size = getattr(args, "batch_size", None)
+    if (
+        getattr(args, "min_samples", 10000) <= 0
+        or (batch_size is not None and batch_size <= 0)
+    ):
         raise ValueError("--min-samples e --batch-size devem ser positivos.")
     if args.kind == "action" and Path(args.model_out).resolve() == DEFAULT_MODEL.resolve():
         raise ValueError("--kind action exige --model-out alternativo para preservar o modelo do bot.")
@@ -610,7 +537,6 @@ def _fit_snapshot(args, raiz, registros, snapshot, aviso, execucao):
     execucao.data["current_batch"] = {
         **summarize(registros),
         "available_frames": len(snapshot),
-        "sample_keys": sorted(selecionadas),
     }
     execucao.data["cleanup"] = {
         "requested": bool(limpar),
@@ -623,6 +549,7 @@ def _fit_snapshot(args, raiz, registros, snapshot, aviso, execucao):
         X, y, donos, extra = category_dataset(
             registros, args.negatives, cache_root,
             usar_cache=not args.no_cache, metadata_records=snapshot,
+            label_source=label_source,
         )
         metadados = extra["records"]
         caches = extra["caches"]
@@ -672,28 +599,37 @@ def _fit_snapshot(args, raiz, registros, snapshot, aviso, execucao):
     if len(set(y_treino.tolist())) < 2:
         raise ValueError("O conjunto de treino contém menos de duas categorias.")
 
-    baseline_records = [
-        {**r, "boxes": [{"category": category} for category in r["categories"]]}
-        for r in todos_registros
-    ]
-    referencias = {
-        "só o estado da máquina": state_baseline(baseline_records),
-        "estado + categorias (teto)": ceiling_state_categories(baseline_records),
-    }
     print(f"Avaliação: {len(ids_treino)} frames/{len(X_treino)} recortes no treino, "
           f"{len(ids_teste)} frames/{len(X_teste)} recortes na validação.")
     avaliador = build_classifier(args.trees, args.seed, args.jobs)
     avaliador.fit(X_treino, y_treino)
-    acuracia = report(avaliador, X_teste, y_teste, y_treino, referencias, args.kind)
+    metricas = validation_metrics(avaliador, X_teste, y_teste)
+    referencias = {}
+    if args.kind == "action":
+        baseline_train = [
+            {**record, "boxes": [{"category": category} for category in record["categories"]]}
+            for record in treino
+        ]
+        baseline_test = [
+            {**record, "boxes": [{"category": category} for category in record["categories"]]}
+            for record in teste
+        ]
+        referencias = {
+            "só o estado da máquina": state_baseline_on_holdout(baseline_train, baseline_test),
+            "estado + categorias (teto)": ceiling_state_categories_on_holdout(baseline_train, baseline_test),
+        }
+    print(
+        f"Validação: acurácia {metricas['accuracy']:.2%}; "
+        f"macro F1 {metricas['macro_f1']:.2%}."
+    )
     execucao.data["evaluation"] = {
-        "accuracy": float(acuracia),
+        "accuracy": metricas["accuracy"],
+        "macro_f1": metricas["macro_f1"],
         "row_unit": "box_crop" if args.kind == "category" else "full_frame",
         "split": {**divisao, "test_ratio": args.test_ratio},
         "training": {**summarize(treino), "rows": int(len(X_treino))},
         "validation": {**summarize(teste), "rows": int(len(X_teste))},
-        "class_metrics": classification_report(
-            y_teste, avaliador.predict(X_teste), output_dict=True, zero_division=0,
-        ),
+        "class_metrics": metricas["class_metrics"],
         "baselines": {name: float(value) for name, value in referencias.items()},
         "scope": "held_out_groups_before_final_refit",
     }
@@ -702,13 +638,22 @@ def _fit_snapshot(args, raiz, registros, snapshot, aviso, execucao):
     print(f"Ajuste final: {len(efetivas)} frames/{len(X)} recortes, incluindo validação e replay.")
     modelo = build_classifier(args.trees, args.seed, args.jobs)
     modelo.fit(X, y)
+    classes = dict(sorted(Counter(str(label) for label in y).items()))
+    data_summary = summarize(todos_registros)
     execucao.data["final_fit"] = {
-        **summarize(todos_registros),
+        "resolutions": data_summary["resolutions"],
+        "categories": data_summary["categories"],
+        "images_used": len(efetivas),
+        "new_images": len(atuais),
+        "reused_images": len(replay),
+        "category_count": (
+            len(classes) - int("background" in classes)
+            if args.kind == "category" else len(classes)
+        ),
         "rows": int(len(X)),
         "row_unit": "box_crop" if args.kind == "category" else "full_frame",
-        "current_batch_frames": len(atuais),
-        "replay_frames": len(replay),
-        "classes": dict(sorted(Counter(str(label) for label in y).items())),
+        "class_count": len(classes),
+        "classes": classes,
         "includes_validation": True,
     }
 
@@ -718,7 +663,8 @@ def _fit_snapshot(args, raiz, registros, snapshot, aviso, execucao):
         "kind": args.kind,
         "labels": [str(label) for label in modelo.classes_],
         "counts": execucao.data["final_fit"]["classes"],
-        "accuracy": float(acuracia),
+        "accuracy": metricas["accuracy"],
+        "macro_f1": metricas["macro_f1"],
         "accuracy_scope": "validation_before_final_refit",
         "baselines": execucao.data["evaluation"]["baselines"],
         "split": execucao.data["evaluation"]["split"],
@@ -736,12 +682,22 @@ def _fit_snapshot(args, raiz, registros, snapshot, aviso, execucao):
     )
     execucao.data["status"] = "publishing"
     execucao.save()
-    activate_model(execucao)
-    execucao.data["model_activated"] = True
+    promoted, promotion_reasons = promotion_decision(metricas, args)
+    execucao.data["promotion"] = {
+        "accepted": promoted,
+        "min_macro_f1": getattr(args, "min_macro_f1", 0.55),
+        "min_critical_recall": getattr(args, "min_critical_recall", 0.40),
+        "reasons": promotion_reasons,
+    }
+    if promoted:
+        activate_model(execucao)
+    else:
+        print("Modelo salvo como candidato; ponteiro ativo preservado: " + "; ".join(promotion_reasons))
+    execucao.data["model_activated"] = promoted
     execucao.finish("success")
 
     try:
-        if limpar:
+        if limpar and promoted:
             fonte_limpeza = snapshot if not args.outcome and not args.limit else registros
             consumiveis = [r for r in fonte_limpeza if record_key(r) in efetivas]
             consumidos = {record_id(r) for r in consumiveis}
@@ -766,55 +722,23 @@ def _fit_snapshot(args, raiz, registros, snapshot, aviso, execucao):
         }
         print(f"Modelo publicado; limpeza/registro do lote não concluído: {error}")
     execucao.finish("success")
-    print(f"Modelo: {execucao.data['artifacts']['model']}")
-    print(f"Relatório: {execucao.path}")
+    final_fit = execucao.data["training"]
+    print(
+        f"Treino concluído: {final_fit['images_used']} imagens, "
+        f"{final_fit['category_count']} categorias, "
+        f"{final_fit['class_count']} classes; validação "
+        f"{execucao.data['validation']['accuracy']:.2%}."
+    )
+    print(f"Modelo: {execucao.data['model']['model']}")
+    print(f"Resumo: {execucao.path}")
     return 0
-
-def _recommendations(acuracia, referencias, contagem, background_pct):
-    print("=" * 62)
-    print("  RECOMENDAÇÕES PARA A PRÓXIMA COLETA")
-    print("=" * 62)
-    print()
-
-    teto = referencias.get("estado + categorias (teto)", 0.96)
-    espaco = teto - acuracia
-
-    if acuracia >= teto * 0.95:
-        print("  ✓ Modelo alcança o teto teórico. Está bom.")
-    elif espaco > 0.10:
-        print(f"  ℹ Ainda há {espaco*100:.1f}% de margem até o teto.")
-        print()
-        print("  Prioridades:")
-
-        total = sum(contagem.values())
-        raras = [
-            (c, q, q/total*100)
-            for c, q in contagem.items()
-            if c != "background" and q/total*100 < 5
-        ]
-
-        if raras:
-            print()
-            print("  1. Categorias raras (<5%):")
-            for cat, qtd, pct in sorted(raras, key=lambda x: x[2]):
-                print(f"     - {cat:<14} {qtd:6d} ({pct:5.2f}%)")
-            print("     Coletar mais dessas, especialmente as com <1%")
-
-        if background_pct < 20:
-            print()
-            print("  2. Aumentar negativos (background):")
-            print(f"     Hoje {background_pct:.1f}% | Recomendado >20%")
-            print("     Retreine com --negatives=3 ou --negatives=4")
-
-    print()
-
 
 def parse_args(argv=None):
 
     parser = argparse.ArgumentParser(
         description=(
-            "Treina o modelo de visão juntando todas as "
-            "resoluções em dataset/data/."
+            "Treina modelos independentes por resolução; "
+            "use --combine-resolutions para juntá-las."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -835,10 +759,10 @@ def parse_args(argv=None):
     parser.add_argument(
         "--split",
         choices=("phash", "session"),
-        default="phash",
+        default="session",
         help=(
-            "agrupamento do split: phash (quadros iguais no mesmo lado) "
-            "ou session (partida inteira num lado)"
+            "agrupamento do split: session (padrão; partida inteira no mesmo lado) "
+            "ou phash (somente quadros idênticos no mesmo lado)"
         ),
     )
 
@@ -856,15 +780,26 @@ def parse_args(argv=None):
 
     parser.add_argument(
         "--automatic", action="store_true",
-        help="treina apenas quando há amostras novas suficientes, em lotes",
+        help="treina apenas quando há amostras novas suficientes",
+    )
+    parser.add_argument(
+        "--resolution",
+        type=_parse_resolution,
+        default=None,
+        help="treina somente os registros desta resolução (ex.: 1080x2400)",
+    )
+    parser.add_argument(
+        "--combine-resolutions",
+        action="store_true",
+        help="opta por treinar registros de todas as resoluções em um único modelo",
     )
     parser.add_argument(
         "--min-samples", type=int, default=10000,
         help="mínimo de frames novos para iniciar treino automático (padrão: 10000)",
     )
     parser.add_argument(
-        "--batch-size", type=int, default=10000,
-        help="máximo de frames novos por lote automático (padrão: 10000)",
+        "--batch-size", type=int, default=None,
+        help="máximo opcional de frames novos por lote automático (padrão: sem limite)",
     )
     limpeza = parser.add_mutually_exclusive_group()
     limpeza.add_argument(
@@ -878,7 +813,7 @@ def parse_args(argv=None):
 
     parser.add_argument(
         "--model-out",
-        default=str(DEFAULT_MODEL),
+        default=None,
         help="nome de referência do modelo; publica versão em models/ e ponteiro .current.json",
     )
 
@@ -902,6 +837,15 @@ def parse_args(argv=None):
         type=int,
         default=2,
         help="recortes de fundo por frame (padrão: 2)",
+    )
+    parser.add_argument(
+        "--label-source",
+        choices=("confirmed", "all"),
+        default="all",
+        help=(
+            "all usa todas as caixas do matcher de templates; "
+            "confirmed usa só o alvo acionado com resultado changed"
+        ),
     )
 
     parser.add_argument(
@@ -931,8 +875,37 @@ def parse_args(argv=None):
         default=42,
         help="semente (padrão: 42)",
     )
+    parser.add_argument(
+        "--min-macro-f1",
+        type=float,
+        default=0.55,
+        help="macro F1 mínimo para ativar a versão publicada (padrão: 0.55)",
+    )
+    parser.add_argument(
+        "--min-critical-recall",
+        type=float,
+        default=0.40,
+        help="recall mínimo das classes críticas presentes no holdout (padrão: 0.40)",
+    )
+    parser.add_argument(
+        "--critical-categories",
+        nargs="*",
+        default=["renovate", "fly"],
+        metavar="CATEGORIA",
+        help="classes cujo recall bloqueia promoção quando aparecem na validação",
+    )
+    parser.add_argument(
+        "--allow-unsafe-promotion",
+        action="store_true",
+        help="ativa o candidato mesmo sem atingir os critérios de validação",
+    )
 
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.resolution is not None and args.combine_resolutions:
+        parser.error("--resolution e --combine-resolutions são incompatíveis.")
+    if not 0 <= args.min_macro_f1 <= 1 or not 0 <= args.min_critical_recall <= 1:
+        parser.error("Os mínimos de promoção devem ficar entre 0 e 1.")
+    return args
 
 
 def main(argv=None):

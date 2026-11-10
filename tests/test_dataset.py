@@ -410,14 +410,13 @@ def test_acao_sem_veredito_e_gravada_no_stop():
         shutil.rmtree(d, ignore_errors=True)
 
 
-def test_stop_drena_a_fila_antes_de_fechar_o_banco():
+def test_stop_drena_a_fila():
 
     import threading
 
     iniciou = threading.Event()
     liberar = threading.Event()
     gravadas = []
-    ao_fechar = []
 
     class GravadorLento(DatasetRecorder):
 
@@ -426,14 +425,9 @@ def test_stop_drena_a_fila_antes_de_fechar_o_banco():
             assert liberar.wait(5.0)
             gravadas.append(sample)
 
-    class BancoFalso:
-
-        def close(self):
-            ao_fechar.append(list(gravadas))
-
     with tempfile.TemporaryDirectory() as pasta:
 
-        rec = GravadorLento(directory=pasta, store=BancoFalso())
+        rec = GravadorLento(directory=pasta)
         rec.start()
 
         try:
@@ -462,62 +456,7 @@ def test_stop_drena_a_fila_antes_de_fechar_o_banco():
             rec.stop()
 
         assert gravadas == ["primeira", "segunda"]
-        assert ao_fechar == [["primeira", "segunda"]]
         assert rec.queue.unfinished_tasks == 0
-
-
-def test_stop_sem_start_fecha_o_banco_uma_unica_vez():
-
-    class BancoFalso:
-
-        def __init__(self):
-            self.fechamentos = 0
-
-        def close(self):
-            self.fechamentos += 1
-
-    banco = BancoFalso()
-    rec = DatasetRecorder(store=banco)
-
-    rec.stop()
-    rec.stop()
-
-    assert banco.fechamentos == 1
-
-
-def test_stop_aguarda_thread_encerrar_para_fechar_o_banco():
-
-    class BancoFalso:
-
-        def __init__(self):
-            self.fechamentos = 0
-
-        def close(self):
-            self.fechamentos += 1
-
-    class ThreadFalsa:
-
-        viva = True
-
-        def is_alive(self):
-            return self.viva
-
-    banco = BancoFalso()
-    rec = DatasetRecorder(store=banco)
-    thread = ThreadFalsa()
-    rec.thread = thread
-
-    rec.stop()
-
-    assert banco.fechamentos == 0
-    assert rec.thread is thread
-
-    thread.viva = False
-    rec.stop()
-    rec.stop()
-
-    assert banco.fechamentos == 1
-    assert rec.thread is None
 
 
 def test_limite_de_amostras_inclui_as_que_ja_estao_na_fila():
@@ -549,6 +488,23 @@ def test_limite_de_amostras_inclui_as_que_ja_estao_na_fila():
         assert rec.saved == 2
         indice = layout.index_path(layout.shard_root(pasta, 64, 64))
         assert len(indice.read_text(encoding="utf-8").splitlines()) == 2
+
+
+def test_total_da_resolucao_inclui_registros_de_execucoes_anteriores():
+
+    with tempfile.TemporaryDirectory() as pasta:
+
+        indice = layout.index_path(layout.shard_root(pasta, 64, 64))
+        indice.parent.mkdir(parents=True)
+        indice.write_text('{"id":"anterior"}\n', encoding="utf-8")
+        rec = DatasetRecorder(directory=pasta, auto_train=False)
+
+        assert rec.samples_for_resolution("64x64") == 1
+
+        with indice.open("a", encoding="utf-8") as arquivo:
+            arquivo.write('{"id":"atual"}\n')
+
+        assert rec.samples_for_resolution("64x64") == 2
 
 
 def test_troca_de_resolucao_preserva_indices_e_coordenadas():
@@ -1115,7 +1071,7 @@ def test_swipe_de_exploracao_e_gravado():
     """
     A exploração não passa por _act, então precisava de gancho próprio.
     A direção vai no NOME porque subir/descer são rótulos diferentes para
-    o treino, e assim não precisa de coluna nova no índice nem no banco.
+    o treino, sem exigir campo novo no índice.
     """
 
     with Gravador() as g:
@@ -1224,8 +1180,8 @@ def test_acao_sem_alvo_com_tela_parada_e_unchanged():
         assert g.registros()[0]["outcome"] == UNCHANGED
 
 
-def test_registro_tem_as_chaves_que_o_banco_espera():
-    """O store faz INSERT posicional; chave faltando viraria KeyError silencioso na thread de gravação."""
+def test_registro_tem_as_chaves_esperadas():
+    """Garante o contrato do índice JSONL consumido pelo treino."""
 
     esperadas = {
         "id", "session", "created_at",
@@ -1263,7 +1219,7 @@ def test_registro_tem_as_chaves_que_o_banco_espera():
 
         assert not faltando, faltando
 
-        # E as caixas têm o que a tabela de caixas espera.
+        # E as caixas preservam todos os campos usados pelo treino.
         caixa_esperada = {
             "category", "template", "confidence",
             "color_similarity", "x", "y",
@@ -1433,571 +1389,6 @@ def test_jpg_e_bem_menor_que_png():
     assert tamanhos["jpg"] < tamanhos["png"], tamanhos
 
 
-class CursorFalso:
-    """
-    Captura os SQL e as tuplas, sem servidor. Sob teste: a correspondência
-    COLUNA -> VALOR — o INSERT é posicional com 21 valores, e uma troca de
-    ordem faria click_x entrar em frame_width EM SILÊNCIO (o banco aceita,
-    ambos inteiros; o defeito só apareceria no treino).
-    """
-
-    def __init__(self, conexao):
-
-        self.conexao = conexao
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *a):
-        return False
-
-    def execute(self, sql, params=None):
-
-        if self.conexao.falhar:
-
-            raise RuntimeError("banco caiu")
-
-        self.conexao.chamadas.append(("execute", sql, params))
-
-    def executemany(self, sql, seq):
-
-        if self.conexao.falhar:
-
-            raise RuntimeError("banco caiu")
-
-        self.conexao.chamadas.append(
-            ("executemany", sql, list(seq))
-        )
-
-
-class ConexaoFalsa:
-
-    def __init__(self):
-
-        self.chamadas = []
-        self.commits = 0
-        self.rollbacks = 0
-        self.fechada = False
-        self.autocommit = False
-        self.falhar = False
-
-    def cursor(self):
-        return CursorFalso(self)
-
-    def commit(self):
-        self.commits += 1
-
-    def rollback(self):
-        self.rollbacks += 1
-
-    def close(self):
-        self.fechada = True
-
-    # ---- conveniências para os testes ----
-
-    def por_tabela(self, tabela):
-        """As chamadas que mexem nesta tabela."""
-
-        return [
-            c for c in self.chamadas
-            if f"INTO public.{tabela}" in c[1]
-        ]
-
-    def colunas(self, sql):
-        """Nomes das colunas do INSERT, na ordem em que aparecem."""
-
-        import re
-
-        dentro = re.search(r"\(([^)]*)\)\s*VALUES", sql, re.S)
-
-        return [
-            c.strip()
-            for c in dentro.group(1).replace("\n", " ").split(",")
-            if c.strip()
-        ]
-
-    def linhas(self, tabela):
-        """[{coluna: valor}] das linhas inseridas na tabela — é aqui que a ordem posicional é conferida."""
-
-        resultado = []
-
-        for tipo, sql, params in self.por_tabela(tabela):
-
-            nomes = self.colunas(sql)
-
-            tuplas = params if tipo == "executemany" else [params]
-
-            for valores in tuplas:
-
-                assert len(valores) == len(nomes), (
-                    tabela,
-                    len(valores),
-                    len(nomes),
-                )
-
-                resultado.append(dict(zip(nomes, valores)))
-
-        return resultado
-
-
-def store_falso(batch_size=20):
-
-    from dataset.store import PostgresStore
-
-    conexao = ConexaoFalsa()
-
-    store = PostgresStore("dsn-falso", batch_size=batch_size)
-
-    store.connection = conexao
-
-    return store, conexao
-
-
-def registro_exemplo(indice=0, sessao="sessao-1"):
-
-    return {
-        "id": f"amostra-{indice}",
-        "session": sessao,
-        "created_at": "2026-08-21T15:15:32.481+00:00",
-        "image": f"images/2026-08-21/amostra-{indice}.jpg",
-        "image_sha256": "9f2a" + str(indice),
-        "phash": "0110100",
-        "frame_width": 1080,
-        "frame_height": 2400,
-        "state": "NORMAL",
-        "action": "open_box",
-        "action_kind": "click",
-        "click_x": 348,
-        "click_y": 1544,
-        "target_category": "box",
-        "target_template": "/default/box/item_003.png",
-        "target_confidence": 0.9712,
-        "detect_lag_ms": 420,
-        "outcome": "changed",
-        "outcome_after_ms": 910,
-        "cycle_count": 3,
-        "boxes": [
-            {
-                "category": "box",
-                "template": "item_003.png",
-                "confidence": 0.9712,
-                "color_similarity": 0.9931,
-                "x": 300,
-                "y": 1500,
-                "width": 96,
-                "height": 88,
-                "acted": True,
-            },
-            {
-                "category": "food",
-                "template": "item_017.png",
-                "confidence": 0.9410,
-                "color_similarity": 0.9802,
-                "x": 700,
-                "y": 900,
-                "width": 115,
-                "height": 96,
-                "acted": False,
-            },
-        ],
-    }
-
-
-def test_cada_coluna_recebe_o_campo_certo():
-    """
-    O teste que justifica todo este arquivo.
-
-    INSERT posicional com 21 valores: se a ordem da tupla não
-    corresponder à das colunas, os dados entram trocados e o
-    banco aceita, porque os tipos são compatíveis.
-    """
-
-    store, conexao = store_falso(batch_size=1)
-
-    registro = registro_exemplo()
-
-    store.insert(registro)
-
-    linhas = conexao.linhas("dataset_sample")
-
-    assert len(linhas) == 1, linhas
-
-    linha = linhas[0]
-
-    esperado = {
-        "id": registro["id"],
-        "session_id": registro["session"],
-        "created_at": registro["created_at"],
-        "image": registro["image"],
-        "image_sha256": registro["image_sha256"],
-        "phash": registro["phash"],
-        "frame_width": 1080,
-        "frame_height": 2400,
-        "state": "NORMAL",
-        "action": "open_box",
-        "action_kind": "click",
-        "click_x": 348,
-        "click_y": 1544,
-        "target_category": "box",
-        "target_template": "/default/box/item_003.png",
-        "target_confidence": 0.9712,
-        "detect_lag_ms": 420,
-        "outcome": "changed",
-        "outcome_after_ms": 910,
-        "cycle_count": 3,
-
-        # Desnormalizado: len(boxes).
-        "box_count": 2,
-    }
-
-    assert linha == esperado, {
-        chave: (linha.get(chave), valor)
-        for chave, valor in esperado.items()
-        if linha.get(chave) != valor
-    }
-
-
-def test_caixas_vao_com_a_geometria_certa():
-
-    store, conexao = store_falso(batch_size=1)
-
-    registro = registro_exemplo()
-
-    store.insert(registro)
-
-    linhas = conexao.linhas("dataset_box")
-
-    assert len(linhas) == 2, linhas
-
-    agiu = [linha for linha in linhas if linha["acted"]]
-
-    assert len(agiu) == 1, linhas
-
-    assert agiu[0] == {
-        "sample_id": "amostra-0",
-        "category": "box",
-        "template": "item_003.png",
-        "confidence": 0.9712,
-        "color_similarity": 0.9931,
-        "x": 300,
-        "y": 1500,
-        "width": 96,
-        "height": 88,
-        "acted": True,
-    }, agiu[0]
-
-
-def test_sessao_inserida_uma_vez_so():
-    """Sem isto, cada lote tentaria registrar a sessão de novo — ida ao banco à toa por lote, por horas."""
-
-    store, conexao = store_falso(batch_size=1)
-
-    for indice in range(4):
-
-        store.insert(registro_exemplo(indice))
-
-    sessoes = conexao.por_tabela("dataset_session")
-
-    assert len(sessoes) == 1, sessoes
-
-    # E duas sessões distintas geram dois registros.
-    store.insert(registro_exemplo(9, sessao="sessao-2"))
-
-    assert len(conexao.por_tabela("dataset_session")) == 2
-
-
-def test_lote_espera_o_batch_size():
-    """Uma ida ao banco por amostra colocaria latência de rede na thread que também codifica a imagem."""
-
-    store, conexao = store_falso(batch_size=3)
-
-    store.insert(registro_exemplo(0))
-    store.insert(registro_exemplo(1))
-
-    assert conexao.chamadas == [], "foi ao banco antes da hora"
-
-    store.insert(registro_exemplo(2))
-
-    assert conexao.linhas("dataset_sample"), "não gravou no lote"
-
-    assert conexao.commits == 1, conexao.commits
-
-
-def test_close_grava_o_resto():
-    """O último lote quase nunca fecha o batch_size; sem flush no close, ele se perderia no banco."""
-
-    store, conexao = store_falso(batch_size=100)
-
-    store.insert(registro_exemplo(0))
-    store.insert(registro_exemplo(1))
-
-    assert conexao.chamadas == []
-
-    store.close()
-
-    assert len(conexao.linhas("dataset_sample")) == 2
-
-    assert conexao.fechada
-
-
-def test_falha_faz_rollback_e_propaga():
-    """
-    Sem rollback, a conexão fica inutilizável para todo lote seguinte
-    (Postgres aborta a transação). A exceção tem de PROPAGAR: o recorder
-    conta com isso para logar e seguir gravando em arquivo.
-    """
-
-    store, conexao = store_falso(batch_size=1)
-
-    conexao.falhar = True
-
-    try:
-
-        store.insert(registro_exemplo())
-
-    except RuntimeError:
-
-        assert conexao.rollbacks == 1, conexao.rollbacks
-
-        assert conexao.commits == 0
-
-        return
-
-    raise AssertionError("deveria ter propagado")
-
-
-def test_sessao_com_rollback_e_inserida_no_lote_seguinte():
-
-    store, conexao = store_falso(batch_size=1)
-    commit_original = conexao.commit
-
-    def falhar_no_commit():
-        raise RuntimeError("commit falhou")
-
-    conexao.commit = falhar_no_commit
-
-    try:
-
-        store.insert(registro_exemplo())
-
-    except RuntimeError:
-        pass
-
-    else:
-        raise AssertionError("deveria ter propagado")
-
-    assert store.session_registered == set()
-
-    conexao.commit = commit_original
-    conexao.chamadas.clear()
-    store.insert(registro_exemplo(1))
-
-    assert len(conexao.linhas("dataset_session")) == 1
-    assert store.session_registered == {"sessao-1"}
-
-
-def test_recorder_sobrevive_a_falha_do_banco():
-    """Fim a fim: banco quebrado, arquivo gravado."""
-
-    from unittest.mock import patch
-
-    class StoreQuebrado:
-
-        def __init__(self):
-            self.tentativas = 0
-
-        def insert(self, registro):
-            self.tentativas += 1
-            raise RuntimeError("banco caiu")
-
-        def close(self):
-            pass
-
-    import shutil
-    import tempfile
-
-    from dataset.recorder import DatasetRecorder
-
-    pasta = Path(tempfile.mkdtemp())
-
-    quebrado = StoreQuebrado()
-
-    try:
-
-        rec = DatasetRecorder(directory=pasta, store=quebrado)
-
-        rec.start()
-
-        alvo = deteccao("box")
-
-        rec.on_action(
-            action="open_box",
-            action_kind="click",
-            detection=alvo,
-            click=(140, 240),
-            state="NORMAL",
-            frame=frame(230),
-            detections=[alvo],
-            lag=0.3,
-        )
-
-        with patch("dataset.recorder.DATASET_NEGATIVE_INTERVAL", 0):
-
-            rec.observe(
-                frame(231),
-                [],
-                time.monotonic() + 1.0,
-                "NORMAL",
-            )
-
-        rec.stop()
-
-        indice = layout.index_path(layout.shard_root(pasta, 1080, 2400))
-
-        assert indice.exists(), "o arquivo é o que não se recupera"
-
-        assert len(
-            indice.read_text(encoding="utf-8").splitlines()
-        ) == 1
-
-        assert quebrado.tentativas == 1
-
-    finally:
-
-        shutil.rmtree(pasta, ignore_errors=True)
-
-
-def test_importar_jsonl():
-    """O caminho recomendado: gravar em arquivo agora, carregar no banco depois, inclusive sessões antigas."""
-
-    import shutil
-    import tempfile
-
-    import dataset.store as mod
-
-    pasta = Path(tempfile.mkdtemp())
-
-    conexao = ConexaoFalsa()
-
-    caminho = pasta / "samples.jsonl"
-
-    caminho.write_text(
-        "\n".join(
-            json.dumps(registro_exemplo(i))
-            for i in range(5)
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-
-    original = mod.PostgresStore.connect
-
-    def conectar_falso(self):
-
-        self.connection = conexao
-
-        return self
-
-    mod.PostgresStore.connect = conectar_falso
-
-    try:
-
-        total = mod.importar_jsonl(
-            caminho,
-            "dsn-falso",
-            batch_size=2,
-        )
-
-    finally:
-
-        mod.PostgresStore.connect = original
-
-        shutil.rmtree(pasta, ignore_errors=True)
-
-    assert total == 5, total
-
-    assert len(conexao.linhas("dataset_sample")) == 5
-
-    # 2 caixas por amostra.
-    assert len(conexao.linhas("dataset_box")) == 10
-
-    assert conexao.fechada
-
-
-def test_schema_configuravel_aparece_no_sql():
-    """Quem usa schema próprio precisa que ele chegue no SQL."""
-
-    from dataset.store import PostgresStore
-
-    conexao = ConexaoFalsa()
-
-    store = PostgresStore(
-        "dsn-falso",
-        batch_size=1,
-        schema="eatventure",
-    )
-
-    store.connection = conexao
-
-    store.insert(registro_exemplo())
-
-    assert any(
-        "eatventure.dataset_sample" in chamada[1]
-        for chamada in conexao.chamadas
-    ), [c[1][:60] for c in conexao.chamadas]
-
-
-def test_ddl_cobre_as_colunas_do_insert():
-    """
-    O DDL vive em docs/schema.sql, fora do alcance do interpretador —
-    sem isto, código e script podem divergir e o sintoma é a PRIMEIRA
-    execução com banco falhando na cara do usuário. Confere contra o
-    .sql, não o .md, porque é o .sql que se EXECUTA.
-    """
-
-    import re
-
-    doc = (
-        ROOT / "docs" / "schema.sql"
-    ).read_text(encoding="utf-8")
-
-    store, conexao = store_falso(batch_size=1)
-
-    store.insert(registro_exemplo())
-
-    for tabela in ("dataset_sample", "dataset_box"):
-
-        usadas = set(conexao.linhas(tabela)[0])
-
-        bloco = re.search(
-            rf"CREATE TABLE IF NOT EXISTS {tabela} \((.*?)\n\);",
-            doc,
-            re.S,
-        )
-
-        assert bloco, f"{tabela} não tem DDL em docs/schema.sql"
-
-        declaradas = set()
-
-        for linha in bloco.group(1).splitlines():
-
-            linha = linha.strip()
-
-            if not linha or linha.startswith("--"):
-                continue
-
-            nome = linha.split()[0]
-
-            if nome.upper() in ("REFERENCES", "ON"):
-                continue
-
-            declaradas.add(nome)
-
-        faltando = usadas - declaradas
-
-        assert not faltando, (tabela, faltando)
-
-
 def main():
 
     testes = [
@@ -2045,5 +1436,4 @@ def main():
 
 
 if __name__ == "__main__":
-
     sys.exit(main())

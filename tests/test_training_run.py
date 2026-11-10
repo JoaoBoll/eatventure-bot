@@ -37,10 +37,29 @@ def sample(index, root):
 
 
 class AutomaticThresholdTests(unittest.TestCase):
-    def test_only_ten_thousand_new_records_start_training(self):
+    def test_resolution_argument_filters_manual_training(self):
+        root = Path("unused-dataset")
+        args = train_ai.parse_args([
+            "--dataset-root", str(root), "--resolution", "1080x2400",
+        ])
+        records = [
+            sample(1, root),
+            {**sample(2, root), "_shard": "720x1600"},
+        ]
+        with (
+            patch("dataset.training_files.training_lock", return_value=nullcontext()),
+            patch("dataset.training_files.snapshot_records", return_value=(records, {})),
+            patch("train_ai._train_snapshot", return_value=0) as train_snapshot,
+        ):
+            self.assertEqual(train_ai.train(args), 0)
+
+        trained_records = train_snapshot.call_args.args[2]
+        self.assertEqual([record["_shard"] for record in trained_records], ["1080x2400"])
+
+    def test_all_new_records_are_trained_once_minimum_is_reached(self):
         root = Path("unused-dataset")
         args = train_ai.parse_args(["--automatic", "--dataset-root", str(root)])
-        for count in (9999, 10000):
+        for count in (9999, 10000, 14438):
             with self.subTest(count=count):
                 records = [sample(index, root) for index in range(count)]
                 with (
@@ -53,7 +72,22 @@ class AutomaticThresholdTests(unittest.TestCase):
                 if count == 9999:
                     train_snapshot.assert_not_called()
                 else:
-                    self.assertEqual(len(train_snapshot.call_args.args[2]), 10000)
+                    self.assertEqual(len(train_snapshot.call_args.args[2]), count)
+
+    def test_explicit_batch_size_caps_automatic_training(self):
+        root = Path("unused-dataset")
+        args = train_ai.parse_args([
+            "--automatic", "--dataset-root", str(root), "--batch-size", "10000",
+        ])
+        records = [sample(index, root) for index in range(14438)]
+        with (
+            patch("dataset.training_files.training_lock", return_value=nullcontext()),
+            patch("dataset.training_files.snapshot_records", return_value=(records, {})),
+            patch("training_run.trained_sample_ids", return_value=set()),
+            patch("train_ai._train_snapshot", return_value=0) as train_snapshot,
+        ):
+            self.assertEqual(train_ai.train(args), 0)
+        self.assertEqual(len(train_snapshot.call_args.args[2]), 10000)
 
     def test_records_already_fitted_do_not_complete_the_threshold(self):
         root = Path("unused-dataset")
@@ -85,7 +119,7 @@ class TrainingReportTests(unittest.TestCase):
             self.assertEqual(first.path.read_text(encoding="utf-8"), original)
             self.assertEqual(len(list((root / "training_reports").glob("*.json"))), 2)
             report = json.loads(original)
-            self.assertEqual(report["final_fit"]["frames"], 10000)
+            self.assertEqual(report["training"]["frames"], 10000)
             self.assertIsNotNone(report["finished_at_utc"])
             self.assertGreaterEqual(report["duration_seconds"], 0)
 
@@ -123,7 +157,9 @@ class TrainingReportTests(unittest.TestCase):
 
             def publish(execution, model, model_metadata, model_out):
                 self.assertIs(model, final_model)
-                self.assertEqual(model_metadata["final_fit"]["frames"], 20)
+                self.assertEqual(model_metadata["final_fit"]["images_used"], 20)
+                self.assertEqual(model_metadata["final_fit"]["category_count"], 1)
+                self.assertEqual(model_metadata["final_fit"]["class_count"], 2)
                 events.append("model_saved")
                 return {"model": "immutable/model.joblib", "pointer": "model.current.json"}
 
@@ -161,10 +197,14 @@ class TrainingReportTests(unittest.TestCase):
             self.assertEqual(len(final_model.fit.call_args.args[0]), 20)
             self.assertEqual(events, ["model_saved", "pointer_saved", "cleanup"])
             report = json.loads(run.path.read_text(encoding="utf-8"))
-            self.assertEqual(report["evaluation"]["validation"]["frames"], 4)
-            self.assertEqual(report["final_fit"]["frames"], 20)
-            self.assertEqual(report["current_batch"]["used_frames"], 15)
-            self.assertEqual(report["replay"]["frames"], 5)
+            self.assertEqual(report["validation"]["frames"], 4)
+            self.assertEqual(report["training"]["images_used"], 20)
+            self.assertEqual(report["training"]["category_count"], 1)
+            self.assertEqual(report["training"]["class_count"], 2)
+            self.assertEqual(report["training"]["new_images"], 15)
+            self.assertEqual(report["training"]["reused_images"], 5)
+            self.assertNotIn("current_batch", report)
+            self.assertNotIn("sample_keys", report)
             self.assertEqual(report["cleanup"]["replay_raw_frames"], 0 if filtered else 5)
             cache.mark_trained.assert_called_once()
 

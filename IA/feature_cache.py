@@ -33,7 +33,7 @@ META_NAME = "meta.json"
 DISK_DTYPE = np.float16
 
 
-def signature(kind, negativos, feature_size, patch_size, patch_margin, hsv_bins):
+def signature(kind, negativos, feature_size, patch_size, patch_margin, hsv_bins, label_source="all"):
     return {
         "kind": kind,
         "negativos": int(negativos),
@@ -43,6 +43,7 @@ def signature(kind, negativos, feature_size, patch_size, patch_margin, hsv_bins)
         else int(patch_size),
         "patch_margin": float(patch_margin),
         "hsv_bins": int(hsv_bins),
+        "label_source": label_source,
     }
 
 

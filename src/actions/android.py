@@ -152,6 +152,10 @@ class AndroidActions:
             int(match.group(2)),
         )
 
+    def shell(self, *command, timeout=10.0):
+        """Executa comando ADB shell sem expor a implementação interna."""
+        return self._run("shell", *command, timeout=timeout)
+
     def click(self, x, y):
 
         return self._run(

@@ -192,6 +192,10 @@ class StatusPanel:
             f"Renovou: {resumo.get('reformas', 0)} vezes",
             f"Ação: {acao}",
         ]
+        if resumo.get("vision_error"):
+            linhas.append(
+                f"Visão: {resumo['vision_error']} ({resumo.get('vision_failures', 0)} falhas consecutivas)"
+            )
 
         rodape = (
             f"estado {resumo.get('estado', '?')}"

@@ -1,8 +1,35 @@
 # EatVenture AI/BOT
 
-[Leia em português](README.pt-BR.md)
+## Languages
+
+- [English](README.md)
+- [Português do Brasil](README.pt-BR.md)
+
+Would you like to add or update a translation? See
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 Bot that automates EatVenture actions on an Android device. The default mode recognizes elements using templates (reference images); the AI model is still experimental.
+
+This is exclusively a local/personal project, including use on a local network.
+It is not designed as a public service or a product for end users. The local
+dashboard therefore does not require authentication by default; tokens remain optional.
+
+The web dashboard supports both template detection and trained AI models.
+Select the recognition mode in the device settings, save, and restart. The
+Vision tab streams the active detector's boxes and confidence scores in both
+modes. AI mode requires a trained category model; automatic selection uses
+the capture resolution. Region proposals can come from templates or the
+experimental color/contour proposer.
+
+BLOCK regions affect only `box`, `food` and `new_point`. Other
+categories, including `engine`, keep their normal search areas. Use
+`python tools/block_selector.py` to select multiple regions visually, or use
+**Add BLOCK** in the dashboard. Both use the same device profile under
+`local/devices/`; restart the bot after saving to apply the changes.
+
+The bot retries failures up to three times, waiting three seconds between
+attempts and logging the outcome. Manual stops are not retried. Five consecutive
+detector failures or an unexpected capture shutdown trigger recovery as well.
 
 ## Requirements
 
@@ -76,6 +103,45 @@ adb connect PHONE_IP:5555
 Enables a connection over the same Wi-Fi network. Confirm with `adb devices` before removing the cable.
 
 ## Run commands
+
+### Web control panel
+
+With the virtual environment activated, install the panel dependencies and start it:
+
+```powershell
+python -m pip install -r requirements-web.txt
+```
+
+Open `http://localhost:8765` on the same computer. Use `nohup .venv/bin/python src/web.py --host 127.0.0.1 > /dev/null 2>&1 < /dev/null &` to allow local access only. The panel finds ADB-authorized devices and can start, stop and configure their bots. See [docs/painel-web.md](docs/painel-web.md) for access tokens, another port and LAN use.
+
+On a Linux server, use this command to start the panel in the background:
+
+```bash
+nohup .venv/bin/python src/web.py > /dev/null 2>&1 < /dev/null &
+```
+
+The panel keeps running after the SSH session closes without saving output to a file. Use the **Encerrar painel** button in the interface to stop it. To keep it running after server reboots too, use the `systemd` service described in [docs/painel-web.md](docs/painel-web.md).
+
+To stop it from the terminal:
+
+```bash
+python src/stop-web.py
+```
+
+On Debian or Ubuntu, if `pip` reports `externally-managed-environment`, install virtual-environment support and use `.venv`; do not use `--break-system-packages`:
+
+```bash
+sudo apt update
+sudo apt install -y python3-venv
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements-web.txt
+nohup .venv/bin/python src/web.py > /dev/null 2>&1 < /dev/null &
+```
+
+If Python was installed separately and `venv` still fails, install its matching package, for example `sudo apt install -y python3.14-venv`.
+
+The optional [web control panel](docs/painel-web.md) manages multiple devices, starts/stops bots and saves local settings per device. It runs on a headless server; the terminal commands below remain available. The panel and its setup guide are in Portuguese.
 
 Keep EatVenture open, with the screen on and unlocked.
 

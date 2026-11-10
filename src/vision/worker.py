@@ -34,6 +34,11 @@ class VisionWorker:
         self.detections_frame = None
 
         self.categories = None
+        # Categorias de saúde buscadas sob demanda, fora da prioridade normal.
+        self.monitor_categories = ()
+        self._monitor_request = 0
+        self._monitor_result = 0
+        self._monitor_detections = []
 
         # Frame novo acorda o worker (substitui busy-wait)
         self.frame_lock = threading.Condition()
@@ -43,6 +48,8 @@ class VisionWorker:
         # Última falha da thread, para o loop principal e o
         # HUD poderem dizer POR QUE não há detecção.
         self.last_error = None
+        self.consecutive_failures = 0
+        self.last_success_at = 0.0
         self._error_kinds = set()
 
         # Frames anteriores a este timestamp são rejeitados (estabilização pós-ação)
@@ -131,6 +138,24 @@ class VisionWorker:
                 else tuple(categories)
             )
 
+    def set_monitor_categories(self, categories):
+        """Categorias de saúde que não participam da prioridade de ações."""
+        with self.detection_lock:
+            self.monitor_categories = tuple(categories or ())
+
+    def request_monitor_scan(self):
+        """Agenda uma busca de saúde no próximo frame processado."""
+        with self.detection_lock:
+            self._monitor_request += 1
+            return self._monitor_request
+
+    def monitor_result(self, token):
+        """None enquanto a busca pedida ainda não processou um frame."""
+        with self.detection_lock:
+            if self._monitor_result < token:
+                return None
+            return list(self._monitor_detections)
+
     def get_input(self):
         """Retorna (frame, detecções, timestamp) consistentes para dataset."""
 
@@ -178,6 +203,11 @@ class VisionWorker:
         """Loga erro UMA vez por tipo (evita spam em laço rápido)."""
 
         self.last_error = f"{type(error).__name__}: {error}"
+        self.consecutive_failures += 1
+        with self.detection_lock:
+            self.detections = []
+            self.detections_frame = None
+            self.detections_time = 0.0
 
         if type(error).__name__ in self._error_kinds:
             return
@@ -245,6 +275,8 @@ class VisionWorker:
             categories = (
                 None if self.categories is None else self.categories
             )
+            monitor_categories = self.monitor_categories
+            monitor_request = self._monitor_request
 
         started = time.monotonic()
 
@@ -252,6 +284,15 @@ class VisionWorker:
             raw_frame,
             categories,
         )
+        if monitor_categories and monitor_request > self._monitor_result:
+            monitored = self.detector.detect(
+                raw_frame,
+                monitor_categories,
+                exhaustive=True,
+            )
+            with self.detection_lock:
+                self._monitor_result = monitor_request
+                self._monitor_detections = monitored
 
         self.last_duration = time.monotonic() - started
 
@@ -273,6 +314,87 @@ class VisionWorker:
                 self.detections_time = frame_time
                 self.detections_frame = raw_frame
                 self.last_error = None
+                self.consecutive_failures = 0
+                self.last_success_at = time.monotonic()
 
         if self.interval:
             self._stop_event.wait(self.interval)
+
+
+class EngineWorker:
+    """Busca o indicador engine fora da thread que dirige o bot."""
+
+    def __init__(self, detector):
+        self.detector = detector
+        self.running = False
+        self.thread = None
+        self._frame = None
+        self._request = 0
+        self._result = 0
+        self._detections = []
+        self._condition = threading.Condition()
+
+    def start(self):
+        with self._condition:
+            if self.thread is not None and self.thread.is_alive():
+                return
+            self.running = True
+            self.thread = threading.Thread(
+                target=self._run,
+                name="engine-worker",
+                daemon=True,
+            )
+            self.thread.start()
+
+    def stop(self):
+        with self._condition:
+            self.running = False
+            self._condition.notify_all()
+            thread = self.thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=5)
+        if thread is not None and not thread.is_alive():
+            self.thread = None
+
+    def set_frame(self, frame):
+        with self._condition:
+            self._frame = frame
+            self._condition.notify()
+
+    def request_scan(self):
+        with self._condition:
+            self._request += 1
+            self._condition.notify()
+            return self._request
+
+    def result(self, token):
+        with self._condition:
+            if self._result < token:
+                return None
+            return list(self._detections)
+
+    def _run(self):
+        while True:
+            with self._condition:
+                self._condition.wait_for(
+                    lambda: not self.running or (
+                        self._request > self._result and self._frame is not None
+                    )
+                )
+                if not self.running:
+                    return
+                token = self._request
+                frame = self._frame
+            try:
+                detections = self.detector.detect(
+                    frame,
+                    ("engine",),
+                    exhaustive=True,
+                )
+            except Exception:
+                logger.exception("Falha procurando o template engine.")
+                detections = []
+            with self._condition:
+                self._result = token
+                self._detections = detections
+                self._condition.notify_all()
