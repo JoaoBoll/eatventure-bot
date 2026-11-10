@@ -8,15 +8,11 @@ import signal
 import subprocess
 import time
 
+from core.processes import process_alive
+
 
 def alive(pid):
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
+    return process_alive(pid)
 
 
 def _windows_command_line(pid):

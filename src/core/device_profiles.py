@@ -8,17 +8,21 @@ from pathlib import Path
 import re
 import tempfile
 from collections.abc import Mapping
+from core.block_regions import validate_regions
 
 
 MAX_PROFILE_BYTES = 256 * 1024
 MAX_CATEGORY_THRESHOLDS = 128
 MAX_ITEM_THRESHOLDS = 2000
-MAX_BLOCK_REGIONS = 32
 _CATEGORY = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
 _PROFILE_NAME = re.compile(r"[0-9a-f]{64}\.json\Z")
 _SOURCE_PREFIX = re.compile(r"^(\d+x\d+)_(.+)$")
 _IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
-_RUN_DEFAULTS = {"ai_collect": False, "layout_only": False, "save_log": False}
+_RUN_DEFAULTS = {
+    "ai_collect": False, "layout_only": False, "save_log": False,
+    "detector_mode": "templates", "ai_model": "auto", "ai_source": "templates",
+    "ai_min_confidence": 0.60,
+}
 
 
 def _spec(config, label, group, kind, minimum=None, maximum=None, step=None):
@@ -156,26 +160,32 @@ def validate_profile(device_id, data):
             raise ValueError("O perfil contém fidelidades duplicadas para o mesmo template.")
         items[canonical] = _number(value, f"Fidelidade de {key}", 0.0, 1.0)
 
-    raw_blocks = data.get("block_regions", [])
-    if not isinstance(raw_blocks, list) or len(raw_blocks) > MAX_BLOCK_REGIONS:
-        raise ValueError(f"BLOCKs: informe uma lista com até {MAX_BLOCK_REGIONS} regiões.")
-    blocks = []
-    for index, region in enumerate(raw_blocks, 1):
-        if not isinstance(region, (list, tuple)) or len(region) != 4:
-            raise ValueError(f"BLOCK {index}: informe x, y, largura e altura.")
-        x, y, width, height = (
-            _number(value, f"BLOCK {index}", 0.0, 1.0)
-            for value in region
-        )
-        if width <= 0 or height <= 0 or x + width > 1.0 + 1e-9 or y + height > 1.0 + 1e-9:
-            raise ValueError(f"BLOCK {index}: a região deve ficar dentro da tela.")
-        blocks.append([x, y, min(width, 1.0 - x), min(height, 1.0 - y)])
+    blocks = validate_regions(data.get("block_regions", []))
 
     run = dict(_RUN_DEFAULTS)
     for key, value in _mapping(data.get("run", {}), "Execução", len(_RUN_DEFAULTS)).items():
-        if key not in run or not isinstance(value, bool):
+        if key not in run:
             raise ValueError("Opção de execução inválida.")
+        if key in {"ai_collect", "layout_only", "save_log"}:
+            if not isinstance(value, bool):
+                raise ValueError("Opção de execução inválida.")
+        elif key == "detector_mode":
+            if value not in ("templates", "ai"):
+                raise ValueError("Escolha templates ou IA para a detecção.")
+        elif key == "ai_source":
+            if value not in ("templates", "proposer"):
+                raise ValueError("Fonte de regiões da IA inválida.")
+        elif key == "ai_model":
+            if not isinstance(value, str) or not (
+                value in {"auto", "IA/model.joblib"}
+                or re.fullmatch(r"IA/models/[1-9]\d*x[1-9]\d*/category\.joblib", value)
+            ):
+                raise ValueError("Modelo inválido; selecione um modelo local por resolução.")
+        elif key == "ai_min_confidence":
+            value = _number(value, "Confiança mínima da IA", 0.0, 1.0)
         run[key] = value
+    if run["detector_mode"] == "ai" and run["layout_only"]:
+        raise ValueError("Somente layout é exclusivo do modo por templates.")
     return {
         "device_id": device_id,
         "name": name.strip(),
@@ -278,6 +288,12 @@ def apply_environment_profile(namespace):
     namespace["ITEM_THRESHOLDS"] = dict(profile["item_thresholds"])
     namespace["BLOCK_REGIONS"] = [tuple(region) for region in profile["block_regions"]]
     namespace["DATASET_SAVE"] = profile["run"]["ai_collect"]
+    namespace.update(
+        DETECTOR_MODE=profile["run"]["detector_mode"],
+        AI_MODEL=profile["run"]["ai_model"],
+        AI_SOURCE=profile["run"]["ai_source"],
+        AI_MIN_CONFIDENCE=profile["run"]["ai_min_confidence"],
+    )
     namespace["DEVICE_PROFILE_ID"] = profile["device_id"]
     serial = os.environ.get("EATVENTURE_DEVICE_SERIAL")
     if serial:

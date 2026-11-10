@@ -56,6 +56,11 @@ class RuntimeControl:
             "pid": os.getpid(), "device_id": self.device_id, "session_id": self.session_id,
             "updated_at": time.time(), "state": summary.get("estado", "iniciando"),
             "summary": summary, "fps": fps, "capture_fps": capture_fps, "templates": templates,
+            "vision_error": summary.get("vision_error"),
+            "detector_mode": summary.get("detector_mode", "templates"),
+            "model": summary.get("model"),
+            "vision_failures": summary.get("vision_failures", 0),
+            "vision_last_success_age": summary.get("vision_last_success_age"),
             "battery": dict(zip(("level", "charging", "age"), values)),
             **{key: summary.get(key, 0) for key in (
                 "voos", "reformas", "acoes", "dados_sessao",

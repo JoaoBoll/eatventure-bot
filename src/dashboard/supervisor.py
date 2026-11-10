@@ -19,7 +19,8 @@ import threading
 import time
 import uuid
 
-from core import log
+from core import config, log
+from core.block_regions import migrate_legacy_blocks
 from core.preview import FramePreview, preview_paths
 
 
@@ -389,6 +390,9 @@ class _Run:
     log_truncated: int = 0
     stopping: bool = False
     stop_requested: bool = False
+    restart_attempt: int = 0
+    detector_mode: str = "templates"
+    recovery_cancel: object = field(default_factory=threading.Event)
     exit_code: object = None
     reader: object = None
     watcher: object = None
@@ -703,7 +707,7 @@ class BotSupervisor:
     def _describe(self, device):
         device = dict(device)
         device_id = device["id"]
-        profile = self.store.load(device_id)
+        profile = migrate_legacy_blocks(self.store, device_id, device.get("aliases", []))
         with self._lock:
             run = self._runs.get(device_id)
             exit_code = run.process.poll() if run else None
@@ -725,6 +729,8 @@ class BotSupervisor:
                 "exit_code": exit_code,
                 "status": status,
                 "profile": profile,
+                "restart_attempt": run.restart_attempt if run else 0,
+                "detector_mode": run.detector_mode if running else profile["run"]["detector_mode"],
             })
         metrics = self._metrics(device_id, run)
         with self._lock:
@@ -805,6 +811,31 @@ class BotSupervisor:
                 )
         self._cleanup_group(run)
 
+        if device_id is None or not run.exit_code:
+            return
+        for attempt in range(run.restart_attempt + 1, config.BOT_RESTART_LIMIT + 1):
+            with self._lock:
+                if self._closing or run.stop_requested or self._runs.get(device_id) is not run:
+                    return
+            self._append_log(run, (
+                f"Falha do bot (código {run.exit_code}). Recuperação "
+                f"{attempt}/{config.BOT_RESTART_LIMIT} em {config.BOT_RESTART_DELAY:.1f}s."
+            ))
+            if run.recovery_cancel.wait(config.BOT_RESTART_DELAY):
+                return
+            try:
+                with self._auto_training_lock, self._operation_lock(device_id):
+                    if self._closing or run.stop_requested or self._runs.get(device_id) is not run:
+                        return
+                    if run.reader is not None:
+                        run.reader.join(timeout=1)
+                    self._start(device_id, restart_attempt=attempt)
+                return
+            except Exception as error:
+                self._append_log(run, f"Recuperação {attempt} falhou: {error}")
+        if not run.stop_requested and not self._closing:
+            self._append_log(run, f"Limite de {config.BOT_RESTART_LIMIT} recuperações atingido; bot encerrado.")
+
     def _cleanup_group(self, run):
         FramePreview(run.status_file, run.session_id).clear()
         with self._lock:
@@ -826,7 +857,7 @@ class BotSupervisor:
         with self._auto_training_lock:
             return self._start(device_id)
 
-    def _start(self, device_id):
+    def _start(self, device_id, restart_attempt=0):
         device = self._resolve(device_id)
         device_id = device["id"]
         with self._operation_lock(device_id):
@@ -841,7 +872,7 @@ class BotSupervisor:
                         raise RuntimeError("Este aparelho já está em execução por outra conexão ADB.")
             if not device["connected"]:
                 raise RuntimeError("O dispositivo não está autorizado e conectado ao ADB.")
-            profile = self.store.load(device_id)
+            profile = migrate_legacy_blocks(self.store, device_id, device.get("aliases", []))
             profile_path = Path(self.store.path_for(device_id))
             if not profile_path.is_file():
                 profile = self.store.save(device_id, profile)
@@ -901,6 +932,8 @@ class BotSupervisor:
                     process, started_at, session_id, device["serial"], status_file,
                     stop_file, pause_file=pause_file,
                 )
+                run.restart_attempt = restart_attempt
+                run.detector_mode = profile["run"]["detector_mode"]
                 run.report_base = dict(self._report(device_id))
                 run.dataset_base = dataset_base
                 if previous:
@@ -912,6 +945,8 @@ class BotSupervisor:
                     self._trim_logs(run)
                 self._runs[device_id] = run
             self._append_log(run, f"Bot iniciado (PID {process.pid}).")
+            if restart_attempt:
+                self._append_log(run, f"Bot recuperado: tentativa {restart_attempt}/{config.BOT_RESTART_LIMIT}.")
             run.reader = threading.Thread(target=self._read_output, args=(run,), name=f"bot-log-{process.pid}", daemon=True)
             run.watcher = threading.Thread(target=self._watch_process, args=(run,), name=f"bot-wait-{process.pid}", daemon=True)
             run.reader.start()
@@ -958,6 +993,9 @@ class BotSupervisor:
         with self._operation_lock(device_id):
             with self._lock:
                 run = self._runs.get(device_id)
+                if run is not None:
+                    run.stop_requested = True
+                    run.recovery_cancel.set()
                 if run is None or run.process.poll() is not None:
                     if run is not None:
                         self._cleanup_group(run)
@@ -1092,12 +1130,21 @@ class BotSupervisor:
                 run.template_snapshots.pop(next(iter(run.template_snapshots)))
         return snapshot
 
-    def save_template(self, device_id, category, snapshot_id, x, y, width, height):
+    def save_template(self, device_id, category, name, snapshot_id, x, y, width, height):
         import cv2
         import numpy as np
+        import unicodedata
 
         if not isinstance(category, str) or re.fullmatch(r"[a-z][a-z0-9_]{0,63}", category) is None:
             raise ValueError("Categoria de template inválida.")
+        if not isinstance(name, str) or len(name) > 64 or (name and not name.isprintable()):
+            raise ValueError("Nome de template inválido.")
+        if category != "food" and name.strip():
+            raise ValueError("O nome personalizado está disponível somente para food.")
+        normalized_name = unicodedata.normalize("NFKD", name.strip()).encode("ascii", "ignore").decode()
+        normalized_name = re.sub(r"[^a-z0-9]+", "_", normalized_name.lower()).strip("_")
+        if name.strip() and not normalized_name:
+            raise ValueError("Informe um nome com letras ou números.")
         values = (x, y, width, height)
         if any(type(value) is not int for value in values) or width < 6 or height < 6:
             raise ValueError("Selecione uma área de pelo menos 6x6 pixels.")
@@ -1120,14 +1167,18 @@ class BotSupervisor:
         folder = self.root / "src" / "vision" / "templates" / "default" / category
         with self._lock:
             folder.mkdir(parents=True, exist_ok=True)
-            numbered = re.compile(r"^(?:\d+x\d+_)?item_(\d+)\.png$", re.IGNORECASE)
+            file_name = normalized_name or "item"
+            numbered = re.compile(
+                rf"^(?:\d+x\d+_)?{re.escape(file_name)}_(\d+)\.png$",
+                re.IGNORECASE,
+            )
             indexes = [
                 int(match.group(1))
                 for candidate in folder.glob("*.png")
                 if (match := numbered.fullmatch(candidate.name)) is not None
             ]
             index = max(indexes, default=0) + 1
-            destination = folder / f"{frame_width}x{frame_height}_item_{index:03d}.png"
+            destination = folder / f"{frame_width}x{frame_height}_{file_name}_{index:03d}.png"
             if not cv2.imwrite(str(destination), crop):
                 raise RuntimeError("Não foi possível salvar o template.")
             if run.pause_file is not None:
@@ -1244,6 +1295,8 @@ class BotSupervisor:
     def shutdown(self):
         with self._lock:
             self._closing = True
+            for run in self._runs.values():
+                run.recovery_cancel.set()
             auto_trainer = self._auto_trainer
         if auto_trainer is not None:
             auto_trainer.stop()

@@ -4,7 +4,7 @@ const $ = (id) => document.getElementById(id);
 const sessionKey = "eatventure.dashboard.token";
 const adbAddressKey = "eatventure.dashboard.adbAddress";
 const numberFormat = new Intl.NumberFormat("pt-BR");
-const state = { devices: [], schema: [], templates: { total: 0, categories: [] }, training: {} };
+const state = { devices: [], schema: [], templates: { total: 0, categories: [] }, training: {}, models: [] };
 const selected = new Set();
 const busyDevices = new Set();
 let token = readToken();
@@ -324,6 +324,7 @@ async function refreshState(force = false) {
     state.devices = Array.isArray(result.devices) ? result.devices : [];
     state.schema = Array.isArray(result.schema) ? result.schema : [];
     state.templates = result.templates || state.templates;
+    state.models = Array.isArray(result.models) ? result.models : [];
     state.training = result.training || {};
     state.collected = result.collected || {};
     renderTemplateCategorySuggestions();
@@ -541,7 +542,18 @@ async function executeAction(action, ids) {
 }
 
 function normalizeProfile(profile = {}) {
-  return { device_id: profile.device_id || detailId, name: profile.name || "", settings: { ...profile.settings }, category_thresholds: { ...profile.category_thresholds }, item_thresholds: { ...profile.item_thresholds }, block_regions: Array.isArray(profile.block_regions) ? profile.block_regions.map((region) => [...region]) : [], run: { ai_collect: !!profile.run?.ai_collect, layout_only: !!profile.run?.layout_only, save_log: !!profile.run?.save_log } };
+  return {
+    device_id: profile.device_id || detailId, name: profile.name || "",
+    settings: { ...profile.settings }, category_thresholds: { ...profile.category_thresholds },
+    item_thresholds: { ...profile.item_thresholds },
+    block_regions: Array.isArray(profile.block_regions) ? profile.block_regions.map((region) => [...region]) : [],
+    run: {
+      ai_collect: !!profile.run?.ai_collect, layout_only: !!profile.run?.layout_only,
+      save_log: !!profile.run?.save_log, detector_mode: profile.run?.detector_mode || "templates",
+      ai_model: profile.run?.ai_model || "auto", ai_source: profile.run?.ai_source || "templates",
+      ai_min_confidence: profile.run?.ai_min_confidence ?? 0.60
+    }
+  };
 }
 
 function clone(value) { return JSON.parse(JSON.stringify(value)); }
@@ -625,6 +637,12 @@ function renderDetailStatus() {
   }
   const status = metric(device, "state") || metric(device, "estado");
   $("detail-status").replaceChildren(badge(device), node("span", "muted", [device.model, device.running ? status : null, device.running ? runtime(device) : null].filter(Boolean).join(" · ")));
+  if (metric(device, "model")) $("detail-status").append(node("span", "muted", `Modelo de IA: ${metric(device, "model")}`));
+  const visionError = metric(device, "vision_error");
+  if (visionError) {
+    const age = metric(device, "vision_last_success_age");
+    $("detail-status").append(node("span", "danger-text", `Visão: ${visionError} · ${metric(device, "vision_failures") || 0} falhas consecutivas${age == null ? "" : ` · última passada válida há ${Math.floor(age)}s`}`));
+  }
 }
 
 function group(title, onReset) {
@@ -653,6 +671,53 @@ function renderProfile() {
   nameInput.append(name);
   nameRow.append(nameLabel, nameInput);
   basics.content.append(nameRow);
+  const runSelect = (key, title, options, hint) => {
+    const row = node("div", "setting-row");
+    const label = node("label", "", title);
+    const select = node("select");
+    select.id = `run-${key}`;
+    label.htmlFor = select.id;
+    for (const [value, text] of options) {
+      const option = node("option", "", text);
+      option.value = value;
+      select.append(option);
+    }
+    select.value = draft.run[key];
+    select.addEventListener("change", () => {
+      draft.run[key] = select.value;
+      if (key === "detector_mode") {
+        if (select.value === "ai") draft.run.layout_only = false;
+        renderProfile();
+      }
+      updatePending();
+    });
+    row.append(label, select);
+    if (hint) row.append(node("p", "setting-hint", hint));
+    basics.content.append(row);
+  };
+  runSelect("detector_mode", "Modo de reconhecimento", [
+    ["templates", "Bot por templates"], ["ai", "Modelo de IA (experimental)"]
+  ], "A visão exibe as detecções do modo em execução. Salve e reinicie para trocar.");
+  if (draft.run.detector_mode === "ai") {
+    const models = state.models.length ? state.models.map((model) => [model.value, model.label]) : [["auto", "Automático pela resolução da captura"]];
+    if (!models.some(([value]) => value === draft.run.ai_model)) models.push([draft.run.ai_model, `${draft.run.ai_model} (indisponível)`]);
+    runSelect("ai_model", "Modelo treinado", models, "O modo automático exige um modelo treinado para a resolução da captura. A ausência do modelo aparece nos logs.");
+    runSelect("ai_source", "Localizar regiões para a IA", [
+      ["templates", "Templates localizam; IA reconhece"],
+      ["proposer", "Cor e contorno (experimental)"]
+    ], "Cor e contorno dispensam templates para localizar os itens. O indicador de saúde do jogo continua usando templates.");
+    const row = node("div", "setting-row");
+    const label = node("label", "", "Confiança mínima da IA");
+    label.htmlFor = "run-ai-confidence";
+    const input = thresholdInput(draft.run.ai_min_confidence, "Confiança mínima da IA");
+    input.id = "run-ai-confidence";
+    input.addEventListener("input", () => {
+      if (input.checkValidity()) draft.run.ai_min_confidence = Number(input.value);
+      updatePending();
+    });
+    row.append(label, input, node("p", "setting-hint", "As categorias raras mantêm os pisos específicos usados pelo bot de IA."));
+    basics.content.append(row);
+  }
   const options = [
     ["ai_collect", "Coletar dados para IA", "Registra amostras do jogo para o dataset (--ai-collect)."],
     ["layout_only", "Somente layout", "Ativa o modo de análise de layout (--layout-only)."],
@@ -663,6 +728,7 @@ function renderProfile() {
     const input = node("input");
     input.type = "checkbox";
     input.checked = draft.run[key];
+    input.disabled = key === "layout_only" && draft.run.detector_mode === "ai";
     input.addEventListener("change", () => { draft.run[key] = input.checked; updatePending(); });
     const text = node("span");
     text.append(node("strong", "", title), node("small", "", description));
@@ -908,6 +974,10 @@ async function resetProfile() {
 
 function renderVisionControls() {
   const device = detailId ? deviceById(detailId) : null;
+  const mode = device?.detector_mode || metric(device || {}, "detector_mode") || "templates";
+  $("tab-vision").textContent = "Visão";
+  $("panel-vision").querySelector(".vision-toolbar h3").textContent = mode === "ai" ? "Visão do modelo de IA" : "Visão do bot por templates";
+  $("vision-image").alt = mode === "ai" ? "Detecções do modelo de IA no Android" : "Detecções do bot por templates no Android";
   $("vision-toggle").textContent = visionWanted ? "Encerrar visão" : visionMode === "error" ? "Tentar novamente" : "Ver visão";
   $("vision-toggle").disabled = visionMode === "starting" || (!visionWanted && (!device?.running || document.hidden));
 }
@@ -1012,9 +1082,11 @@ async function startTemplateSelector(mode = "template") {
   $("template-undo").hidden = mode !== "block";
   $("template-undo").disabled = true;
   $("template-category").value = "";
+  $("template-name").value = "";
+  $("template-name-field").hidden = true;
   $("template-kind").textContent = mode === "block" ? "NOVA ÁREA BLOCK" : "NOVO TEMPLATE";
   $("template-title").textContent = mode === "block" ? "Selecione as áreas bloqueadas" : "Selecione o item";
-  $("template-instruction").textContent = mode === "block" ? "Arraste quantas áreas quiser; nenhum template será reconhecido dentro delas." : "Arraste com o botão esquerdo sobre o item.";
+  $("template-instruction").textContent = mode === "block" ? "Arraste quantas áreas quiser. O BLOCK afeta somente box, food, new_point e up_food." : "Arraste com o botão esquerdo sobre o item.";
   $("template-selection-status").textContent = "Capturando frame sem marcações…";
   $("template-stage").querySelector(".loading-spinner").hidden = false;
   const dialog = $("template-dialog");
@@ -1201,12 +1273,14 @@ async function saveTemplateSelection() {
   if (!templateSelection || !templateDevice || !templateSnapshot) return;
   const category = $("template-category").value.trim();
   if (!/^[a-z][a-z0-9_]{0,63}$/.test(category)) { toast("Informe uma categoria válida.", true); return; }
+  const name = category === "food" ? $("template-name").value.trim() : "";
   const button = $("template-save"); button.disabled = true;
   try {
     const result = await api(`/api/devices/${encodeURIComponent(templateDevice)}/templates`, {
       method: "POST",
       body: JSON.stringify({
         category,
+        name,
         snapshot: templateSnapshot,
         ...templateSelection
       })
@@ -1752,6 +1826,11 @@ $("vision-toggle").addEventListener("click", () => { if (visionWanted) stopVisio
 $("template-select").addEventListener("click", () => startTemplateSelector().catch((error) => { closeTemplateSelector(); toast(error.message, true); }));
 $("block-select").addEventListener("click", () => startTemplateSelector("block").catch((error) => { closeTemplateSelector(); toast(error.message, true); }));
 $("template-save").addEventListener("click", saveTemplateSelection);
+$("template-category").addEventListener("input", () => {
+  const isFood = $("template-category").value.trim() === "food";
+  $("template-name-field").hidden = !isFood;
+  if (!isFood) $("template-name").value = "";
+});
 $("template-close").addEventListener("click", closeTemplateSelector);
 $("template-cancel").addEventListener("click", closeTemplateSelector);
 $("template-category-cancel").addEventListener("click", closeTemplateSelector);

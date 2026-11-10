@@ -48,6 +48,8 @@ class VisionWorker:
         # Última falha da thread, para o loop principal e o
         # HUD poderem dizer POR QUE não há detecção.
         self.last_error = None
+        self.consecutive_failures = 0
+        self.last_success_at = 0.0
         self._error_kinds = set()
 
         # Frames anteriores a este timestamp são rejeitados (estabilização pós-ação)
@@ -201,6 +203,11 @@ class VisionWorker:
         """Loga erro UMA vez por tipo (evita spam em laço rápido)."""
 
         self.last_error = f"{type(error).__name__}: {error}"
+        self.consecutive_failures += 1
+        with self.detection_lock:
+            self.detections = []
+            self.detections_frame = None
+            self.detections_time = 0.0
 
         if type(error).__name__ in self._error_kinds:
             return
@@ -307,6 +314,8 @@ class VisionWorker:
                 self.detections_time = frame_time
                 self.detections_frame = raw_frame
                 self.last_error = None
+                self.consecutive_failures = 0
+                self.last_success_at = time.monotonic()
 
         if self.interval:
             self._stop_event.wait(self.interval)

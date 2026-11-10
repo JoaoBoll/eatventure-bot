@@ -2,6 +2,10 @@
 
 O painel roda no próprio servidor, sem área de trabalho, Docker ou build de frontend. O comando `python src/main.py` continua disponível independentemente dele.
 
+O projeto é exclusivo para uso local/pessoal, inclusive na rede local. Não é
+um produto ou serviço destinado a usuários externos. Por essa decisão de
+escopo, autenticação não é necessária por padrão; o token continua opcional.
+
 ## Instalar e abrir
 
 Na raiz do projeto, com o ambiente virtual ativado e as dependências do bot instaladas:
@@ -47,6 +51,26 @@ O painel só gerencia processos que ele iniciou. Ao encerrar o servidor web, sol
 
 ## Visão IA no navegador
 
+Em **Configurações → Modo de reconhecimento**, escolha **Bot por templates**
+ou **Modelo de IA (experimental)**. Salve o perfil e reinicie o bot para trocar.
+No modo de IA, selecione o modelo treinado (ou **Automático pela resolução da
+captura**), a fonte das regiões e a confiança mínima. O automático procura a
+publicação em `IA/models/<LARGURAxALTURA>/category.current.json` ou o modelo
+`category.joblib` dessa resolução. Se não existir, o status e os logs mostram
+o erro; o bot não muda silenciosamente para templates.
+
+**Templates localizam; IA reconhece** usa os templates para propor regiões e
+o modelo para reconhecer os itens. **Cor e contorno** usa o proposer experimental
+para localizar regiões. O indicador `engine` continua sendo verificado por
+templates para manter a proteção do jogo. O modelo de IA é o de categorias;
+as ações continuam seguindo a máquina de estados do bot.
+
+A aba **Visão** funciona nos dois modos: mostra as caixas e confianças do
+detector em execução, com o modo identificado no título e no próprio frame.
+No modo de IA, também identifica o modelo ativo e carrega novas publicações
+automaticamente. Pausa, seleção de templates/BLOCKs, coleta, logs e recuperação
+continuam disponíveis. **Somente layout** é exclusivo do modo por templates.
+
 Clique no card do dispositivo para abrir diretamente a **Visão IA**; com o bot em execução, a transmissão começa automaticamente. A engrenagem continua abrindo as configurações. A prévia mostra a tela com as detecções e métricas desenhadas pelo bot, sem abrir janelas no servidor, tanto no Windows quanto no Linux. A transmissão usa uma conexão HTTP contínua (MJPEG), com até 20 imagens por segundo, conforme a captura e a conexão.
 
 O botão **Dados** de cada bot abre o dataset da execução correspondente. O painel agrupa as coletas pelo ID da sessão, ordena as imagens pela data de criação e mostra previews em uma grade. É possível excluir a sessão inteira ou um intervalo inclusivo pelos números exibidos nas imagens. A limpeza remove os registros do `samples.jsonl` e apaga somente arquivos que não sejam mais referenciados.
@@ -81,11 +105,24 @@ As opções de coleta de IA, uso exclusivo dos templates da resolução e grava�
 Na aba **Visão IA**, use **Adicionar template** para capturar um frame bruto, arrastar sobre o item e salvá-lo na categoria informada. O recorte é salvo em `src/vision/templates/default/<categoria>/`, com a resolução de origem no nome, e fica disponível para todos os dispositivos; o detector o recarrega sem reiniciar o bot.
 
 Use **Adicionar BLOCK** para marcar várias regiões no mesmo frame nas quais
-nenhum template deve ser reconhecido. Continue arrastando para adicionar áreas,
+os templates `box`, `food`, `new_point` e `up_food` não devem ser procurados.
+As demais categorias ignoram os BLOCKs, incluindo o indicador `engine`.
+Continue arrastando para adicionar áreas,
 use **Desfazer último** se necessário e confirme o conjunto. As coordenadas
 ficam proporcionais à tela no perfil do dispositivo. Depois de salvar o perfil,
 reinicie o bot para aplicar. As regiões ativas aparecem em vermelho na prévia e
 podem ser removidas na mesma aba.
+
+O seletor `tools/block_selector.py` usa o mesmo perfil e a mesma identidade
+do aparelho do painel. Para um painel com `--state-dir`, passe essa mesma
+opção ao seletor e aos comandos `main.py`/`main_layouts.py` do terminal.
+
+Falhas do detector aparecem no status mesmo com a thread ativa. Após cinco
+falhas consecutivas, o bot encerra a execução com erro para recuperação.
+O supervisor tenta reiniciar processos que falharam até três vezes por
+início manual, aguardando três segundos entre tentativas. As tentativas,
+falhas e o esgotamento do limite aparecem nos logs. Parar o bot ou encerrar
+o painel cancela a recuperação; iniciar manualmente renova o limite.
 
 Os arquivos ficam em:
 

@@ -3,6 +3,7 @@
 import argparse
 from functools import partial
 import os
+from pathlib import Path
 import subprocess
 import sys
 import time
@@ -32,6 +33,8 @@ def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         description="EatVenture AI",
     )
+    parser.add_argument("--state-dir", type=Path, help="pasta de perfis locais usada pelo painel")
+    parser.add_argument("--detector", choices=("templates", "ai"), default=config.DETECTOR_MODE)
 
     parser.add_argument(
         "--device",
@@ -164,7 +167,11 @@ def render_ai_frame(frame, detector, detections, stats):
         )
     else:
         output = frame.copy()
-    stats = {**stats, "coverage": detector.template_coverage()}
+    stats = {
+        **stats, "coverage": detector.template_coverage(),
+        "detector_mode": getattr(detector, "mode", "templates"),
+        "model": getattr(detector, "model_label", None),
+    }
     return detector.draw(output, detections, stats, scale=scale)
 
 
@@ -189,14 +196,19 @@ def run_loop(
     resume_floor = 0.0
     current_resolution = None
 
-    # Evita repetir o aviso de visão caída a cada quadro.
-    vision_avisada = False
-
     def update_panel():
         if panel is not None or runtime is not None:
             resumo = state_machine.summary()
             resumo["templates"] = detector.template_count()
             resumo["dados_sessao"] = recorder.stats()["saved"] if recorder is not None else 0
+            resumo["vision_error"] = vision.last_error
+            resumo["detector_mode"] = getattr(detector, "mode", "templates")
+            resumo["model"] = getattr(detector, "model_label", None)
+            resumo["vision_failures"] = vision.consecutive_failures
+            resumo["vision_last_success_age"] = (
+                max(0.0, time.monotonic() - vision.last_success_at)
+                if vision.last_success_at else None
+            )
             if current_resolution is not None:
                 resumo["resolution"] = current_resolution
             if pause_started is not None:
@@ -240,10 +252,15 @@ def run_loop(
         )
 
         if not capture.is_running():
+            raise RuntimeError("Stream de captura encerrado inesperadamente.")
 
-            logger.warning("Stream encerrado.")
-
-            break
+        if vision.consecutive_failures >= config.VISION_FAILURE_LIMIT:
+            update_panel()
+            raise RuntimeError(
+                f"Detector falhou {vision.consecutive_failures} vezes consecutivas: {vision.last_error}"
+            )
+        if not vision.is_alive():
+            raise RuntimeError(f"Thread da visão encerrada: {vision.last_error or 'motivo desconhecido'}")
 
         if paused:
             if pause_started is None:
@@ -323,19 +340,6 @@ def run_loop(
             ):
                 detections, detect_frame, detect_time = [], None, 0.0
 
-        # Thread do detector morta não para o programa sozinha (captura e
-        # janela seguem ativas, o bot só some de agir) — loga uma vez.
-        if not vision.is_alive() and not vision_avisada:
-
-            logger.error(
-                "A thread da visão não está rodando (%s) — "
-                "não vão existir detecções e o bot não vai "
-                "agir.",
-                vision.last_error or "motivo desconhecido",
-            )
-
-            vision_avisada = True
-
         if not paused and not guard_blocking and detect_frame is not None and detect_time > 0:
             state_machine.update(
                 detections,
@@ -369,7 +373,7 @@ def run_loop(
             "detections": len(detections),
             "waiting_settle": vision.waiting_settle,
             "vision_error": (
-                None if vision.is_alive()
+                vision.last_error if vision.is_alive()
                 else vision.last_error or "thread da visão parada"
             ),
         }
@@ -431,9 +435,14 @@ def main(argv=None, runtime=None):
     terminal_blocks = (
         []
         if config.DEVICE_PROFILE_ID
-        else load_block_regions(device_id)
+        else load_block_regions(device_id, args.state_dir)
     )
-    detector = Detector(block_regions=[*config.BLOCK_REGIONS, *terminal_blocks])
+    if args.detector == "ai":
+        from vision.model_detector import ModelDetector
+        detector = ModelDetector(block_regions=[*config.BLOCK_REGIONS, *terminal_blocks])
+    else:
+        detector = Detector(block_regions=[*config.BLOCK_REGIONS, *terminal_blocks])
+    logger.info("Modo de detecção: %s.", args.detector)
 
     vision = VisionWorker(detector)
 
@@ -569,5 +578,6 @@ def main(argv=None, runtime=None):
 
 
 if __name__ == "__main__":
+    from core.recovery import run_with_retries
 
-    sys.exit(main())
+    sys.exit(run_with_retries(main))

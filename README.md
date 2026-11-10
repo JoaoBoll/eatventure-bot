@@ -4,6 +4,27 @@
 
 Bot that automates EatVenture actions on an Android device. The default mode recognizes elements using templates (reference images); the AI model is still experimental.
 
+This is exclusively a local/personal project, including use on a local network.
+It is not designed as a public service or a product for end users. The local
+dashboard therefore does not require authentication by default; tokens remain optional.
+
+The web dashboard supports both template detection and trained AI models.
+Select the recognition mode in the device settings, save, and restart. The
+Vision tab streams the active detector's boxes and confidence scores in both
+modes. AI mode requires a trained category model; automatic selection uses
+the capture resolution. Region proposals can come from templates or the
+experimental color/contour proposer.
+
+BLOCK regions affect only `box`, `food`, `new_point` and `up_food`. Other
+categories, including `engine`, keep their normal search areas. Use
+`python tools/block_selector.py` to select multiple regions visually, or use
+**Add BLOCK** in the dashboard. Both use the same device profile under
+`local/devices/`; restart the bot after saving to apply the changes.
+
+The bot retries failures up to three times, waiting three seconds between
+attempts and logging the outcome. Manual stops are not retried. Five consecutive
+detector failures or an unexpected capture shutdown trigger recovery as well.
+
 ## Requirements
 
 - Python 3.12 or later.

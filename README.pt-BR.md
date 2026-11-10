@@ -4,6 +4,11 @@
 
 Bot para automatizar ações no EatVenture em um dispositivo Android. O uso padrão reconhece elementos por templates (imagens de referência); o modelo de IA ainda é experimental.
 
+Este projeto é **exclusivamente para uso local/pessoal**, incluindo a rede local.
+Não foi pensado como produto, serviço público ou plataforma para usuários.
+Por esse motivo, o painel dispensa autenticação por padrão; o token opcional
+continua disponível para quem quiser utilizá-lo.
+
 ## Requisitos
 
 - Python 3.12 ou superior.
@@ -116,6 +121,13 @@ Se a versão do Python for instalada separadamente e o comando `venv` ainda falh
 
 Para controlar vários aparelhos pelo navegador, iniciar/parar bots e salvar ajustes locais por dispositivo, use o [painel web opcional](docs/painel-web.md). Ele roda no servidor sem interface gráfica; os comandos de terminal abaixo continuam disponíveis.
 
+O painel permite escolher **Bot por templates** ou **Modelo de IA** em
+**Configurações → Modo de reconhecimento**. No modo de IA, selecione um modelo
+treinado e a fonte de regiões, salve o perfil e reinicie. A aba **Visão** mostra
+as detecções do modo em execução nos dois casos, incluindo o modelo ativo
+quando usar IA. A seleção automática exige um modelo para a resolução da
+captura. Veja os detalhes no [guia do painel](docs/painel-web.md).
+
 Mantenha o EatVenture aberto, com a tela ligada e desbloqueada.
 
 ```bash
@@ -156,6 +168,26 @@ salvar, `u`, `Backspace` ou o botão direito para desfazer a última área e
 `r` ou `F5` para atualizar a captura. No painel web, abra **Visão IA**, use
 **Adicionar BLOCK**, selecione várias áreas e confirme. Depois, salve o perfil
 e reinicie o bot. Os BLOCKs acompanham a resolução do dispositivo.
+
+O BLOCK é aplicado **somente a `box`, `food`, `new_point` e `up_food`**.
+As outras categorias, incluindo `engine`, ignoram os BLOCKs e mantêm suas
+áreas normais de busca. As posições bloqueadas são excluídas antes do
+template matching, inclusive quando há sobreposição parcial do item.
+
+Painel e seletor local compartilham os BLOCKs no perfil em
+`local/devices/<hash-do-aparelho>.json`, usando a identidade do aparelho para
+agrupar USB e Wi-Fi quando ela estiver disponível. O seletor também aceita
+`--state-dir CAMINHO` para usar a mesma pasta de um painel personalizado.
+Arquivos antigos em `local/blocks/` são importados quando o perfil ainda não
+tem o campo `block_regions`; os arquivos originais são preservados.
+
+Se o bot falhar, tenta se recuperar até **3 vezes**, com **3 segundos** entre
+tentativas. Cada falha, tentativa e esgotamento do limite aparece no log.
+Isso inclui processos encerrados com erro no painel e no terminal.
+Cinco falhas consecutivas do detector ou a interrupção inesperada
+da captura também acionam a recuperação. Paradas manuais não reiniciam o bot.
+Os limites ficam em `src/core/config.py`: `BOT_RESTART_LIMIT`,
+`BOT_RESTART_DELAY` e `VISION_FAILURE_LIMIT`.
 
 ```bash
 python src/main_layouts.py

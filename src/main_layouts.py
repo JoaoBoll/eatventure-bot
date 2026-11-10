@@ -11,6 +11,7 @@ comunicação entre os dois além do disco.
 """
 
 import argparse
+from pathlib import Path
 import subprocess
 import sys
 import time
@@ -48,6 +49,7 @@ def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         description="EatVenture AI — atualizador de layouts",
     )
+    parser.add_argument("--state-dir", type=Path, help="pasta de perfis locais usada pelo painel")
 
     parser.add_argument(
         "--device",
@@ -218,7 +220,7 @@ def main(argv=None):
 
     capture = ScreenCapture(device_id)
 
-    terminal_blocks = [] if config.DEVICE_PROFILE_ID else load_block_regions(device_id)
+    terminal_blocks = [] if config.DEVICE_PROFILE_ID else load_block_regions(device_id, args.state_dir)
     detector = Detector(block_regions=[*config.BLOCK_REGIONS, *terminal_blocks])
 
     logger.info(

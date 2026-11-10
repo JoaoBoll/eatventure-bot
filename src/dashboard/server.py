@@ -122,6 +122,21 @@ def template_catalog(root):
     }
 
 
+def model_catalog(root):
+    root = Path(root)
+    models = [{"value": "auto", "label": "Automático pela resolução da captura"}]
+    if (root / "IA" / "model.joblib").is_file() or (root / "IA" / "model.current.json").is_file():
+        models.append({"value": "IA/model.joblib", "label": "Modelo geral (IA/model.joblib)"})
+    directory = root / "IA" / "models"
+    if directory.is_dir():
+        for folder in sorted(directory.iterdir()):
+            if re.fullmatch(r"[1-9]\d*x[1-9]\d*", folder.name) and (
+                (folder / "category.joblib").is_file() or (folder / "category.current.json").is_file()
+            ):
+                models.append({"value": f"IA/models/{folder.name}/category.joblib", "label": folder.name})
+    return models
+
+
 def training_catalog(root):
     """Quantidade de modelos treinados com sucesso, agrupada por resolução."""
     counts = {}
@@ -294,6 +309,7 @@ def create_app(root=None, state_root=None, token=None, supervisor=None, require_
             "devices": supervisor.list_devices(refresh=refresh),
             "schema": settings_schema(vars(config)),
             "templates": catalog(),
+            "models": model_catalog(root),
             "training": training(),
             "collected": collected(),
             "server": {"name": "EatVenture Control", "profiles": "local/devices", "requires_restart": True},
@@ -389,7 +405,7 @@ def create_app(root=None, state_root=None, token=None, supervisor=None, require_
         from starlette.concurrency import run_in_threadpool
         data = await body(request)
         return await run_in_threadpool(
-            supervisor.save_template, device_id, data.get("category"),
+            supervisor.save_template, device_id, data.get("category"), data.get("name", ""),
             data.get("snapshot"), data.get("x"), data.get("y"),
             data.get("width"), data.get("height"),
         )

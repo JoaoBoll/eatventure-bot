@@ -1,6 +1,7 @@
 """Detector por template matching: 2-stage search, ROI/category filters, NMS."""
 
 from pathlib import Path
+from functools import partial
 
 import json
 import math
@@ -2192,11 +2193,15 @@ class Detector:
         """Devolve [(x, y, confiança)] em resolução cheia."""
 
         coarse_template = template["coarse_gray"]
+        match = partial(
+            self._match,
+            blocked=template["category"] in config.BLOCK_CATEGORIES,
+        )
 
         # Sem estágio grosso: busca direta.
         if coarse_frame is None or coarse_template is None:
 
-            return self._match(
+            return match(
                 frame_gray,
                 template["gray"],
                 template["mask"],
@@ -2222,7 +2227,7 @@ class Detector:
             ),
         )
 
-        coarse_hits = self._match(
+        coarse_hits = match(
             coarse_frame,
             coarse_template,
             template["coarse_mask"],
@@ -2241,29 +2246,27 @@ class Detector:
         template_height = template["height"]
         template_width = template["width"]
 
-        frame_height, frame_width = frame_gray.shape[:2]
-
         for coarse_x, coarse_y, _ in coarse_hits:
 
             estimated_x = int(coarse_x / scale)
             estimated_y = int(coarse_y / scale)
 
             window = (
-                max(0, estimated_x - REFINE_SLACK),
-                max(0, estimated_y - REFINE_SLACK),
+                max(roi[0], estimated_x - REFINE_SLACK),
+                max(roi[1], estimated_y - REFINE_SLACK),
                 min(
-                    frame_width,
+                    roi[2],
                     estimated_x + template_width
                     + REFINE_SLACK,
                 ),
                 min(
-                    frame_height,
+                    roi[3],
                     estimated_y + template_height
                     + REFINE_SLACK,
                 ),
             )
 
-            refined = self._match(
+            refined = match(
                 frame_gray,
                 template["gray"],
                 template["mask"],
@@ -2286,6 +2289,7 @@ class Detector:
         min_threshold,
         roi,
         max_matches,
+        blocked=False,
     ):
         """matchTemplate numa região; devolve os máximos locais acima do threshold em coordenada absoluta da imagem."""
 
@@ -2300,6 +2304,52 @@ class Detector:
             or y2 - y1 < template_height
         ):
             return []
+
+        if blocked and self.block_regions:
+            # Particiona posições possíveis do canto do template, não a
+            # imagem: cada região inclui apenas janelas sem tocar BLOCKs.
+            positions = [(x1, y1, x2 - template_width + 1, y2 - template_height + 1)]
+            image_height, image_width = image.shape[:2]
+            for bx, by, bw, bh in self.block_regions:
+                forbidden = (
+                    int(bx * image_width) - template_width + 1,
+                    int(by * image_height) - template_height + 1,
+                    math.ceil((bx + bw) * image_width),
+                    math.ceil((by + bh) * image_height),
+                )
+                remaining = []
+                for left, top, right, bottom in positions:
+                    ix1, iy1 = max(left, forbidden[0]), max(top, forbidden[1])
+                    ix2, iy2 = min(right, forbidden[2]), min(bottom, forbidden[3])
+                    if ix1 >= ix2 or iy1 >= iy2:
+                        remaining.append((left, top, right, bottom))
+                        continue
+                    remaining.extend(
+                        rect for rect in (
+                            (left, top, right, iy1), (left, iy2, right, bottom),
+                            (left, iy1, ix1, iy2), (ix2, iy1, right, iy2),
+                        ) if rect[0] < rect[2] and rect[1] < rect[3]
+                    )
+                positions = remaining
+            hits = []
+            for left, top, right, bottom in positions:
+                hits.extend(self._match(
+                    image, template_image, mask, min_threshold,
+                    (left, top, right + template_width - 1, bottom + template_height - 1),
+                    max_matches,
+                ))
+            hits.sort(key=lambda hit: hit[2], reverse=True)
+            selected = []
+            for hit in hits:
+                if not any(
+                    abs(hit[0] - other[0]) < template_width * 0.5
+                    and abs(hit[1] - other[1]) < template_height * 0.5
+                    for other in selected
+                ):
+                    selected.append(hit)
+                    if len(selected) >= max_matches:
+                        break
+            return selected
 
         region = image[y1:y2, x1:x2]
 
@@ -2331,22 +2381,6 @@ class Detector:
             posinf=0.0,
             neginf=0.0,
         )
-
-        # Invalida toda posição na qual o retângulo do template tocaria
-        # um BLOCK. Isso vale tanto para a busca grossa quanto para a fina.
-        result_height, result_width = result.shape[:2]
-        image_height, image_width = image.shape[:2]
-        for block_x, block_y, block_width, block_height in self.block_regions:
-            bx1 = int(block_x * image_width)
-            by1 = int(block_y * image_height)
-            bx2 = int(math.ceil((block_x + block_width) * image_width))
-            by2 = int(math.ceil((block_y + block_height) * image_height))
-            rx1 = max(0, bx1 - template_width + 1 - x1)
-            ry1 = max(0, by1 - template_height + 1 - y1)
-            rx2 = min(result_width, bx2 - x1)
-            ry2 = min(result_height, by2 - y1)
-            if rx1 < rx2 and ry1 < ry2:
-                result[ry1:ry2, rx1:rx2] = -1.0
 
         # Máximo bruto antes do corte — é a informação que o threshold
         # esconde e que o diagnóstico precisa.
@@ -2685,7 +2719,8 @@ class Detector:
 
             # Em food o nome do item vale mais que a categoria (são 70+
             # templates numa categoria só); nas outras a categoria já diz tudo.
-            if category == "food":
+            from_model = detection.get("name", "").startswith("modelo:")
+            if category == "food" and not from_model:
                 rotulo = self._base_name(detection["name"]).removesuffix(".png")
             else:
                 rotulo = category
@@ -2695,8 +2730,9 @@ class Detector:
                 for linha in (
                     self._layout_label(detection),
                     (
-                        f"{rotulo} "
-                        f"F:{detection['confidence']:.2f} "
+                        f"{rotulo} IA:{detection['confidence']:.2f}"
+                        if from_model else
+                        f"{rotulo} F:{detection['confidence']:.2f} "
                         f"C:{detection.get('color_similarity', 0.0):.2f}"
                     ),
                 )
@@ -2730,6 +2766,13 @@ class Detector:
             return output
 
         y = 50
+
+        mode = stats.get("detector_mode", "templates")
+        self._hud_text(output, "MODO: IA" if mode == "ai" else "MODO: TEMPLATES", y, self.HUD_NEUTRAL)
+        y += 40
+        if mode == "ai" and stats.get("model"):
+            self._hud_text(output, str(stats["model"])[:70], y, self.HUD_NEUTRAL, scale=0.5)
+            y += 30
 
         # Dois números distintos de propósito: a captura pode ir a 60 fps
         # enquanto o detector faz 3 passadas por segundo — quem manda na
@@ -2852,11 +2895,12 @@ class Detector:
                 # categoria a passada olha de propósito uma fração da lista,
                 # e só "12" pareceria detector quebrado.
                 na_lista = stats.get("searchable")
+                search_label = "regioes" if mode == "ai" else "templates"
 
                 label += (
-                    f"  ({procurados} templates)"
+                    f"  ({procurados} {search_label})"
                     if not na_lista
-                    else f"  ({procurados}/{na_lista} templates)"
+                    else f"  ({procurados}/{na_lista} {search_label})"
                 )
 
             self._hud_text(

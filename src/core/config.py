@@ -294,9 +294,20 @@ CATEGORY_ROIS = {
     "engine": (0.0, 0.0, 1.0, 0.10),
 }
 
-# Regiões (x, y, largura, altura) proporcionais à tela nas quais nenhum
-# template pode ser reconhecido. Perfis do painel substituem esta lista.
+# Regiões (x, y, largura, altura) proporcionais à tela, excluídas apenas
+# para BLOCK_CATEGORIES. Perfis do painel substituem esta lista.
 BLOCK_REGIONS = []
+BLOCK_CATEGORIES = frozenset({"box", "food", "new_point", "up_food"})
+
+DETECTOR_MODE = "templates"
+AI_MODEL = "auto"
+AI_SOURCE = "templates"
+AI_MIN_CONFIDENCE = 0.60
+
+# Total de recuperações por execução; uma parada manual nunca é recuperada.
+BOT_RESTART_LIMIT = 3
+BOT_RESTART_DELAY = 3.0
+VISION_FAILURE_LIMIT = 5
 
 # Guarda o último recorte aprovado; defaults já cobertos são atualizados
 # apenas na thread de aprendizado, sem busca duplicada na visão principal.

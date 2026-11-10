@@ -4,15 +4,11 @@ import argparse
 import os
 from pathlib import Path
 
+from core.processes import process_alive
+
 
 def _alive(pid):
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
+    return process_alive(pid)
 
 
 def _claim_pid(path):

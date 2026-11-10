@@ -55,6 +55,13 @@ Permite que o bot controle o jogo usando as detecções da IA. Os comandos ao vi
 
 Nos comandos ao vivo, adicione `--device SERIAL` para escolher o aparelho ou `--headless` para executar sem janela. Encerre com `Ctrl+C`.
 
+No **painel web**, abra as configurações do aparelho e escolha **Modelo de IA**
+em **Modo de reconhecimento**. Selecione o modelo (ou automático por resolução),
+a fonte de regiões e a confiança mínima. Salve e reinicie. A aba **Visão**
+transmite as detecções do modelo com o mesmo controle de pausa e logs do bot
+por templates. O modelo é carregado pela resolução real da captura no modo
+automático e atualizado entre frames quando houver uma nova publicação.
+
 ## Relatórios e limpeza
 
 Cada treino gera um resumo JSON em `IA/training_reports/`, com data, duração, resultado, parâmetros, imagens usadas, categorias/classes e contagens, extração e métricas de validação por classe. O relatório inclui macro F1, recall por classe e a decisão de promoção. Não lista IDs individuais nem despeja tabelas extensas no terminal. Os metadados do modelo guardam o necessário para carregá-lo e consultar seu resumo de treino.

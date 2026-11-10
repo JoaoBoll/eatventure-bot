@@ -26,8 +26,9 @@ WINDOW_NAME = "BLOCK Selector"
 
 
 class BlockSelector(TemplateSelector):
-    def __init__(self, serial, regions=None):
+    def __init__(self, serial, regions=None, state_root=None):
         self.regions = [tuple(region) for region in (regions or [])]
+        self.state_root = state_root
         super().__init__(serial)
 
     def _render(self):
@@ -81,13 +82,14 @@ class BlockSelector(TemplateSelector):
         print(f"BLOCK {removed} removido.")
 
     def save(self):
-        save_block_regions(self.capture.serial, self.regions)
+        save_block_regions(self.capture.serial, self.regions, self.state_root)
         print(f"{len(self.regions)} área(s) BLOCK salva(s) para {self.capture.serial}.")
 
     def select(self):
         cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_AUTOSIZE)
         cv2.setMouseCallback(WINDOW_NAME, self.mouse_callback)
         print("\nBLOCK SELECTOR")
+        print("Afeta somente: box, food, new_point e up_food.")
         print("Arraste com o botão esquerdo para adicionar várias áreas.")
         print("Botão direito, U ou Backspace = remover a última área")
         print("Enter ou S = salvar todas | R ou F5 = atualizar frame | Esc = sair\n")
@@ -112,6 +114,7 @@ class BlockSelector(TemplateSelector):
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Seleciona áreas BLOCK na tela do device")
     parser.add_argument("--device", metavar="SERIAL", help="serial exibido por adb devices")
+    parser.add_argument("--state-dir", type=Path, help="pasta local usada pelo painel (padrão: local/)")
     args = parser.parse_args(argv)
     log.setup(LOG_LEVEL)
     try:
@@ -119,7 +122,7 @@ def main(argv=None):
     except KeyboardInterrupt:
         print("Cancelado.")
         return 1
-    selector = BlockSelector(serial, load_block_regions(serial))
+    selector = BlockSelector(serial, load_block_regions(serial, args.state_dir), args.state_dir)
     selector.capture_screen()
     selector.select()
     return 0
