@@ -1,6 +1,7 @@
 """Worker thread: detector assíncrono com filtro de categorias, sem letterbox, espera bloqueante."""
 
 import threading
+from core.i18n import t
 import time
 
 from core import log
@@ -215,8 +216,7 @@ class VisionWorker:
         self._error_kinds.add(type(error).__name__)
 
         logger.exception(
-            "Falha na passada do detector — %s. A thread "
-            "continua; esta mensagem não repete.",
+            t("messages.detector_pass_failed"),
             self.last_error,
         )
 
@@ -392,7 +392,7 @@ class EngineWorker:
                     exhaustive=True,
                 )
             except Exception:
-                logger.exception("Falha procurando o template engine.")
+                logger.exception(t("messages.engine_scan_failed"))
                 detections = []
             with self._condition:
                 self._result = token

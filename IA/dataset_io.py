@@ -12,6 +12,7 @@ for _candidato in (
 ):
     if _candidato not in sys.path:
         sys.path.insert(0, _candidato)
+from core.i18n import t
 
 # Convenção de pastas mora num lugar só, com quem escreve (src/dataset).
 from dataset.layout import (  # noqa: E402
@@ -90,10 +91,7 @@ def read_index(dataset_root):
     if not raizes:
 
         raise FileNotFoundError(
-            f"Nenhum índice ({INDEX_NAME}) encontrado em {raiz} "
-            f"nem em {raiz / DATA_DIRNAME}/<resolucao>/\n"
-            "Ligue DATASET_SAVE em src/core/config.py e rode "
-            "o bot para gerar amostras."
+            t("messages.dataset_index_missing", INDEX_NAME=INDEX_NAME, raiz=raiz, value_3=raiz / DATA_DIRNAME)
         )
 
     registros = []
@@ -203,7 +201,7 @@ def split_groups(registros, train_ratio=0.8, mode="phash", seed=42):
     if not 0.05 <= train_ratio <= 0.95:
 
         raise ValueError(
-            "train_ratio deve ficar entre 0.05 e 0.95"
+            t("messages.invalid_train_ratio")
         )
 
     grupos = defaultdict(list)

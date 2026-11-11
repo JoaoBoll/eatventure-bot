@@ -16,6 +16,8 @@ ROOT = Path(__file__).resolve().parent.parent
 for candidato in (str(ROOT), str(ROOT / "src"), str(ROOT / "IA")):
     if candidato not in sys.path:
         sys.path.insert(0, candidato)
+from core.cli import ArgumentParser, configure_locale
+from core.i18n import t
 
 DEFAULT_DATASET = ROOT / "dataset"
 DEFAULT_MODEL = ROOT / "IA" / "model.joblib"
@@ -31,7 +33,7 @@ def _parse_resolution(value):
     if value == "legacy" or re.fullmatch(r"[1-9]\d*x[1-9]\d*", value):
         return value
     raise argparse.ArgumentTypeError(
-        "Informe a resolução como LARGURAxALTURA ou use legacy."
+        t("messages.invalid_resolution")
     )
 
 
@@ -50,9 +52,7 @@ def check_dependencies():
 
     if faltando:
         raise SystemExit(
-            "Faltam dependências de treino.\n\n"
-            f"  {sys.executable} -m pip install "
-            f"{' '.join(faltando)}\n"
+            t("messages.missing_training_dependencies", value_1=sys.executable, value_2=' '.join(faltando))
         )
 
 
@@ -63,7 +63,7 @@ def progress(feito, total, fase):
 
     if not sys.stdout.isatty():
         if feito == total or feito % 1000 == 0:
-            print(f"{fase}: {feito}/{total}", flush=True)
+            print(t("messages.training_progress", fase=fase, feito=feito, total=total), flush=True)
         return
 
     fracao = feito / total
@@ -111,7 +111,7 @@ def extract_category_rows(
     negativos_por_frame,
     tamanhos,
     label_source="all",
-    fase="extraindo features",
+    fase=t("messages.features_phase"),
 ):
     """(X, y, donos, info) — donos[i] é o id da amostra que gerou a linha i.
 
@@ -257,8 +257,7 @@ def category_dataset(
         if cache is not None:
             if not cache.valido():
                 raise RuntimeError(
-                    f"Cache incompatível preservado em {cache.dir}. "
-                    "Restaure as configurações originais ou escolha outro --cache-root."
+                    t("messages.cache_incompatible_warning", value_1=cache.dir)
                 )
             conhecidos = cache.ids()
             metadados.update(cache.ensure_metadata(disponiveis[shard]))
@@ -275,7 +274,7 @@ def category_dataset(
                 negativos_por_frame,
                 tamanhos,
                 label_source=label_source,
-                fase=f"extraindo {shard} ({len(novos)} novas)",
+                fase=t("messages.shard_features_phase", shard=shard, count=len(novos)),
             )
 
             info["ilegiveis"] += extra["ilegiveis"]
@@ -298,7 +297,7 @@ def category_dataset(
         partes.append((X, y, chaves))
 
     if not partes:
-        raise SystemExit("Nenhuma amostra para montar o dataset.")
+        raise SystemExit(t("messages.training_dataset_empty"))
 
     X = np.concatenate([p[0] for p in partes])
     y = np.concatenate([p[1] for p in partes])
@@ -306,7 +305,7 @@ def category_dataset(
 
     if len(X) == 0:
         raise SystemExit(
-            "Nenhum recorte válido. Imagens ilegíveis ou caixas com dimensão zero."
+            t("messages.valid_crops_missing")
         )
 
     return X, y, donos, info
@@ -338,10 +337,10 @@ def build_action_dataset(registros):
                 donos.append(record_key(registro))
 
         if indice % 25 == 0 or indice == total:
-            progress(indice, total, "lendo imagens")
+            progress(indice, total, t("messages.reading_images"))
 
     if not linhas:
-        raise SystemExit("Nenhuma imagem legível.")
+        raise SystemExit(t("messages.readable_images_missing"))
 
     X = np.asarray(linhas, dtype=np.float32)
     assert X.shape[1] == SCREEN_FEATURE_SIZE
@@ -377,7 +376,7 @@ def validation_metrics(clf, X_teste, y_teste):
 
 def promotion_decision(metricas, args):
     if getattr(args, "allow_unsafe_promotion", False):
-        return True, ["promoção forçada pela linha de comando"]
+        return True, [t("messages.forced_promotion")]
 
     min_macro_f1 = getattr(args, "min_macro_f1", 0.55)
     min_critical_recall = getattr(args, "min_critical_recall", 0.40)
@@ -385,7 +384,7 @@ def promotion_decision(metricas, args):
     reasons = []
     if metricas["macro_f1"] < min_macro_f1:
         reasons.append(
-            f"macro F1 {metricas['macro_f1']:.2%} abaixo de {min_macro_f1:.2%}"
+            t("messages.low_macro_f1", score=metricas['macro_f1'], minimum=min_macro_f1)
         )
     classes = metricas["class_metrics"]
     critical_present = [
@@ -397,7 +396,7 @@ def promotion_decision(metricas, args):
     ]
     if low_recall:
         reasons.append(
-            "recall insuficiente nas categorias críticas: " + ", ".join(low_recall)
+            t("messages.low_critical_recall", categories=", ".join(low_recall))
         )
     return not reasons, reasons
 
@@ -431,7 +430,7 @@ def _train_one_resolution(args):
                 registros = [r for r in registros if record_key(r) not in treinados]
                 minimo = getattr(args, "min_samples", 10000)
                 if len(registros) < minimo:
-                    print(f"Treino automático aguardando: {len(registros)}/{minimo} amostras novas.")
+                    print(t("messages.training_waiting_samples", value_1=len(registros), minimo=minimo))
                     return 0
                 batch_size = getattr(args, "batch_size", None)
                 if batch_size is not None:
@@ -440,7 +439,7 @@ def _train_one_resolution(args):
                 registros = registros[:args.limit]
             return _train_snapshot(args, raiz, registros, snapshot, aviso)
     except BlockingIOError:
-        print("Já existe um treino ativo para este dataset.")
+        print(t("messages.training_already_active"))
         return 0 if automatico else 1
     except (Exception, SystemExit, KeyboardInterrupt) as error:
         return _failed_training(args, error)
@@ -480,8 +479,8 @@ def _failed_training(args, error, execucao=None):
         "message": str(error),
     }
     execucao.finish("interrupted" if isinstance(error, KeyboardInterrupt) else "failed")
-    print(f"Treino não concluído: {error}")
-    print(f"Relatório: {execucao.path}")
+    print(t("messages.training_failed", error=error))
+    print(t("messages.training_report_path", value_1=execucao.path))
     return 130 if isinstance(error, KeyboardInterrupt) else 1
 
 
@@ -516,20 +515,20 @@ def _fit_snapshot(args, raiz, registros, snapshot, aviso, execucao):
     compativel_limpeza = args.kind == "category" and not args.no_cache
     pedido_limpeza = getattr(args, "cleanup", None)
     if pedido_limpeza is True and not compativel_limpeza:
-        raise ValueError("--cleanup exige --kind category e cache habilitado.")
+        raise ValueError(t("messages.cleanup_requirements"))
     if automatico and (not compativel_limpeza or pedido_limpeza is False):
-        raise ValueError("O treino automático exige categorias, cache e limpeza habilitados.")
+        raise ValueError(t("messages.automatic_training_requirements"))
     if automatico and args.limit is not None:
-        raise ValueError("Use --batch-size para limitar lotes automáticos; --limit é apenas manual.")
+        raise ValueError(t("messages.automatic_batch_limit_required"))
     limpar = compativel_limpeza if pedido_limpeza is None else pedido_limpeza
     batch_size = getattr(args, "batch_size", None)
     if (
         getattr(args, "min_samples", 10000) <= 0
         or (batch_size is not None and batch_size <= 0)
     ):
-        raise ValueError("--min-samples e --batch-size devem ser positivos.")
+        raise ValueError(t("messages.invalid_training_batch"))
     if args.kind == "action" and Path(args.model_out).resolve() == DEFAULT_MODEL.resolve():
-        raise ValueError("--kind action exige --model-out alternativo para preservar o modelo do bot.")
+        raise ValueError(t("messages.action_model_output_required"))
 
     selecionadas = {record_key(r) for r in registros}
     execucao.data["dataset_root"] = str(raiz)
@@ -582,7 +581,7 @@ def _fit_snapshot(args, raiz, registros, snapshot, aviso, execucao):
     }
     execucao.save()
     if len(efetivas) < 20:
-        raise ValueError(f"Amostras efetivamente utilizáveis insuficientes: {len(efetivas)} (mínimo 20).")
+        raise ValueError(t("messages.insufficient_usable_samples", value_1=len(efetivas)))
 
     todos_registros = [metadados[k] for k in sorted(efetivas)]
     treino, teste, divisao = split_groups(
@@ -595,12 +594,11 @@ def _fit_snapshot(args, raiz, registros, snapshot, aviso, execucao):
     X_treino, y_treino = X[~mascara_teste], y[~mascara_teste]
     X_teste, y_teste = X[mascara_teste], y[mascara_teste]
     if not len(X_treino) or not len(X_teste):
-        raise ValueError("O split por grupo precisa de conjuntos de treino e validação não vazios.")
+        raise ValueError(t("messages.empty_training_split"))
     if len(set(y_treino.tolist())) < 2:
-        raise ValueError("O conjunto de treino contém menos de duas categorias.")
+        raise ValueError(t("messages.insufficient_categories"))
 
-    print(f"Avaliação: {len(ids_treino)} frames/{len(X_treino)} recortes no treino, "
-          f"{len(ids_teste)} frames/{len(X_teste)} recortes na validação.")
+    print(t("messages.evaluation_summary", value_1=len(ids_treino), value_2=len(X_treino), value_3=len(ids_teste), value_4=len(X_teste)))
     avaliador = build_classifier(args.trees, args.seed, args.jobs)
     avaliador.fit(X_treino, y_treino)
     metricas = validation_metrics(avaliador, X_teste, y_teste)
@@ -619,8 +617,7 @@ def _fit_snapshot(args, raiz, registros, snapshot, aviso, execucao):
             "estado + categorias (teto)": ceiling_state_categories_on_holdout(baseline_train, baseline_test),
         }
     print(
-        f"Validação: acurácia {metricas['accuracy']:.2%}; "
-        f"macro F1 {metricas['macro_f1']:.2%}."
+        t("messages.validation_summary", value_1=metricas['accuracy'], value_2=metricas['macro_f1'])
     )
     execucao.data["evaluation"] = {
         "accuracy": metricas["accuracy"],
@@ -635,7 +632,7 @@ def _fit_snapshot(args, raiz, registros, snapshot, aviso, execucao):
     }
     execucao.save()
 
-    print(f"Ajuste final: {len(efetivas)} frames/{len(X)} recortes, incluindo validação e replay.")
+    print(t("messages.final_fit_summary", value_1=len(efetivas), value_2=len(X)))
     modelo = build_classifier(args.trees, args.seed, args.jobs)
     modelo.fit(X, y)
     classes = dict(sorted(Counter(str(label) for label in y).items()))
@@ -692,7 +689,7 @@ def _fit_snapshot(args, raiz, registros, snapshot, aviso, execucao):
     if promoted:
         activate_model(execucao)
     else:
-        print("Modelo salvo como candidato; ponteiro ativo preservado: " + "; ".join(promotion_reasons))
+        print(t("messages.model_candidate_saved") + "; ".join(promotion_reasons))
     execucao.data["model_activated"] = promoted
     execucao.finish("success")
 
@@ -720,25 +717,22 @@ def _fit_snapshot(args, raiz, registros, snapshot, aviso, execucao):
             **execucao.data["cleanup"], "status": "failed",
             "error": f"{type(error).__name__}: {error}",
         }
-        print(f"Modelo publicado; limpeza/registro do lote não concluído: {error}")
+        print(t("messages.published_model_cleanup_failed", error=error))
     execucao.finish("success")
     final_fit = execucao.data["training"]
     print(
-        f"Treino concluído: {final_fit['images_used']} imagens, "
-        f"{final_fit['category_count']} categorias, "
-        f"{final_fit['class_count']} classes; validação "
-        f"{execucao.data['validation']['accuracy']:.2%}."
+        t("messages.training_completed", value_1=final_fit['images_used'], value_2=final_fit['category_count'], value_3=final_fit['class_count'], value_4=execucao.data['validation']['accuracy'])
     )
-    print(f"Modelo: {execucao.data['model']['model']}")
-    print(f"Resumo: {execucao.path}")
+    print(t("messages.published_model_path", value_1=execucao.data['model']['model']))
+    print(t("messages.training_summary_path", value_1=execucao.path))
     return 0
 
 def parse_args(argv=None):
+    configure_locale(argv)
 
-    parser = argparse.ArgumentParser(
+    parser = ArgumentParser(
         description=(
-            "Treina modelos independentes por resolução; "
-            "use --combine-resolutions para juntá-las."
+            t("messages.training_description")
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -747,13 +741,13 @@ def parse_args(argv=None):
         "--kind",
         choices=("category", "action"),
         default="category",
-        help="category: recorte -> categoria | action: tela -> ação (comparação)",
+        help=t("messages.training_kind_help"),
     )
 
     parser.add_argument(
         "--dataset-root",
         default=str(DEFAULT_DATASET),
-        help="pasta do dataset (padrão: dataset/) — todas as resoluções dentro dela",
+        help=t("messages.training_dataset_help"),
     )
 
     parser.add_argument(
@@ -761,67 +755,66 @@ def parse_args(argv=None):
         choices=("phash", "session"),
         default="session",
         help=(
-            "agrupamento do split: session (padrão; partida inteira no mesmo lado) "
-            "ou phash (somente quadros idênticos no mesmo lado)"
+            t("messages.split_help")
         ),
     )
 
     parser.add_argument(
         "--cache-root",
         default=None,
-        help="pasta do cache de features (padrão: <dataset>/cache)",
+        help=t("messages.cache_root_help"),
     )
 
     parser.add_argument(
         "--no-cache",
         action="store_true",
-        help="extrai tudo do zero, sem ler nem gravar o cache",
+        help=t("messages.no_cache_help"),
     )
 
     parser.add_argument(
         "--automatic", action="store_true",
-        help="treina apenas quando há amostras novas suficientes",
+        help=t("messages.automatic_help"),
     )
     parser.add_argument(
         "--resolution",
         type=_parse_resolution,
         default=None,
-        help="treina somente os registros desta resolução (ex.: 1080x2400)",
+        help=t("messages.resolution_help"),
     )
     parser.add_argument(
         "--combine-resolutions",
         action="store_true",
-        help="opta por treinar registros de todas as resoluções em um único modelo",
+        help=t("messages.combine_resolutions_help"),
     )
     parser.add_argument(
         "--min-samples", type=int, default=10000,
-        help="mínimo de frames novos para iniciar treino automático (padrão: 10000)",
+        help=t("messages.min_samples_help"),
     )
     parser.add_argument(
         "--batch-size", type=int, default=None,
-        help="máximo opcional de frames novos por lote automático (padrão: sem limite)",
+        help=t("messages.batch_size_help"),
     )
     limpeza = parser.add_mutually_exclusive_group()
     limpeza.add_argument(
         "--cleanup", dest="cleanup", action="store_true", default=None,
-        help="limpa os índices/imagens consumidos após sucesso (padrão com categorias e cache)",
+        help=t("messages.cleanup_help"),
     )
     limpeza.add_argument(
         "--keep-data", dest="cleanup", action="store_false", default=None,
-        help="preserva índices e imagens após o treino manual",
+        help=t("messages.keep_data_help"),
     )
 
     parser.add_argument(
         "--model-out",
         default=None,
-        help="nome de referência do modelo; publica versão em models/ e ponteiro .current.json",
+        help=t("messages.model_output_help"),
     )
 
     parser.add_argument(
         "--test-ratio",
         type=float,
         default=0.2,
-        help="fração do dataset para teste (padrão: 0.2)",
+        help=t("messages.test_ratio_help"),
     )
 
     parser.add_argument(
@@ -829,22 +822,21 @@ def parse_args(argv=None):
         nargs="*",
         default=None,
         metavar="RESULTADO",
-        help="filtrar amostras: changed, unchanged, unknown, negative",
+        help=t("messages.outcome_filter_help"),
     )
 
     parser.add_argument(
         "--negatives",
         type=int,
         default=2,
-        help="recortes de fundo por frame (padrão: 2)",
+        help=t("messages.negatives_help"),
     )
     parser.add_argument(
         "--label-source",
         choices=("confirmed", "all"),
         default="all",
         help=(
-            "all usa todas as caixas do matcher de templates; "
-            "confirmed usa só o alvo acionado com resultado changed"
+            t("messages.label_source_help")
         ),
     )
 
@@ -852,59 +844,59 @@ def parse_args(argv=None):
         "--trees",
         type=int,
         default=200,
-        help="árvores da floresta (padrão: 200)",
+        help=t("messages.tree_count_help"),
     )
 
     parser.add_argument(
         "--jobs",
         type=int,
         default=-1,
-        help="núcleos (padrão: -1, todos)",
+        help=t("messages.job_count_help"),
     )
 
     parser.add_argument(
         "--limit",
         type=int,
         default=None,
-        help="usa só as N primeiras amostras (ensaio rápido)",
+        help=t("messages.training_limit_help"),
     )
 
     parser.add_argument(
         "--seed",
         type=int,
         default=42,
-        help="semente (padrão: 42)",
+        help=t("messages.seed_help"),
     )
     parser.add_argument(
         "--min-macro-f1",
         type=float,
         default=0.55,
-        help="macro F1 mínimo para ativar a versão publicada (padrão: 0.55)",
+        help=t("messages.min_macro_f1_help"),
     )
     parser.add_argument(
         "--min-critical-recall",
         type=float,
         default=0.40,
-        help="recall mínimo das classes críticas presentes no holdout (padrão: 0.40)",
+        help=t("messages.min_critical_recall_help"),
     )
     parser.add_argument(
         "--critical-categories",
         nargs="*",
         default=["renovate", "fly"],
         metavar="CATEGORIA",
-        help="classes cujo recall bloqueia promoção quando aparecem na validação",
+        help=t("messages.critical_categories_help"),
     )
     parser.add_argument(
         "--allow-unsafe-promotion",
         action="store_true",
-        help="ativa o candidato mesmo sem atingir os critérios de validação",
+        help=t("messages.unsafe_promotion_help"),
     )
 
     args = parser.parse_args(argv)
     if args.resolution is not None and args.combine_resolutions:
-        parser.error("--resolution e --combine-resolutions são incompatíveis.")
+        parser.error(t("messages.incompatible_resolution_options"))
     if not 0 <= args.min_macro_f1 <= 1 or not 0 <= args.min_critical_recall <= 1:
-        parser.error("Os mínimos de promoção devem ficar entre 0 e 1.")
+        parser.error(t("messages.invalid_promotion_thresholds"))
     return args
 
 

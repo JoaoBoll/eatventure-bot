@@ -5,7 +5,10 @@ const sessionKey = "eatventure.dashboard.token";
 const adbAddressKey = "eatventure.dashboard.adbAddress";
 const themeKey = "eatventure.dashboard.theme";
 const visionDetailsKey = "eatventure.dashboard.visionDetails";
-const numberFormat = new Intl.NumberFormat("pt-BR");
+const localeKey = "eatventure.dashboard.locale";
+let locale = readLocale();
+let numberFormat = new Intl.NumberFormat(locale);
+let messages = JSON.parse($("locale-catalog").textContent);
 const state = { devices: [], schema: [], templates: { total: 0, categories: [] }, training: {}, models: [] };
 const selected = new Set();
 const busyDevices = new Set();
@@ -56,12 +59,93 @@ let datasetTotal = 0;
 let datasetGeneration = 0;
 let datasetUrls = [];
 let datasetPageLoading = false;
+let trainingData = null;
+let trainingLoading = false;
+let trainingSubmitting = false;
+let trainingSettingsDirty = false;
+let trainingSettingsSnapshot = "";
+let trainingGeneration = 0;
 const visionReleases = new Map();
 const MAX_VISION_FRAME_BYTES = 5 * 1024 * 1024;
 const MAX_VISION_HEADER_BYTES = 8 * 1024;
 const MAX_LOG_LINES = 500;
 const MAX_LOG_BYTES = 512 * 1024;
 const MAX_LOG_LINE_BYTES = 4 * 1024;
+
+function t(key, values = {}) {
+  const [surface, name] = key.split(".", 2);
+  const text = messages[surface]?.[name];
+  if (typeof text !== "string") throw new Error(messages.web.missing_locale_key.replace("{key}", key));
+  return text.replace(/\{(\w+)\}/g, (_, name) => values[name] ?? `{${name}}`);
+}
+
+async function loadMessages() {
+  const language = locale;
+  const response = await fetch(`/locales/${encodeURIComponent(language)}.json`, { cache: "no-store" });
+  if (!response.ok) throw new Error(t("web.locale_load_error"));
+  const catalog = await response.json();
+  if (language !== locale) return false;
+  messages = catalog;
+  document.documentElement.lang = language;
+  numberFormat = new Intl.NumberFormat(language);
+  translateStaticContent();
+  return true;
+}
+
+function translateStaticContent() {
+  document.querySelectorAll("[data-i18n]").forEach((element) => {
+    element.textContent = t(element.dataset.i18n);
+  });
+  for (const attribute of ["aria-label", "title", "placeholder", "alt"]) {
+    document.querySelectorAll(`[data-i18n-${attribute}]`).forEach((element) => {
+      element.setAttribute(attribute, t(element.getAttribute(`data-i18n-${attribute}`)));
+    });
+  }
+}
+
+function displayCode(surface, code) {
+  return Object.hasOwn(messages[surface] || {}, code) ? t(`${surface}.${code}`) : code;
+}
+
+function readLocale() {
+  try { const value = localStorage.getItem(localeKey) || document.documentElement.lang; return value === "en-US" ? "en-US" : "pt-BR"; }
+  catch { return document.documentElement.lang || "pt-BR"; }
+}
+
+function renderLanguageSwitch() {
+  for (const button of $("language-switch").querySelectorAll("[data-locale]")) {
+    button.setAttribute("aria-pressed", String(button.dataset.locale === locale));
+  }
+}
+
+async function setLocale(value) {
+  const previous = document.documentElement.lang;
+  locale = value === "en-US" ? "en-US" : "pt-BR";
+  try {
+    if (!await loadMessages()) return;
+  } catch {
+    locale = previous;
+    renderLanguageSwitch();
+    toast(t("web.locale_load_error"), true);
+    return;
+  }
+  try { localStorage.setItem(localeKey, locale); } catch { /* A escolha permanece nesta página. */ }
+  renderLanguageSwitch();
+  renderDevices();
+  setTheme(document.documentElement.dataset.theme);
+  if (detailId) {
+    renderProfile();
+    renderItems();
+    renderBlockRegions();
+    renderDetailStatus();
+    updatePending();
+    renderVision(visionMode);
+    renderLogLines();
+    $("log-pause").textContent = logPaused ? t("web.resume") : t("web.pause");
+  }
+  if ($("training-dialog").open && trainingData) renderTraining();
+  if (authenticated) await refreshState();
+}
 
 function readToken() {
   try { return sessionStorage.getItem(sessionKey) || ""; } catch { return ""; }
@@ -87,7 +171,7 @@ function setTheme(theme) {
   const toggle = $("theme-toggle");
   toggle.setAttribute("aria-pressed", String(dark));
   toggle.textContent = dark ? "☀" : "☾";
-  const label = dark ? "Ativar tema claro" : "Ativar tema escuro";
+  const label = dark ? t("web.enable_light_theme") : t("web.enable_dark_theme");
   toggle.setAttribute("aria-label", label);
   toggle.title = label;
   try { localStorage.setItem(themeKey, dark ? "dark" : "light"); } catch { /* O tema permanece nesta página. */ }
@@ -144,6 +228,7 @@ function showError(id, message) {
 }
 
 function logout(expired = false) {
+  if ($("training-dialog").open) closeTraining(true);
   if ($("dataset-dialog").open) closeDatasets();
   closeTemplateSelector();
   stopVision();
@@ -160,7 +245,7 @@ function logout(expired = false) {
   $("session-loading").hidden = true;
   $("login-form").hidden = false;
   $("token").value = "";
-  $("login-error").textContent = expired ? "Sessão expirada ou token inválido. Entre novamente." : "";
+  $("login-error").textContent = expired ? t("web.session_expired") : "";
   $("token").focus();
 }
 
@@ -170,36 +255,36 @@ async function api(path, options = {}) {
   try {
     const response = await fetch(path, {
       ...options,
-      headers: { Accept: "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(options.body ? { "Content-Type": "application/json" } : {}), ...options.headers },
+      headers: { Accept: "application/json", "X-Eatventure-Locale": locale, ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(options.body ? { "Content-Type": "application/json" } : {}), ...options.headers },
       signal: controller.signal,
       cache: "no-store"
     });
     if (response.status === 401) {
       if (authenticated) logout(true);
-      throw new Error("Token de acesso inválido.");
+      throw new Error(t("web.invalid_token"));
     }
     const body = await response.json().catch(() => ({}));
     if (!response.ok) {
-      const detail = body.detail || body.error || `O servidor retornou ${response.status}.`;
+      const detail = body.detail || body.error || t("web.server_status", { status: response.status });
       throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
     }
     return body;
   } catch (error) {
-    if (error.name === "AbortError") throw new Error("O servidor demorou para responder. Tente atualizar.");
-    if (error instanceof TypeError) throw new Error("Não foi possível acessar o servidor. Verifique a conexão.");
+    if (error.name === "AbortError") throw new Error(t("web.server_timeout"));
+    if (error instanceof TypeError) throw new Error(t("web.server_unavailable"));
     throw error;
   } finally { clearTimeout(timeout); }
 }
 
 async function apiBlob(path) {
   const response = await fetch(path, {
-    headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    headers: { "X-Eatventure-Locale": locale, ...(token ? { Authorization: `Bearer ${token}` } : {}) },
     cache: "no-store"
   });
-  if (response.status === 401) { logout(true); throw new Error("Token de acesso inválido."); }
+  if (response.status === 401) { logout(true); throw new Error(t("web.invalid_token")); }
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
-    throw new Error(body.detail || `O servidor retornou ${response.status}.`);
+    throw new Error(body.detail || t("web.server_status", { status: response.status }));
   }
   return response.blob();
 }
@@ -215,7 +300,7 @@ async function login(event) {
   $("login-error").textContent = "";
   try {
     const session = await api("/api/session");
-    if (!session.authenticated) throw new Error("Token de acesso inválido.");
+    if (!session.authenticated) throw new Error(t("web.invalid_token"));
     await enterApp(session);
   } catch (error) {
     rememberToken("");
@@ -242,7 +327,7 @@ async function bootstrapSession() {
   $("session-loading").hidden = false;
   $("session-spinner").hidden = false;
   $("session-retry").hidden = true;
-  $("session-status").textContent = "Conectando ao servidor…";
+  $("session-status").textContent = t("web.connecting");
   try {
     const session = await api("/api/session");
     if (session.authenticated || session.auth_required === false) await enterApp(session);
@@ -251,7 +336,7 @@ async function bootstrapSession() {
       rememberToken("");
       $("session-loading").hidden = true;
       $("login-form").hidden = false;
-      $("login-error").textContent = invalid ? "Token de acesso inválido. Entre novamente." : "";
+      $("login-error").textContent = invalid ? t("web.invalid_token_retry") : "";
       $("token").focus();
     }
   } catch (error) {
@@ -265,13 +350,13 @@ function deviceById(id) { return state.devices.find((device) => device.id === id
 function deviceName(device) { return device.name || device.profile?.name || device.model || device.serial || device.id; }
 function connected(device) { return device.connected === true; }
 function statusOf(device) {
-  if (device.status === "stopping") return { key: "stopping", label: "Encerrando…" };
-  if (device.running) return { key: "running", label: "Em execução" };
-  if (device.adb_state === "unauthorized") return { key: "error", label: "Autorize no Android" };
-  if (device.status === "error") return { key: "error", label: "Encerrado com erro" };
-  if (device.status === "stopped" && device.session_id) return { key: "stopped", label: "Parado" };
-  if (connected(device)) return { key: "ready", label: "Pronto para iniciar" };
-  return { key: "offline", label: "Desconectado" };
+  if (device.status === "stopping") return { key: "stopping", label: t("web.stopping") };
+  if (device.running) return { key: "running", label: t("web.running") };
+  if (device.adb_state === "unauthorized") return { key: "error", label: t("web.authorize_android") };
+  if (device.status === "error") return { key: "error", label: t("web.stopped_with_error") };
+  if (device.status === "stopped" && device.session_id) return { key: "stopped", label: t("web.stopped_status") };
+  if (connected(device)) return { key: "ready", label: t("web.ready_to_start") };
+  return { key: "offline", label: t("web.disconnected_singular") };
 }
 
 function badge(device) {
@@ -296,22 +381,22 @@ function numeric(value) { return Number.isFinite(Number(value)) && value !== nul
 function count(value) { const valueNumber = numeric(value); return valueNumber === null ? "—" : numberFormat.format(valueNumber); }
 
 function runtime(device) {
-  if (!device.running) return device.exit_code === 0 ? "Encerrado" : device.running === false && device.exit_code != null ? `Saída ${device.exit_code}` : "Aguardando";
+  if (!device.running) return device.exit_code === 0 ? t("web.stopped") : device.running === false && device.exit_code != null ? t("web.exit_code", { value_1: device.exit_code }) : t("web.waiting");
   let start = device.started_at;
   if (typeof start === "string") start = new Date(start).getTime();
   else if (typeof start === "number" && start < 1e12) start *= 1000;
-  if (!start || !Number.isFinite(start)) return device.pid ? `PID ${device.pid}` : "Ativo";
+  if (!start || !Number.isFinite(start)) return device.pid ? t("web.pid", { pid: device.pid }) : t("web.active");
   const seconds = Math.max(0, Math.floor((Date.now() - start) / 1000));
   const hours = Math.floor(seconds / 3600);
   const minutes = Math.floor(seconds % 3600 / 60);
-  return hours ? `${hours}h ${minutes}min` : minutes ? `${minutes}min` : `${seconds}s`;
+  return hours ? t("web.runtime_hours", { hours, minutes }) : minutes ? t("web.runtime_minutes", { minutes }) : t("web.runtime_seconds", { seconds });
 }
 
 function visibleDevices() {
-  const search = $("search").value.trim().toLocaleLowerCase("pt-BR");
+  const search = $("search").value.trim().toLocaleLowerCase(locale);
   const filter = $("status-filter").value;
   return state.devices.filter((device) => {
-    const text = [deviceName(device), device.model, device.serial, device.id, ...(device.aliases || [])].join(" ").toLocaleLowerCase("pt-BR");
+    const text = [deviceName(device), device.model, device.serial, device.id, ...(device.aliases || [])].join(" ").toLocaleLowerCase(locale);
     const matchesStatus = filter === "all" || (filter === "running" && device.running) || (filter === "ready" && connected(device) && !device.running) || (filter === "offline" && !connected(device) && !device.running);
     return (!search || text.includes(search)) && matchesStatus;
   });
@@ -368,7 +453,7 @@ async function refreshState(force = false) {
   } catch (error) {
     if (!authenticated) return;
     showError("state-error", error.message);
-    if (!state.devices.length) renderEmpty("Não foi possível carregar", "Use Atualizar para tentar novamente.", "!");
+    if (!state.devices.length) renderEmpty(t("web.load_failed"), t("web.refresh_to_retry"), "!");
   } finally {
     stateLoading = false;
     $("refresh").disabled = false;
@@ -384,9 +469,9 @@ function renderEmpty(title, message, symbol = "▤") {
 function renderSummary(visible) {
   const running = state.devices.filter((device) => device.running).length;
   $("kpi-running").textContent = count(running);
-  $("kpi-running-detail").textContent = `${state.devices.length} ${state.devices.length === 1 ? "dispositivo cadastrado" : "dispositivos cadastrados"}`;
+  $("kpi-running-detail").textContent = t("web.registered_devices", { count: count(state.devices.length) });
   $("kpi-connected").textContent = count(state.devices.filter(connected).length);
-  $("device-count").textContent = `${visible.length} ${visible.length === 1 ? "dispositivo" : "dispositivos"}`;
+  $("device-count").textContent = t("web.device_count", { count: count(visible.length) });
 }
 
 function renderTemplateCategorySuggestions() {
@@ -402,7 +487,7 @@ function renderDevices() {
   const visible = visibleDevices();
   renderSummary(visible);
   if (!visible.length) {
-    renderEmpty(state.devices.length ? "Nenhum resultado" : "Seu primeiro dispositivo começa aqui", state.devices.length ? "Ajuste a busca ou o filtro de status." : "Conecte um Android por USB ou pelo botão Conectar Android.");
+    renderEmpty(state.devices.length ? t("web.no_results") : t("web.first_device_title"), state.devices.length ? t("web.adjust_filters") : t("web.connect_device_hint"));
   } else {
     const focused = document.activeElement;
     const focusedId = focused?.closest(".device-card")?.dataset.deviceId;
@@ -419,9 +504,9 @@ function renderDevices() {
 function renderDevice(device) {
   const card = node("article", `device-card${device.running ? " running" : ""}${selected.has(device.id) ? " selected" : ""}`);
   card.dataset.deviceId = device.id;
-  const open = button("", "card-open-button", () => openDetails(device.id, "vision"), "Abrir visão IA");
+  const open = button("", "card-open-button", () => openDetails(device.id, "vision"), t("web.open_ai_vision"));
   open.dataset.role = "vision";
-  open.setAttribute("aria-label", `Abrir visão IA de ${deviceName(device)}`);
+  open.setAttribute("aria-label", t("web.open_device_vision", { value_1: deviceName(device) }));
   open.setAttribute("aria-haspopup", "dialog");
   card.append(open);
   const header = node("div", "device-card-header");
@@ -430,12 +515,12 @@ function renderDevice(device) {
   title.title = deviceName(device);
   const serial = node("p", "mono", device.serial || device.id);
   serial.title = device.serial || device.id;
-  identity.append(title, serial, node("span", "card-open-hint", "Ver visão IA ↗"));
+  identity.append(title, serial, node("span", "card-open-hint", t("web.view_ai_vision")));
   const checkbox = node("input");
   checkbox.type = "checkbox";
   checkbox.checked = selected.has(device.id);
   checkbox.dataset.role = "select";
-  checkbox.setAttribute("aria-label", `Selecionar ${deviceName(device)}`);
+  checkbox.setAttribute("aria-label", t("web.select_device", { value_1: deviceName(device) }));
   checkbox.addEventListener("change", () => {
     if (checkbox.checked) selected.add(device.id); else selected.delete(device.id);
     card.classList.toggle("selected", checkbox.checked);
@@ -455,31 +540,31 @@ function renderDevice(device) {
   }
   const footer = node("div", "device-card-footer");
   const busy = busyDevices.has(device.id) || device.status === "stopping";
-  const start = button(busy ? "Aguarde…" : device.running ? "□ Parar" : "▷ Iniciar", `button ${device.running ? "ghost danger-text" : "primary"} start-button`, () => executeAction(device.running ? "stop" : "start", [device.id]));
+  const start = button(busy ? t("web.please_wait") : device.running ? t("web.stop") : t("web.start"), `button ${device.running ? "ghost danger-text" : "primary"} start-button`, () => executeAction(device.running ? "stop" : "start", [device.id]));
   start.dataset.role = "start";
   start.disabled = busy || (!device.running && !connected(device));
-  const restart = button("↻", "button warning restart-button", () => executeAction("restart", [device.id]), "Reiniciar bot");
-  restart.setAttribute("aria-label", `Reiniciar ${deviceName(device)}`);
+  const restart = button("↻", "button warning restart-button", () => executeAction("restart", [device.id]), t("web.restart_bot"));
+  restart.setAttribute("aria-label", t("web.restart_device", { value_1: deviceName(device) }));
   restart.dataset.role = "restart";
   restart.disabled = busy || !device.running || !connected(device);
-  const settings = button("⚙", "button ghost settings-button", () => openDetails(device.id, "settings"), "Configurações, itens e logs");
-  settings.setAttribute("aria-label", `Configurar ${deviceName(device)}`);
+  const settings = button("⚙", "button ghost settings-button", () => openDetails(device.id, "settings"), t("web.device_settings_hint"));
+  settings.setAttribute("aria-label", t("web.configure_device", { value_1: deviceName(device) }));
   settings.dataset.role = "settings";
   const resolution = datasetResolutionOf(device);
-  const dataset = button("▦ Dados", "button ghost dataset-button", () => {
+  const dataset = button(t("web.data_button"), "button ghost dataset-button", () => {
     const current = deviceById(device.id) || device;
     openDatasets(current.session_id, datasetResolutionOf(current));
-  }, "Ver datasets por sessão");
-  dataset.setAttribute("aria-label", `Ver datasets de ${deviceName(device)}`);
+  }, t("web.view_session_datasets"));
+  dataset.setAttribute("aria-label", t("web.view_device_datasets", { value_1: deviceName(device) }));
   dataset.disabled = !resolution && !device.session_id;
-  if (!resolution) dataset.title = "A resolução será obtida da última sessão do dispositivo.";
+  if (!resolution) dataset.title = t("web.last_session_resolution_hint");
   dataset.dataset.role = "dataset";
   footer.append(start, restart, dataset, settings);
   card.append(header, status);
   card.append(node("p", "bot-state"), node("p", "metrics-freshness"));
   card.append(metrics, footer);
   const profile = device.profile;
-  if (profile && (Object.keys(profile.settings || {}).length || Object.keys(profile.category_thresholds || {}).length || Object.keys(profile.item_thresholds || {}).length)) card.append(node("div", "profile-indicator", "◉ Perfil personalizado"));
+  if (profile && (Object.keys(profile.settings || {}).length || Object.keys(profile.category_thresholds || {}).length || Object.keys(profile.item_thresholds || {}).length)) card.append(node("div", "profile-indicator", t("web.custom_profile")));
   updateDeviceMetrics(card, device);
   return card;
 }
@@ -491,12 +576,12 @@ function metricValues(device) {
   const trainings = resolution ? state.training[resolution] : null;
   const collected = metric(device, "dados_coletados") ?? (resolution ? state.collected?.[resolution] : 0);
   return [
-    ["dados_coletados", "Dados coletados", count(collected || 0)],
-    ["dados_sessao", "Dados da sessão", count(metric(device, "dados_sessao"))],
-    ["treinamentos", "Treinamentos", trainings === null ? "—" : count(trainings)],
-    ["voos", "Voou", eventMetric(device, "voos")],
-    ["reformas", "Renovou", eventMetric(device, "reformas")],
-    ["battery", "Bateria", level === null ? "—" : `${level}%${battery?.charging ? " ↯" : ""}`]
+    ["dados_coletados", t("web.collected_data"), count(collected || 0)],
+    ["dados_sessao", t("web.session_data"), count(metric(device, "dados_sessao"))],
+    ["treinamentos", t("web.training_runs"), trainings === null ? "—" : count(trainings)],
+    ["voos", t("web.flights"), eventMetric(device, "voos")],
+    ["reformas", t("web.renovations"), eventMetric(device, "reformas")],
+    ["battery", t("web.battery"), level === null ? "—" : `${level}%${battery?.charging ? " ↯" : ""}`]
   ];
 }
 
@@ -521,16 +606,16 @@ function updateDeviceMetrics(card, device) {
   const dataset = card.querySelector(".dataset-button");
   const resolution = datasetResolutionOf(device);
   dataset.disabled = !resolution && !device.session_id;
-  dataset.title = resolution ? "Ver datasets por sessão" : "A resolução será obtida da última sessão do dispositivo.";
+  dataset.title = resolution ? t("web.view_session_datasets") : t("web.last_session_resolution_hint");
   card.querySelector(".device-runtime").textContent = runtime(device);
   const botState = metric(device, "state") || metric(device, "estado");
   const stateLabel = card.querySelector(".bot-state");
-  stateLabel.textContent = botState ? `Estado · ${botState}` : "";
+  stateLabel.textContent = botState ? t("web.state_label", { value_1: displayCode("states", botState) }) : "";
   stateLabel.hidden = !botState || !device.running;
   const updatedAt = numeric(metric(device, "updated_at"));
   const age = updatedAt === null ? null : Math.max(0, Math.floor(Date.now() / 1000 - updatedAt));
   const freshness = card.querySelector(".metrics-freshness");
-  freshness.textContent = !device.running ? "" : age === null ? "Aguardando métricas do bot" : age > 10 ? `Métricas sem atualização há ${age}s` : "";
+  freshness.textContent = !device.running ? "" : age === null ? t("web.waiting_metrics") : age > 10 ? t("web.stale_metrics", { value_1: age }) : "";
   freshness.hidden = !freshness.textContent;
 }
 
@@ -540,7 +625,7 @@ function updateSelection() {
   $("select-all").checked = visible.length > 0 && checked === visible.length;
   $("select-all").indeterminate = checked > 0 && checked < visible.length;
   $("select-all").disabled = visible.length === 0;
-  $("selection-label").textContent = selected.size ? `${selected.size} ${selected.size === 1 ? "selecionado" : "selecionados"}` : "Selecionar todos";
+  $("selection-label").textContent = selected.size ? t(selected.size === 1 ? "web.selected_one" : "web.selected_other", { count: count(selected.size) }) : t("web.select_all");
   const eligible = state.devices.filter((device) => selected.has(device.id) && !busyDevices.has(device.id) && device.status !== "stopping");
   $("bulk-start").disabled = !eligible.some((device) => connected(device) && !device.running);
   $("bulk-restart").disabled = !eligible.some((device) => connected(device) && device.running);
@@ -554,13 +639,13 @@ async function executeAction(action, ids) {
   });
   if (!eligible.length) return;
   const running = state.devices.filter((device) => device.running).length;
-  if (action === "stop" && eligible.length > 1 && eligible.length === running && !confirm(`Parar todos os ${eligible.length} bots em execução?`)) return;
+  if (action === "stop" && eligible.length > 1 && eligible.length === running && !confirm(t("web.confirm_stop_all", { value_1: eligible.length }))) return;
   if (action !== "stop" && detailId && eligible.includes(detailId) && changeCount()) {
-    toast("Salve o perfil antes de iniciar ou reiniciar para aplicar as alterações.", true);
+    toast(t("web.save_before_start"), true);
     return;
   }
   if (action === "stop" && visionDevice && eligible.includes(visionDevice)) {
-    stopVision({ mode: "stopped", message: "O bot está sendo encerrado." });
+    stopVision({ mode: "stopped", message: t("web.bot_stopping") });
   }
   eligible.forEach((id) => busyDevices.add(id));
   renderDevices();
@@ -569,8 +654,8 @@ async function executeAction(action, ids) {
       ? await api(`/api/devices/${encodeURIComponent(eligible[0])}/${action}`, { method: "POST" })
       : await api("/api/actions", { method: "POST", body: JSON.stringify({ action, device_ids: eligible }) });
     const failures = (result.results || []).filter((item) => item.error || item.ok === false);
-    if (failures.length) toast(`${failures.length} dispositivo(s) com falha: ${failures.map((item) => item.error || item.message).join("; ")}`, true);
-    else toast(action === "start" ? "Comando de início enviado." : action === "stop" ? "Bot(s) encerrado(s)." : "Comando de reinício enviado.");
+    if (failures.length) toast(t("web.action_failures", { count: failures.length, errors: failures.map((item) => item.error || item.message).join("; ") }), true);
+    else toast(action === "start" ? t("web.start_sent") : action === "stop" ? t("web.stopped_toast") : t("web.restart_sent"));
     await refreshState();
   } catch (error) { if (authenticated) toast(error.message, true); }
   finally { eligible.forEach((id) => busyDevices.delete(id)); renderDevices(); }
@@ -607,7 +692,7 @@ function changeCount() {
 
 function updatePending() {
   const changes = changeCount();
-  $("pending-count").textContent = changes ? `${changes} ${changes === 1 ? "ajuste pendente" : "ajustes pendentes"}` : "Sem alterações pendentes";
+  $("pending-count").textContent = changes ? t(changes === 1 ? "web.pending_one" : "web.pending_other", { count: count(changes) }) : t("web.no_changes");
   const invalid = [...$("profile-fields").querySelectorAll("input,select"), ...$("item-fields").querySelectorAll("input")].some((input) => !input.disabled && !input.checkValidity());
   $("save-profile").disabled = !changes || invalid || saving;
   $("reset-profile").disabled = !draft || saving;
@@ -646,7 +731,7 @@ async function openDetails(id, tab = "vision") {
 
 async function closeDetails() {
   if (saving) return false;
-  if (changeCount() && !confirm("Descartar os ajustes que ainda não foram salvos?")) return false;
+  if (changeCount() && !confirm(t("web.confirm_discard_changes"))) return false;
   closeTemplateSelector();
   stopVision();
   $("device-dialog").close();
@@ -662,7 +747,7 @@ function renderDetailStatus() {
   if (!detailId) return;
   const device = deviceById(detailId);
   if (!device) return;
-  if (visionWanted && !device.running) stopVision({ mode: "stopped", message: "O bot foi encerrado. Inicie-o para acompanhar as detecções." });
+  if (visionWanted && !device.running) stopVision({ mode: "stopped", message: t("web.bot_stopped_hint") });
   else renderVisionControls();
   if (detailSession !== (device.started_at || null)) {
     detailSession = device.started_at || null;
@@ -671,12 +756,12 @@ function renderDetailStatus() {
     if (visionWanted && activeTab === "vision" && device.running) { stopVision(); startVision(); }
   }
   const status = metric(device, "state") || metric(device, "estado");
-  $("detail-status").replaceChildren(badge(device), node("span", "muted", [device.model, device.running ? status : null, device.running ? runtime(device) : null].filter(Boolean).join(" · ")));
-  if (metric(device, "model")) $("detail-status").append(node("span", "muted", `Modelo de IA: ${metric(device, "model")}`));
+  $("detail-status").replaceChildren(badge(device), node("span", "muted", [device.model, device.running ? displayCode("states", status) : null, device.running ? runtime(device) : null].filter(Boolean).join(" · ")));
+  if (metric(device, "model")) $("detail-status").append(node("span", "muted", t("web.ai_model_label", { value_1: metric(device, "model") })));
   const visionError = metric(device, "vision_error");
   if (visionError) {
     const age = metric(device, "vision_last_success_age");
-    $("detail-status").append(node("span", "danger-text", `Visão: ${visionError} · ${metric(device, "vision_failures") || 0} falhas consecutivas${age == null ? "" : ` · última passada válida há ${Math.floor(age)}s`}`));
+    $("detail-status").append(node("span", "danger-text", t("web.vision_failure_summary", { value_1: visionError, value_2: metric(device, "vision_failures") || 0, value_3: age == null ? "" : t("web.last_vision_success", { value_1: Math.floor(age) }) })));
   }
 }
 
@@ -684,7 +769,7 @@ function group(title, onReset) {
   const section = node("section", "settings-group");
   const heading = node("div", "group-heading");
   heading.append(node("h3", "", title));
-  if (onReset) heading.append(button("Restaurar grupo", "text-button", onReset));
+  if (onReset) heading.append(button(t("web.reset_group"), "text-button", onReset));
   const content = node("div", "settings-card");
   section.append(heading, content);
   return { section, content };
@@ -692,15 +777,15 @@ function group(title, onReset) {
 
 function renderProfile() {
   if (!draft) return;
-  const basics = group("Identificação e execução");
+  const basics = group(t("web.identity_and_run"));
   const nameRow = node("div", "setting-row");
-  const nameLabel = node("label", "", "Nome do dispositivo");
+  const nameLabel = node("label", "", t("web.device_name"));
   nameLabel.htmlFor = "device-name";
   const name = node("input");
   name.id = "device-name";
   name.maxLength = 80;
   name.value = draft.name;
-  name.placeholder = deviceById(detailId)?.model || "Ex.: Android principal";
+  name.placeholder = deviceById(detailId)?.model || t("web.device_name_example");
   name.addEventListener("input", () => { draft.name = name.value; updatePending(); });
   const nameInput = node("div", "setting-input-row");
   nameInput.append(name);
@@ -730,33 +815,33 @@ function renderProfile() {
     if (hint) row.append(node("p", "setting-hint", hint));
     basics.content.append(row);
   };
-  runSelect("detector_mode", "Modo de reconhecimento", [
-    ["templates", "Bot por templates"], ["ai", "Modelo de IA (experimental)"]
-  ], "A visão exibe as detecções do modo em execução. Salve e reinicie para trocar.");
+  runSelect("detector_mode", t("web.recognition_mode"), [
+    ["templates", t("web.template_bot")], ["ai", t("web.experimental_ai_model")]
+  ], t("web.recognition_mode_hint"));
   if (draft.run.detector_mode === "ai") {
-    const models = state.models.length ? state.models.map((model) => [model.value, model.label]) : [["auto", "Automático pela resolução da captura"]];
-    if (!models.some(([value]) => value === draft.run.ai_model)) models.push([draft.run.ai_model, `${draft.run.ai_model} (indisponível)`]);
-    runSelect("ai_model", "Modelo treinado", models, "O modo automático exige um modelo treinado para a resolução da captura. A ausência do modelo aparece nos logs.");
-    runSelect("ai_source", "Localizar regiões para a IA", [
-      ["templates", "Templates localizam; IA reconhece"],
-      ["proposer", "Cor e contorno (experimental)"]
-    ], "Cor e contorno dispensam templates para localizar os itens. O indicador de saúde do jogo continua usando templates.");
+    const models = state.models.length ? state.models.map((model) => [model.value, model.label_key ? t(model.label_key) : model.label]) : [["auto", t("web.auto_capture_model")]];
+    if (!models.some(([value]) => value === draft.run.ai_model)) models.push([draft.run.ai_model, t("web.unavailable_item", { value_1: draft.run.ai_model })]);
+    runSelect("ai_model", t("web.trained_model"), models, t("web.auto_model_hint"));
+    runSelect("ai_source", t("web.ai_region_source"), [
+      ["templates", t("web.template_ai_source")],
+      ["proposer", t("web.experimental_contour_source")]
+    ], t("web.contour_source_hint"));
     const row = node("div", "setting-row");
-    const label = node("label", "", "Confiança mínima da IA");
+    const label = node("label", "", t("web.ai_min_confidence"));
     label.htmlFor = "run-ai-confidence";
-    const input = thresholdInput(draft.run.ai_min_confidence, "Confiança mínima da IA");
+    const input = thresholdInput(draft.run.ai_min_confidence, t("web.ai_min_confidence"));
     input.id = "run-ai-confidence";
     input.addEventListener("input", () => {
       if (input.checkValidity()) draft.run.ai_min_confidence = Number(input.value);
       updatePending();
     });
-    row.append(label, input, node("p", "setting-hint", "As categorias raras mantêm os pisos específicos usados pelo bot de IA."));
+    row.append(label, input, node("p", "setting-hint", t("web.rare_categories_hint")));
     basics.content.append(row);
   }
   const options = [
-    ["ai_collect", "Coletar dados para IA", "Registra amostras do jogo para o dataset (--ai-collect)."],
-    ["layout_only", "Somente layout", "Ativa o modo de análise de layout (--layout-only)."],
-    ["save_log", "Salvar arquivo de log", "Além da saída no painel, grava o log completo em disco (--log)."]
+    ["ai_collect", t("web.collect_ai_data"), t("web.collect_ai_data_hint")],
+    ["layout_only", t("web.layout_only"), t("web.layout_only_hint")],
+    ["save_log", t("web.save_log_file"), t("web.save_log_file_hint")]
   ];
   for (const [key, title, description] of options) {
     const label = node("label", "run-option");
@@ -773,7 +858,7 @@ function renderProfile() {
   $("profile-fields").replaceChildren(basics.section);
   const groups = new Map();
   for (const field of state.schema) {
-    const key = field.group || "Outras configurações";
+    const key = field.group_key ? t(field.group_key) : field.group || t("web.other_settings");
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(field);
   }
@@ -793,8 +878,8 @@ function renderBlockRegions() {
   const total = (draft.block_regions || []).length;
   const summary = node("div", "block-region block-summary");
   summary.append(
-    node("strong", "", total ? `${total} área${total === 1 ? "" : "s"} ignorada${total === 1 ? "" : "s"}` : "Nenhuma área ignorada"),
-    node("span", "", "Edite a seleção para adicionar ou remover regiões diretamente no quadro.")
+    node("strong", "", total ? t(total === 1 ? "web.ignored_areas_count_one" : "web.ignored_areas_count_other", { count: count(total) }) : t("web.no_ignored_areas")),
+    node("span", "", t("web.edit_regions_hint"))
   );
   $("block-regions").replaceChildren(summary);
 }
@@ -802,13 +887,14 @@ function renderBlockRegions() {
 function settingField(field) {
   const row = node("div", "setting-row");
   const labelRow = node("div", "setting-label-row");
-  const label = node("label", "", field.label || field.key);
+  const labelText = field.label_key ? t(field.label_key) : field.label || field.key;
+  const label = node("label", "", labelText);
   const overrideLabel = node("label", "check-label");
   const override = node("input");
   override.type = "checkbox";
   override.checked = own(draft.settings, field.key);
-  override.setAttribute("aria-label", `Personalizar ${field.label || field.key}`);
-  overrideLabel.append(override, document.createTextNode("Personalizar"));
+  override.setAttribute("aria-label", t("web.customize_field", { value_1: labelText }));
+  overrideLabel.append(override, document.createTextNode(t("web.customize")));
   const type = field.type;
   const isBoolean = ["boolean", "bool"].includes(type) || typeof field.default === "boolean";
   const isNumber = ["number", "float", "int", "integer"].includes(type) || typeof field.default === "number";
@@ -816,7 +902,7 @@ function settingField(field) {
   input.id = `setting-${field.key}`;
   label.htmlFor = input.id;
   if (isBoolean) {
-    for (const [value, text] of [["true", "Ativado"], ["false", "Desativado"]]) {
+    for (const [value, text] of [["true", t("web.enabled")], ["false", t("web.disabled")]]) {
       const option = node("option", "", text);
       option.value = value;
       input.append(option);
@@ -847,8 +933,8 @@ function settingField(field) {
   });
   input.addEventListener("input", () => { if (input.checkValidity()) draft.settings[field.key] = read(); updatePending(); });
   const inputRow = node("div", "setting-input-row");
-  const defaultValue = isBoolean ? field.default ? "Ativado" : "Desativado" : String(field.default ?? "—");
-  inputRow.append(input, node("span", "default-chip", `Padrão: ${defaultValue}`));
+  const defaultValue = isBoolean ? field.default ? t("web.enabled") : t("web.disabled") : String(field.default ?? "—");
+  inputRow.append(input, node("span", "default-chip", t("web.default_value", { value_1: defaultValue })));
   labelRow.append(label, overrideLabel);
   row.append(labelRow, inputRow);
   if (field.description) row.append(node("p", "setting-hint", field.description));
@@ -876,25 +962,25 @@ function defaultCategoryThreshold(category) {
 
 function renderItems() {
   if (!draft) return;
-  $("panel-items").querySelector(".notice").textContent = "A fidelidade é a confiança mínima para reconhecer um item. O ajuste do item tem prioridade sobre a categoria. Sem ajuste, vale o padrão da categoria; quando ela não tem padrão próprio, vale a Fidelidade da forma deste perfil. Valores maiores exigem uma correspondência mais exata.";
-  const query = $("item-search").value.trim().toLocaleLowerCase("pt-BR");
+  $("panel-items").querySelector(".notice").textContent = t("web.threshold_inheritance_hint");
+  const query = $("item-search").value.trim().toLocaleLowerCase(locale);
   const sections = [];
   for (const category of state.templates.categories || []) {
-    const categoryMatch = category.name.toLocaleLowerCase("pt-BR").includes(query);
-    const items = (category.items || []).filter((item) => !query || categoryMatch || item.name.toLocaleLowerCase("pt-BR").includes(query));
+    const categoryMatch = [category.name, displayCode("categories", category.name)].some((name) => name.toLocaleLowerCase(locale).includes(query));
+    const items = (category.items || []).filter((item) => !query || categoryMatch || item.name.toLocaleLowerCase(locale).includes(query));
     if (query && !categoryMatch && !items.length) continue;
     const section = node("details", "category");
     section.open = !!query;
-    const heading = node("summary", "", category.name);
-    heading.append(node("span", "count", `${count(category.count)} templates`));
+    const heading = node("summary", "", displayCode("categories", category.name));
+    heading.append(node("span", "count", t("web.template_count", { count: count(category.count) })));
     const content = node("div", "category-body");
     const control = node("div", "threshold-control");
     const label = node("label", "check-label");
     const override = node("input");
     override.type = "checkbox";
     override.checked = own(draft.category_thresholds, category.name);
-    label.append(override, document.createTextNode("Fidelidade da categoria"));
-    const input = thresholdInput(draft.category_thresholds[category.name] ?? defaultCategoryThreshold(category), `Fidelidade de ${category.name}`);
+    label.append(override, document.createTextNode(t("web.category_threshold")));
+    const input = thresholdInput(draft.category_thresholds[category.name] ?? defaultCategoryThreshold(category), t("web.threshold_for", { value_1: category.name }));
     input.disabled = !override.checked;
     override.addEventListener("change", () => {
       input.disabled = !override.checked;
@@ -908,7 +994,7 @@ function renderItems() {
       refreshInherited();
       updatePending();
     });
-    const reset = button("Restaurar categoria e itens", "text-button", () => {
+    const reset = button(t("web.reset_category"), "text-button", () => {
       delete draft.category_thresholds[category.name];
       (category.items || []).forEach((item) => delete draft.item_thresholds[item.key]);
       renderItems();
@@ -923,17 +1009,17 @@ function renderItems() {
       const itemOverride = node("input");
       itemOverride.type = "checkbox";
       itemOverride.checked = own(draft.item_thresholds, item.key);
-      itemOverride.setAttribute("aria-label", `Personalizar fidelidade de ${item.name}`);
+      itemOverride.setAttribute("aria-label", t("web.customize_threshold", { value_1: item.name }));
       itemLabel.append(itemOverride);
       const identity = node("div");
-      identity.append(node("span", "item-name", item.name), node("small", "", `${count(item.count || 1)} ${item.count === 1 ? "arquivo" : "arquivos"} · ${itemOverride.checked ? "Personalizado" : "Herdado"}`));
+      identity.append(node("span", "item-name", item.name), node("small", "", t(item.count === 1 ? "web.file_status_one" : "web.file_status_other", { count: count(item.count || 1), status: itemOverride.checked ? t("web.custom_value") : t("web.inherited_value") })));
       const effective = () => draft.category_thresholds[category.name] ?? defaultCategoryThreshold(category);
-      const itemInput = thresholdInput(draft.item_thresholds[item.key] ?? effective(), `Fidelidade de ${item.name}`);
+      const itemInput = thresholdInput(draft.item_thresholds[item.key] ?? effective(), t("web.threshold_for", { value_1: item.name }));
       itemInput.disabled = !itemOverride.checked;
       const sync = () => {
         itemInput.disabled = !itemOverride.checked;
         if (!itemOverride.checked) itemInput.value = effective();
-        identity.querySelector("small").textContent = `${count(item.count || 1)} ${item.count === 1 ? "arquivo" : "arquivos"} · ${itemOverride.checked ? "Personalizado" : "Herdado"}`;
+        identity.querySelector("small").textContent = t(item.count === 1 ? "web.file_status_one" : "web.file_status_other", { count: count(item.count || 1), status: itemOverride.checked ? t("web.custom_value") : t("web.inherited_value") });
       };
       inherited.push(sync);
       itemOverride.addEventListener("change", () => {
@@ -943,8 +1029,8 @@ function renderItems() {
         updatePending();
       });
       itemInput.addEventListener("input", () => { if (itemInput.checkValidity()) draft.item_thresholds[item.key] = Number(itemInput.value); updatePending(); });
-      const resetItem = button("↶", "reset-icon", () => { delete draft.item_thresholds[item.key]; itemOverride.checked = false; sync(); updatePending(); }, "Restaurar fidelidade do item");
-      resetItem.setAttribute("aria-label", `Restaurar ${item.name}`);
+      const resetItem = button("↶", "reset-icon", () => { delete draft.item_thresholds[item.key]; itemOverride.checked = false; sync(); updatePending(); }, t("web.reset_item_threshold"));
+      resetItem.setAttribute("aria-label", t("web.reset_item", { value_1: item.name }));
       row.append(itemLabel, identity, itemInput, resetItem);
       content.append(row);
     }
@@ -953,7 +1039,7 @@ function renderItems() {
     sections.push(section);
   }
   $("item-fields").replaceChildren(...sections);
-  if (!sections.length) $("item-fields").append(node("p", "section-description", query ? "Nenhum item encontrado." : "Nenhum template encontrado no servidor."));
+  if (!sections.length) $("item-fields").append(node("p", "section-description", query ? t("web.no_items_found") : t("web.no_templates_found")));
 }
 
 async function saveProfile() {
@@ -972,14 +1058,14 @@ async function saveProfile() {
     renderProfile();
     renderItems();
     renderBlockRegions();
-    toast("Perfil salvo neste dispositivo. Aplique ao iniciar ou reiniciar o bot.");
+    toast(t("web.profile_saved"));
     await refreshState();
   } catch (error) { if (authenticated) showError("profile-error", error.message); }
   finally { saving = false; updatePending(); }
 }
 
 async function resetProfile() {
-  if (!draft || saving || !confirm("Restaurar o nome, as opções de execução e todos os ajustes deste dispositivo para os padrões? Essa alteração será salva imediatamente.")) return;
+  if (!draft || saving || !confirm(t("web.confirm_reset_profile"))) return;
   saving = true;
   updatePending();
   try {
@@ -991,7 +1077,7 @@ async function resetProfile() {
     renderItems();
     renderBlockRegions();
     showError("profile-error", "");
-    toast("Perfil restaurado. Os padrões serão usados na próxima execução.");
+    toast(t("web.profile_reset"));
     await refreshState();
   } catch (error) { if (authenticated) showError("profile-error", error.message); }
   finally { saving = false; updatePending(); }
@@ -1000,26 +1086,26 @@ async function resetProfile() {
 function renderVisionControls() {
   const device = detailId ? deviceById(detailId) : null;
   const mode = device?.detector_mode || metric(device || {}, "detector_mode") || "templates";
-  $("tab-vision").textContent = "Visão";
-  $("panel-vision").querySelector(".vision-toolbar h3").textContent = mode === "ai" ? "Visão do modelo de IA" : "Visão do bot por templates";
-  $("vision-image").alt = mode === "ai" ? "Detecções do modelo de IA no Android" : "Detecções do bot por templates no Android";
-  $("vision-toggle").textContent = visionWanted ? "Encerrar visão" : visionMode === "error" ? "Tentar novamente" : "Ver visão";
+  $("tab-vision").textContent = t("web.view");
+  $("panel-vision").querySelector(".vision-toolbar h3").textContent = mode === "ai" ? t("web.ai_model_vision") : t("web.template_bot_vision");
+  $("vision-image").alt = mode === "ai" ? t("web.ai_detections_alt") : t("web.template_detections_alt");
+  $("vision-toggle").textContent = visionWanted ? t("web.stop_vision") : visionMode === "error" ? t("web.try_again") : t("web.view_vision");
   $("vision-toggle").disabled = visionMode === "starting" || (!visionWanted && (!device?.running || document.hidden));
 }
 
 function renderVision(mode, message = "") {
   visionMode = mode;
   const descriptions = {
-    off: ["Transmissão desligada", "Ative a visão para acompanhar as detecções deste dispositivo.", "◎"],
-    starting: ["Ativando visão", "Solicitando a transmissão ao bot em execução…", "◎"],
-    waiting: ["Aguardando primeiro frame", "O bot está preparando a imagem com as detecções da IA.", "◎"],
-    live: ["Ao vivo", "", "◎"],
-    paused: ["Transmissão pausada", "A visão será retomada quando esta aba do navegador estiver visível.", "Ⅱ"],
-    stopped: ["Bot parado", "Inicie o bot deste dispositivo para acompanhar as detecções.", "□"],
-    error: ["Não foi possível exibir a visão", "Tente ativar a transmissão novamente.", "!"]
+    off: [t("web.stream_off"), t("web.enable_vision_hint"), "◎"],
+    starting: [t("web.vision_starting"), t("web.vision_stream_requested"), "◎"],
+    waiting: [t("web.waiting_first_frame"), t("web.preparing_vision_frame"), "◎"],
+    live: [t("web.live"), "", "◎"],
+    paused: [t("web.stream_paused"), t("web.vision_resume_hint"), "Ⅱ"],
+    stopped: [t("web.view_stopped"), t("web.view_stopped_message"), "□"],
+    error: [t("web.view_error"), t("web.view_error_message"), "!"]
   };
   const [title, description, symbol] = descriptions[mode] || descriptions.off;
-  $("vision-status").textContent = mode === "live" ? `Ao vivo · ${new Date().toLocaleTimeString("pt-BR")}` : title;
+  $("vision-status").textContent = mode === "live" ? t("web.live_at", { time: new Date().toLocaleTimeString(locale) }) : title;
   $("vision-placeholder-title").textContent = title;
   $("vision-placeholder-message").textContent = message || description;
   $("vision-symbol").textContent = symbol;
@@ -1032,7 +1118,7 @@ function renderVision(mode, message = "") {
 
 function releaseVision(id) {
   if (!id) return;
-  const headers = { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) };
+  const headers = { "Content-Type": "application/json", "X-Eatventure-Locale": locale, ...(token ? { Authorization: `Bearer ${token}` } : {}) };
   const pending = (visionReleases.get(id) || Promise.resolve()).then(() => {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 5000);
@@ -1111,10 +1197,10 @@ async function startTemplateSelector(mode = "template") {
   $("template-category").value = "";
   $("template-name").value = "";
   $("template-name-field").hidden = true;
-  $("template-kind").textContent = mode === "block" ? "NOVA ÁREA IGNORADA" : "NOVO TEMPLATE";
-  $("template-title").textContent = mode === "block" ? "Edite as áreas ignoradas" : "Selecione o item";
-  $("template-instruction").textContent = mode === "block" ? "Arraste quantas áreas quiser. Elas afetam somente box, food, new_point e up_food." : "Arraste com o botão esquerdo sobre o item.";
-  $("template-selection-status").textContent = "Capturando frame sem marcações…";
+  $("template-kind").textContent = mode === "block" ? t("web.new_ignored_area") : "NOVO TEMPLATE";
+  $("template-title").textContent = mode === "block" ? t("web.edit_ignored_areas") : t("web.select_item");
+  $("template-instruction").textContent = mode === "block" ? t("web.ignored_area_scope_hint") : t("web.drag_item_hint");
+  $("template-selection-status").textContent = t("web.capturing_clean_frame");
   $("template-stage").querySelector(".loading-spinner").hidden = false;
   const dialog = $("template-dialog");
   if (!dialog.open) dialog.showModal();
@@ -1145,7 +1231,7 @@ function loadTemplateFrame() {
     renderTemplateBlockSelections();
     $("template-undo").disabled = templateMode === "block" && !templateBlockSelections.length;
     $("template-confirm").disabled = templateMode === "block" ? !templateBlockSelections.length && !templateBlockEdited : true;
-    $("template-selection-status").textContent = templateMode === "block" ? "Arraste para adicionar uma área. Clique em uma área marcada para removê-la." : "Frame congelado. Arraste sobre o item para marcar a área do template.";
+    $("template-selection-status").textContent = templateMode === "block" ? t("web.edit_regions_instructions") : t("web.frozen_frame_hint");
   };
   image.onerror = () => {
     templateSnapshot = null;
@@ -1171,7 +1257,7 @@ function refreshTemplateFrame() {
   $("template-image").style.height = "";
   $("template-image").hidden = true;
   $("template-stage").querySelector(".loading-spinner").hidden = false;
-  $("template-selection-status").textContent = "Buscando o frame mais recente…";
+  $("template-selection-status").textContent = t("web.fetching_latest_frame");
   loadTemplateFrame();
 }
 
@@ -1234,17 +1320,17 @@ function renderTemplateBlockSelections() {
     box.style.top = `${imageBox.top - stageBox.top + region.y * imageBox.height / image.naturalHeight}px`;
     box.style.width = `${region.width * imageBox.width / image.naturalWidth}px`;
     box.style.height = `${region.height * imageBox.height / image.naturalHeight}px`;
-    box.textContent = `Área ${index + 1}`;
+    box.textContent = t("web.area_label", { value_1: index + 1 });
     box.tabIndex = 0;
     box.setAttribute("role", "button");
-    box.setAttribute("aria-label", `Remover área ignorada ${index + 1}`);
+    box.setAttribute("aria-label", t("web.remove_ignored_area", { value_1: index + 1 }));
     const remove = () => {
       templateBlockSelections.splice(index, 1);
       templateBlockEdited = true;
       renderTemplateBlockSelections();
       $("template-undo").disabled = !templateBlockSelections.length;
       $("template-confirm").disabled = !templateBlockSelections.length && !templateBlockEdited;
-      $("template-selection-status").textContent = "Área removida. Arraste para adicionar outra ou confirme a seleção.";
+      $("template-selection-status").textContent = t("web.area_removed");
     };
     box.addEventListener("click", remove);
     box.addEventListener("keydown", (event) => {
@@ -1261,8 +1347,8 @@ function undoTemplateBlockSelection() {
   $("template-undo").disabled = !templateBlockSelections.length;
   $("template-confirm").disabled = !templateBlockSelections.length && !templateBlockEdited;
   $("template-selection-status").textContent = templateBlockSelections.length
-    ? `${templateBlockSelections.length} área(s) ignorada(s) selecionada(s). Continue arrastando ou confirme.`
-    : "Arraste para marcar uma ou mais áreas ignoradas.";
+    ? t("web.areas_selected_hint", { value_1: templateBlockSelections.length })
+    : t("web.select_areas_hint");
 }
 
 function updateTemplatePreview() {
@@ -1277,14 +1363,14 @@ function updateTemplatePreview() {
   const context = canvas.getContext("2d");
   context.imageSmoothingEnabled = false;
   context.drawImage($("template-image"), x, y, width, height, 0, 0, canvas.width, canvas.height);
-  $("template-live-size").textContent = `${width}×${height}px`;
+  $("template-live-size").textContent = t("web.crop_dimensions", { value_1: width, value_2: height });
   preview.hidden = false;
 }
 
 function reviewTemplateSelection() {
   if (templateMode === "block") {
     if (!templateBlockSelections.length && !templateBlockEdited) return;
-    if (templateBlockSelections.length > 32) { toast("O perfil aceita no máximo 32 áreas ignoradas.", true); return; }
+    if (templateBlockSelections.length > 32) { toast(t("web.ignored_area_limit"), true); return; }
     const image = $("template-image");
     draft.block_regions = templateBlockSelections.map(({ x, y, width, height }) => [
         x / image.naturalWidth,
@@ -1295,7 +1381,7 @@ function reviewTemplateSelection() {
     renderBlockRegions();
     updatePending();
     closeTemplateSelector();
-    toast("Áreas ignoradas atualizadas. Salve o perfil e reinicie o bot para aplicar.");
+    toast(t("web.ignored_areas_updated"));
     return;
   }
   if (!templateSelection || templateSelection.width < 6 || templateSelection.height < 6) return;
@@ -1304,25 +1390,25 @@ function reviewTemplateSelection() {
   canvas.width = width;
   canvas.height = height;
   canvas.getContext("2d").drawImage($("template-image"), x, y, width, height, 0, 0, width, height);
-  $("template-review-size").textContent = `${width}×${height}px`;
+  $("template-review-size").textContent = t("web.crop_dimensions", { value_1: width, value_2: height });
   $("template-selection-step").hidden = true;
   $("template-category-step").hidden = false;
-  $("template-title").textContent = "Confirme o template";
-  $("template-instruction").textContent = "Confira o recorte e escolha sua categoria.";
+  $("template-title").textContent = t("web.confirm_template");
+  $("template-instruction").textContent = t("web.review_template_hint");
   $("template-category").focus();
 }
 
 function returnToTemplateSelection() {
   $("template-category-step").hidden = true;
   $("template-selection-step").hidden = false;
-  $("template-title").textContent = "Selecione o item";
-  $("template-instruction").textContent = "Arraste com o botão esquerdo sobre o item.";
+  $("template-title").textContent = t("web.select_item");
+  $("template-instruction").textContent = t("web.drag_item_hint");
 }
 
 async function saveTemplateSelection() {
   if (!templateSelection || !templateDevice || !templateSnapshot) return;
   const category = $("template-category").value.trim();
-  if (!/^[a-z][a-z0-9_]{0,63}$/.test(category)) { toast("Informe uma categoria válida.", true); return; }
+  if (!/^[a-z][a-z0-9_]{0,63}$/.test(category)) { toast(t("web.invalid_category"), true); return; }
   const name = category === "food" ? $("template-name").value.trim() : "";
   const button = $("template-save"); button.disabled = true;
   try {
@@ -1335,7 +1421,7 @@ async function saveTemplateSelection() {
         ...templateSelection
       })
     });
-    toast(`Template salvo: ${result.category} (${result.width}×${result.height}).`);
+    toast(t("web.template_saved", { value_1: result.category, value_2: result.width, value_3: result.height }));
     closeTemplateSelector();
     await refreshState();
   } catch (error) { toast(error.message, true); } finally { button.disabled = false; }
@@ -1362,7 +1448,7 @@ async function startVision() {
       if (!visionWanted || visionDevice !== id) releaseVision(id);
       return;
     }
-    if (result.enabled === false) throw new Error("O servidor não ativou a transmissão.");
+    if (result.enabled === false) throw new Error(t("web.stream_not_enabled"));
     renderVision("waiting");
     streamVision(generation);
   } catch (error) {
@@ -1377,7 +1463,7 @@ function loadVisionFrame(blob, generation, signal) {
   visionUrl = url;
   return new Promise((resolve, reject) => {
     let settled = false;
-    const timeout = setTimeout(() => finish(new Error("A imagem demorou para carregar. Tente novamente.")), 10000);
+    const timeout = setTimeout(() => finish(new Error(t("web.image_load_timeout"))), 10000);
     const finish = (error, loaded = false) => {
       if (settled) return;
       settled = true;
@@ -1398,7 +1484,7 @@ function loadVisionFrame(blob, generation, signal) {
       renderVision("live");
       finish(null, true);
     };
-    const failedFrame = () => finish(new Error("Não foi possível carregar a imagem recebida do bot."));
+    const failedFrame = () => finish(new Error(t("web.image_load_failed")));
     signal.addEventListener("abort", abort, { once: true });
     if (signal.aborted) { finish(null); return; }
     image.onload = loadedFrame;
@@ -1408,8 +1494,8 @@ function loadVisionFrame(blob, generation, signal) {
 }
 
 async function* jpegFrames(body, { boundary = "frame", signal, onReader } = {}) {
-  if (!body || typeof body.getReader !== "function") throw new Error("O navegador não recebeu uma transmissão válida.");
-  if (!/^[a-zA-Z0-9'()+_,./:=?-]{1,70}$/.test(boundary)) throw new Error("Separador da transmissão inválido.");
+  if (!body || typeof body.getReader !== "function") throw new Error(t("web.invalid_stream"));
+  if (!/^[a-zA-Z0-9'()+_,./:=?-]{1,70}$/.test(boundary)) throw new Error(t("web.invalid_stream_boundary"));
   const reader = body.getReader();
   onReader?.(reader);
   const decoder = new TextDecoder();
@@ -1424,7 +1510,7 @@ async function* jpegFrames(body, { boundary = "frame", signal, onReader } = {}) 
     while (!signal?.aborted) {
       const { value, done } = await reader.read();
       if (done) {
-        if (phase !== "boundary" || lineLength) throw new Error("A transmissão foi interrompida durante um frame.");
+        if (phase !== "boundary" || lineLength) throw new Error(t("web.incomplete_stream_frame"));
         return;
       }
       const bytes = value instanceof Uint8Array ? value : new Uint8Array(value);
@@ -1448,37 +1534,37 @@ async function* jpegFrames(body, { boundary = "frame", signal, onReader } = {}) 
         const newline = bytes.indexOf(10, offset);
         const end = newline < 0 ? bytes.length : newline + 1;
         const length = end - offset;
-        if (lineLength + length > MAX_VISION_HEADER_BYTES) throw new Error("Cabeçalhos da transmissão excedem 8 KiB.");
+        if (lineLength + length > MAX_VISION_HEADER_BYTES) throw new Error(t("web.stream_headers_limit"));
         lineBuffer.set(bytes.subarray(offset, end), lineLength);
         lineLength += length;
         offset = end;
         if (newline < 0) continue;
-        if (lineLength < 2 || lineBuffer[lineLength - 2] !== 13) throw new Error("Formato da transmissão inválido.");
+        if (lineLength < 2 || lineBuffer[lineLength - 2] !== 13) throw new Error(t("web.invalid_stream_format"));
         const lineBytes = lineLength;
         const line = decoder.decode(lineBuffer.subarray(0, lineLength - 2));
         lineLength = 0;
         if (phase === "boundary") {
           if (line === `--${boundary}--`) return;
-          if (line !== `--${boundary}`) throw new Error("Separador de frame inválido.");
+          if (line !== `--${boundary}`) throw new Error(t("web.invalid_frame_boundary"));
           phase = "headers";
           headerBytes = 0;
           headers = new Map();
         } else if (phase === "headers") {
           headerBytes += lineBytes;
-          if (headerBytes > MAX_VISION_HEADER_BYTES) throw new Error("Cabeçalhos da transmissão excedem 8 KiB.");
+          if (headerBytes > MAX_VISION_HEADER_BYTES) throw new Error(t("web.stream_headers_limit"));
           if (line) {
             const match = line.match(/^([a-zA-Z0-9-]+):[ \t]*(.*)$/);
-            if (!match || headers.has(match[1].toLowerCase())) throw new Error("Cabeçalho de frame inválido.");
+            if (!match || headers.has(match[1].toLowerCase())) throw new Error(t("web.invalid_frame_header"));
             headers.set(match[1].toLowerCase(), match[2].trim());
           } else {
             const length = headers.get("content-length") || "";
-            if (!/^\d+$/.test(length) || !Number.isSafeInteger(Number(length)) || Number(length) < 1 || Number(length) > MAX_VISION_FRAME_BYTES) throw new Error("O frame deve ter até 5 MiB e tamanho informado.");
-            if (!/^image\/jpeg(?:\s*;.*)?$/i.test(headers.get("content-type") || "")) throw new Error("O servidor não enviou um frame JPEG válido.");
+            if (!/^\d+$/.test(length) || !Number.isSafeInteger(Number(length)) || Number(length) < 1 || Number(length) > MAX_VISION_FRAME_BYTES) throw new Error(t("web.invalid_frame_size"));
+            if (!/^image\/jpeg(?:\s*;.*)?$/i.test(headers.get("content-type") || "")) throw new Error(t("web.invalid_jpeg_frame"));
             frame = new Uint8Array(Number(length));
             phase = "body";
           }
         } else {
-          if (line !== "") throw new Error("Fim de frame inválido.");
+          if (line !== "") throw new Error(t("web.invalid_frame_ending"));
           phase = "boundary";
         }
       }
@@ -1512,7 +1598,7 @@ function queueVisionFrame(frame, stream) {
 function renewVisionTimeout(stream) {
   clearTimeout(stream.idleTimer);
   stream.idleTimer = setTimeout(() => {
-    if (visionStream === stream && visionWanted) stopVision({ mode: "error", message: "Nenhum frame recebido há 10 segundos. Tente novamente." });
+    if (visionStream === stream && visionWanted) stopVision({ mode: "error", message: t("web.frame_timeout") });
   }, 10000);
 }
 
@@ -1527,7 +1613,7 @@ async function streamVision(generation) {
   try {
     const mode = visionShowDetails ? "vision" : "clean";
     const response = await fetch(`/api/devices/${encodeURIComponent(visionDevice)}/vision/stream?mode=${mode}`, {
-      headers: { Accept: "multipart/x-mixed-replace", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      headers: { Accept: "multipart/x-mixed-replace", "X-Eatventure-Locale": locale, ...(token ? { Authorization: `Bearer ${token}` } : {}) },
       signal: controller.signal,
       cache: "no-store"
     });
@@ -1536,21 +1622,21 @@ async function streamVision(generation) {
     if (!response.ok) {
       const result = await response.json().catch(() => ({}));
       if (generation !== visionGeneration) return;
-      const detail = typeof result.detail === "string" ? result.detail : "O servidor não disponibilizou a imagem.";
+      const detail = typeof result.detail === "string" ? result.detail : t("web.vision_image_unavailable");
       if (response.status === 409 && !deviceById(visionDevice)?.running) { stopVision({ mode: "stopped" }); return; }
       throw new Error(detail);
     }
     const contentType = response.headers.get("Content-Type") || "";
     const boundary = contentType.match(/\bboundary=(?:"([^"]+)"|([^;\s]+))/i);
-    if (!/^multipart\/x-mixed-replace\b/i.test(contentType) || !boundary) throw new Error("O servidor não enviou uma transmissão JPEG válida.");
+    if (!/^multipart\/x-mixed-replace\b/i.test(contentType) || !boundary) throw new Error(t("web.invalid_jpeg_stream"));
     for await (const frame of jpegFrames(response.body, { boundary: boundary[1] || boundary[2], signal: controller.signal, onReader: (reader) => { stream.reader = reader; } })) {
       if (generation !== visionGeneration || !visionWanted) return;
       renewVisionTimeout(stream);
       queueVisionFrame(frame, stream);
     }
-    if (generation === visionGeneration && visionWanted) throw new Error("A transmissão foi encerrada pelo servidor. Tente novamente.");
+    if (generation === visionGeneration && visionWanted) throw new Error(t("web.stream_ended_retry"));
   } catch (error) {
-    if (generation === visionGeneration && visionWanted) stopVision({ mode: "error", message: error.name === "AbortError" ? "A transmissão foi interrompida. Tente novamente." : error.message });
+    if (generation === visionGeneration && visionWanted) stopVision({ mode: "error", message: error.name === "AbortError" ? t("web.stream_interrupted_retry") : error.message });
   } finally {
     clearTimeout(stream.idleTimer);
     if (visionController === controller) visionController = null;
@@ -1580,8 +1666,8 @@ function resetLogs() {
   logBytes = 0;
   logPaused = false;
   $("log-output").replaceChildren();
-  $("log-status").textContent = "Aguardando logs.";
-  $("log-pause").textContent = "Pausar";
+  $("log-status").textContent = t("web.waiting_logs");
+  $("log-pause").textContent = t("web.pause");
   $("log-download").disabled = true;
 }
 
@@ -1594,8 +1680,14 @@ function appendLogLines(lines) {
     const text = bytes.length > MAX_LOG_LINE_BYTES || clipped.length < original.length
       ? new TextDecoder().decode(bytes.subarray(0, MAX_LOG_LINE_BYTES - 3), { stream: true }) + "…"
       : clipped;
-    const size = encoder.encode(text).length + 1;
-    logLines.push({ id: numeric(line.id), text, bytes: size });
+    const translations = {};
+    for (const language of ["pt-BR", "en-US"]) {
+      if (typeof line.translations?.[language] === "string") {
+        translations[language] = new TextDecoder().decode(encoder.encode(line.translations[language]).subarray(0, MAX_LOG_LINE_BYTES), { stream: true });
+      }
+    }
+    const size = encoder.encode(text).length + 1 + Object.values(translations).reduce((total, value) => total + encoder.encode(value).length, 0);
+    logLines.push({ id: numeric(line.id), text, translations, bytes: size });
     logBytes += size;
     while (logLines.length > MAX_LOG_LINES || logBytes > MAX_LOG_BYTES) logBytes -= logLines.shift().bytes;
   }
@@ -1605,8 +1697,9 @@ function renderLogLines() {
   const output = $("log-output");
   const scrollTop = output.scrollTop;
   output.replaceChildren(...logLines.map((line) => {
-    const style = /(?:\bERROR\b|\b E \[|Traceback|Exception:)/.test(line.text) ? "error-line" : /(?:\bWARNING\b|\b W \[)/.test(line.text) ? "warning-line" : "";
-    return node("div", style, line.text);
+    const text = line.translations?.[locale] ?? line.text;
+    const style = /(?:\bERROR\b|\b E \[|Traceback|Exception:)/.test(text) ? "error-line" : /(?:\bWARNING\b|\b W \[)/.test(text) ? "warning-line" : "";
+    return node("div", style, text);
   }));
   output.scrollTop = $("log-autoscroll").checked ? output.scrollHeight : scrollTop;
 }
@@ -1626,14 +1719,259 @@ async function pollLogs() {
     if (reset || lines.length) renderLogLines();
     $("log-download").disabled = !logLines.length;
     if (cursor !== null) logCursor = cursor;
-    $("log-status").textContent = logLines.length ? `${count(logLines.length)} linhas retidas · ${(logBytes / 1024).toLocaleString("pt-BR", { maximumFractionDigits: 1 })} KiB · atualizado às ${new Date().toLocaleTimeString("pt-BR")}` : "Nenhum log disponível. Inicie o bot para acompanhar a saída.";
+  $("log-status").textContent = logLines.length ? t("web.log_retention_status", { value_1: count(logLines.length), value_2: (logBytes / 1024).toLocaleString(locale, { maximumFractionDigits: 1 }), value_3: new Date().toLocaleTimeString(locale) }) : t("web.logs_empty");
   } catch (error) { if (generation === logGeneration && authenticated) $("log-status").textContent = error.message; }
   finally { logLoading = false; }
 }
 
+const trainingStatusKeys = {
+  idle: "web.training_idle", queued: "web.training_queued", preparing: "web.training_preparing",
+  running: "web.training_running", publishing: "web.training_publishing", cancelling: "web.training_cancelling",
+  cancelled: "web.training_cancelled", success: "web.training_success", failed: "web.training_failed",
+  skipped: "web.training_skipped"
+};
+
+function trainingStatus(status) {
+  return t(trainingStatusKeys[status] || trainingStatusKeys.idle);
+}
+
+function trainingPercent(value) {
+  const number = numeric(value);
+  return number === null ? "—" : number.toLocaleString(locale, { style: "percent", maximumFractionDigits: 1 });
+}
+
+function trainingResolutionLabel(value) {
+  if (value === "legacy") return t("web.training_legacy");
+  if (value === "all") return t("web.training_all_resolutions");
+  return value;
+}
+
+function trainingEmptyRow(columns, message) {
+  const row = node("tr");
+  const cell = node("td", "training-empty", message);
+  cell.colSpan = columns;
+  row.append(cell);
+  return row;
+}
+
+async function openTraining() {
+  trainingGeneration += 1;
+  trainingSettingsDirty = false;
+  trainingSettingsSnapshot = "";
+  $("training-settings-fields").disabled = true;
+  $("training-start").disabled = true;
+  $("training-dialog").showModal();
+  $("training-data-rows").replaceChildren(trainingEmptyRow(7, t("web.training_loading")));
+  $("training-history-rows").replaceChildren(trainingEmptyRow(5, t("web.training_loading")));
+  showError("training-error", "");
+  await refreshTraining();
+}
+
+function closeTraining(force = false) {
+  if (!force && trainingSettingsDirty && !confirm(t("web.confirm_discard_changes"))) return;
+  trainingGeneration += 1;
+  trainingSettingsDirty = false;
+  $("training-dialog").close();
+  $("training-open").focus();
+}
+
+async function refreshTraining(force = false) {
+  if (!authenticated || !$("training-dialog").open || trainingLoading) return;
+  const generation = trainingGeneration;
+  trainingLoading = true;
+  $("training-refresh").disabled = true;
+  try {
+    const result = await api(`/api/training${force ? "?refresh=true" : ""}`);
+    if (generation !== trainingGeneration || !authenticated) return;
+    trainingData = result;
+    renderTraining();
+    showError("training-error", result.scan_error ? t(result.scan_error) : "");
+  } catch (error) {
+    if (generation === trainingGeneration && authenticated) showError("training-error", error.message);
+  } finally {
+    trainingLoading = false;
+    $("training-refresh").disabled = false;
+  }
+}
+
+function renderTrainingSettings() {
+  if (!trainingData?.settings) return;
+  const settings = trainingData.settings;
+  const snapshot = JSON.stringify(settings);
+  if (!trainingSettingsDirty && snapshot !== trainingSettingsSnapshot) {
+    $("training-enabled").checked = settings.enabled;
+    $("training-allowed").checked = settings.training_allowed;
+    $("training-pause-scope").value = settings.pause_scope;
+    $("training-interval").value = settings.interval_seconds / 60;
+    $("training-min-samples").value = settings.min_samples;
+    $("training-batch-size").value = settings.batch_size;
+    $("training-jobs").value = settings.jobs;
+    $("training-trees").value = settings.trees;
+    $("training-pause-bots").checked = settings.pause_bots;
+    trainingSettingsSnapshot = snapshot;
+  }
+  $("training-global-warning").textContent = !$("training-allowed").checked
+    ? t($("training-enabled").checked ? "web.training_auto_blocked" : "web.training_global_blocked")
+    : (trainingData.warnings || []).map((key) => t(key)).join(" ");
+  $("training-pause-scope").disabled = !$("training-pause-bots").checked;
+  $("training-settings-fields").disabled = trainingSubmitting;
+  $("training-save-settings").disabled = !trainingSettingsDirty || trainingSubmitting;
+  $("training-settings-status").textContent = t(trainingSettingsDirty ? "web.training_settings_pending" : "web.training_settings_hint");
+}
+
+function renderTrainingEstimate() {
+  const group = trainingData?.resolutions?.find((group) => group.resolution === $("training-resolution").value);
+  const limit = Number($("training-limit").value);
+  const samples = group ? Math.min(group.available, limit || group.available) : 0;
+  $("training-estimate").textContent = group
+    ? t("web.training_estimate", { count: count(samples), model: group.model_path })
+    : t("web.training_no_data");
+  $("training-categories").textContent = group && Object.keys(group.categories).length
+    ? t("web.training_category_summary", { categories: Object.entries(group.categories).map(([name, total]) => `${displayCode("categories", name)}: ${count(total)}`).join(" · ") })
+    : "";
+  $("training-start").disabled = !group || samples < 20 || !trainingData?.settings?.training_allowed || trainingData?.busy || trainingSettingsDirty || trainingSubmitting;
+  $("training-cancel").disabled = !trainingData?.busy || trainingData.active?.status === "cancelling" || trainingSubmitting;
+}
+
+function renderTraining() {
+  const data = trainingData;
+  if (!data) return;
+  renderTrainingSettings();
+  $("training-schedule-status").textContent = data.settings.enabled && data.settings.training_allowed
+    ? data.busy && data.next_check_in === 0 ? t("web.training_check_after_run") : t("web.training_next_check", { time: new Date(Date.now() + (data.next_check_in || 0) * 1000).toLocaleTimeString(locale) })
+    : t("web.training_auto_disabled");
+  const groups = data.resolutions || [];
+  const rows = groups.map((group) => {
+    const row = node("tr");
+    row.append(
+      node("td", "mono", trainingResolutionLabel(group.resolution)), node("td", "", count(group.available)),
+      node("td", "", count(group.pending)), node("td", "", count(group.processed)), node("td", "", count(group.items)),
+      node("td", "", count(Object.keys(group.categories).length))
+    );
+    const model = node("td", "", group.model_exists ? t("web.training_model_ready") : t("web.training_model_missing"));
+    if (group.model_version) model.append(node("small", "mono", group.model_version));
+    row.append(model);
+    return row;
+  });
+  $("training-data-rows").replaceChildren(...(rows.length ? rows : [trainingEmptyRow(7, t("web.training_no_data"))]));
+  const select = $("training-resolution");
+  const previous = select.value;
+  const values = groups.map((group) => group.resolution);
+  if (JSON.stringify([...select.options].map((option) => option.value)) !== JSON.stringify(values)) {
+    select.replaceChildren(...groups.map((group) => {
+      const option = node("option", "", trainingResolutionLabel(group.resolution));
+      option.value = group.resolution;
+      return option;
+    }));
+    select.value = values.includes(previous) ? previous : (groups.find((group) => group.available >= 20) || groups[0])?.resolution || "";
+  }
+  for (const option of select.options) option.textContent = trainingResolutionLabel(option.value);
+  select.disabled = !groups.length || trainingSubmitting;
+  renderTrainingEstimate();
+
+  const job = data.active;
+  const report = job ? (data.reports || []).find((report) => report.request_id === job.id) : null;
+  const status = data.busy && report?.status === "publishing" ? "publishing" : job?.status || "idle";
+  $("training-run-status").textContent = trainingStatus(status);
+  $("training-run-status").className = `status-badge ${status === "failed" ? "error" : data.busy ? "running" : "ready"}`;
+  $("training-run-detail").textContent = job
+    ? [trainingResolutionLabel(job.resolution), t(job.automatic ? "web.training_auto_trigger" : "web.training_manual"), job.started_at ? datasetDate(job.started_at) : null].filter(Boolean).join(" · ")
+    : t("web.training_idle_hint");
+  showError("training-run-error", job?.error || (job?.status === "failed" && job.exit_code != null ? t("web.training_exit_code", { code: job.exit_code }) : ""));
+  const metrics = [
+    ["web.training_used_frames", count(report?.training?.images_used ?? report?.current_batch?.used_frames)],
+    ["web.training_reused_frames", count(report?.training?.reused_images ?? report?.replay?.frames)],
+    ["web.training_accuracy", trainingPercent(report?.validation?.accuracy)]
+  ];
+  $("training-run-metrics").replaceChildren(...metrics.map(([key, value]) => {
+    const metric = node("div", "training-metric");
+    metric.append(node("span", "", t(key)), node("strong", "", value));
+    return metric;
+  }));
+  const output = $("training-output");
+  const following = output.scrollHeight - output.scrollTop - output.clientHeight < 30;
+  const logs = (data.logs || []).join("\n") || t("web.training_no_output");
+  if (output.textContent !== logs) {
+    output.textContent = logs;
+    if (following) output.scrollTop = output.scrollHeight;
+  }
+  const history = (data.reports || []).map((report) => {
+    const row = node("tr");
+    const date = node("td", "", datasetDate(report.started_at));
+    date.append(node("small", "", t(report.trigger === "automatic" ? "web.training_auto_trigger" : "web.training_manual")));
+    const resolution = node("td", "mono", trainingResolutionLabel(report.resolution));
+    resolution.append(node("small", "mono", report.run_id));
+    const samples = node("td", "", count(report.training.images_used ?? report.current_batch.used_frames));
+    if (report.training.category_count != null) samples.append(node("small", "", t("web.training_category_count", { count: count(report.training.category_count) })));
+    const validation = node("td", "", t("web.training_validation_scores", { accuracy: trainingPercent(report.validation.accuracy), f1: trainingPercent(report.validation.macro_f1) }));
+    const result = report.status === "success"
+      ? t(report.model_activated === true ? "web.training_model_activated" : report.model_activated === false ? "web.training_candidate_saved" : "web.training_success")
+      : trainingStatus(report.status);
+    row.append(date, resolution, samples, validation, node("td", "", result));
+    return row;
+  });
+  $("training-history-rows").replaceChildren(...(history.length ? history : [trainingEmptyRow(5, t("web.training_no_history"))]));
+}
+
+async function saveTrainingSettings(event) {
+  event.preventDefault();
+  if (trainingSubmitting || !event.target.reportValidity()) return;
+  const batch = Number($("training-batch-size").value);
+  if (batch > 0 && batch < 20) { showError("training-error", t("web.training_batch_too_small")); return; }
+  trainingSubmitting = true;
+  renderTrainingSettings();
+  renderTrainingEstimate();
+  try {
+    const result = await api("/api/training/settings", { method: "PUT", body: JSON.stringify({
+      enabled: $("training-enabled").checked,
+      training_allowed: $("training-allowed").checked,
+      pause_scope: $("training-pause-scope").value,
+      interval_seconds: Number($("training-interval").value) * 60,
+      min_samples: Number($("training-min-samples").value), batch_size: batch,
+      jobs: Number($("training-jobs").value), trees: Number($("training-trees").value),
+      pause_bots: $("training-pause-bots").checked
+    }) });
+    if (!authenticated) return;
+    trainingSettingsDirty = false;
+    trainingSettingsSnapshot = "";
+    trainingData = { ...trainingData, ...result };
+    showError("training-error", "");
+    toast(t("web.training_settings_saved"));
+  } catch (error) { if (authenticated) showError("training-error", error.message); }
+  finally { trainingSubmitting = false; if (authenticated && trainingData) renderTraining(); }
+}
+
+async function startTraining(event) {
+  event.preventDefault();
+  if (trainingSubmitting || trainingData?.busy || trainingSettingsDirty || !event.target.reportValidity()) return;
+  trainingSubmitting = true;
+  renderTrainingEstimate();
+  try {
+    const result = await api("/api/training/start", { method: "POST", body: JSON.stringify({
+      resolution: $("training-resolution").value, limit: Number($("training-limit").value), cleanup: $("training-cleanup").checked
+    }) });
+    if (!authenticated) return;
+    trainingData = { ...trainingData, ...result };
+    showError("training-error", "");
+    toast(t("web.training_requested"));
+  } catch (error) { if (authenticated) showError("training-error", error.message); }
+  finally { trainingSubmitting = false; if (authenticated && trainingData) renderTraining(); }
+}
+
+async function cancelTraining() {
+  if (trainingSubmitting || !trainingData?.busy) return;
+  trainingSubmitting = true;
+  renderTrainingEstimate();
+  try {
+    const result = await api("/api/training/cancel", { method: "POST" });
+    if (authenticated) trainingData = { ...trainingData, ...result };
+  } catch (error) { if (authenticated) showError("training-error", error.message); }
+  finally { trainingSubmitting = false; if (authenticated && trainingData) renderTraining(); }
+}
+
 function downloadLogs() {
-  if (!logLines.length) { toast("Ainda não há linhas para baixar."); return; }
-  const blob = new Blob([logLines.map((line) => line.text).join("\n") + "\n"], { type: "text/plain;charset=utf-8" });
+  if (!logLines.length) { toast(t("web.no_log_download")); return; }
+  const blob = new Blob([logLines.map((line) => line.translations?.[locale] ?? line.text).join("\n") + "\n"], { type: "text/plain;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const link = node("a");
   link.href = url;
@@ -1649,7 +1987,7 @@ function releaseDatasetImages() {
 
 function datasetDate(value) {
   const date = value ? new Date(value) : null;
-  return date && !Number.isNaN(date.getTime()) ? date.toLocaleString("pt-BR") : "Data desconhecida";
+  return date && !Number.isNaN(date.getTime()) ? date.toLocaleString(locale) : t("web.unknown_date");
 }
 
 async function openDatasets(preferredSession = null, resolution = null) {
@@ -1663,7 +2001,7 @@ async function openDatasets(preferredSession = null, resolution = null) {
     }
   }
   if (typeof resolution !== "string" || !/^[1-9]\d*x[1-9]\d*$/.test(resolution)) {
-    toast("Nenhuma resolução com dados coletados foi encontrada.", true);
+    toast(t("web.no_collected_resolution"), true);
     return;
   }
   datasetSession = preferredSession || null;
@@ -1675,20 +2013,20 @@ async function openDatasets(preferredSession = null, resolution = null) {
 async function refreshDatasetSessions(preferredSession = datasetSession) {
   const generation = ++datasetGeneration;
   $("dataset-refresh").disabled = true;
-  $("dataset-session-list").replaceChildren(node("p", "muted", "Carregando sessões…"));
+  $("dataset-session-list").replaceChildren(node("p", "muted", t("web.loading_sessions")));
   try {
     const result = await api(`/api/datasets/sessions?resolution=${encodeURIComponent(datasetResolution)}`);
     if (generation !== datasetGeneration) return;
     const sessions = Array.isArray(result.sessions) ? result.sessions : [];
     const buttons = sessions.map((session) => {
       const item = button("", `dataset-session${session.id === datasetSession ? " active" : ""}`, () => selectDatasetSession(session.id));
-      item.append(node("strong", "", session.id), node("small", "", `${count(session.count)} imagens · ${datasetDate(session.created_at)}`));
+      item.append(node("strong", "", session.id), node("small", "", t("web.session_images", { count: count(session.count), date: datasetDate(session.created_at) })));
       item.title = session.id;
       return item;
     });
     $("dataset-session-list").replaceChildren(...buttons);
     if (!sessions.length) {
-      $("dataset-session-list").replaceChildren(node("p", "muted", "Nenhuma imagem coletada."));
+      $("dataset-session-list").replaceChildren(node("p", "muted", t("web.no_collected_images")));
       clearDatasetSelection();
       return;
     }
@@ -1721,14 +2059,14 @@ async function selectDatasetSession(session, append = false) {
     $("dataset-images").replaceChildren();
     $("dataset-empty").hidden = true;
     $("dataset-selected").hidden = false;
-    $("dataset-status").textContent = "Carregando imagens…";
+    $("dataset-status").textContent = t("web.loading_images");
     for (const item of $("dataset-session-list").children) item.classList.toggle("active", item.title === session);
   }
   try {
     const result = await api(`/api/datasets/sessions/${encodeURIComponent(session)}?offset=${datasetOffset}&limit=200&resolution=${encodeURIComponent(datasetResolution)}`);
     if (generation !== datasetGeneration || datasetSession !== session) return;
     datasetTotal = result.total;
-    $("dataset-session-title").textContent = `Sessão com ${count(datasetTotal)} imagens`;
+    $("dataset-session-title").textContent = t("web.session_image_count", { value_1: count(datasetTotal) });
     $("dataset-session-detail").textContent = `${session} · ${datasetResolution}`;
     $("dataset-range-start").max = datasetTotal;
     $("dataset-range-end").max = datasetTotal;
@@ -1740,10 +2078,10 @@ async function selectDatasetSession(session, append = false) {
     for (const item of result.items || []) {
       const figure = node("figure", "dataset-image");
       const image = node("img");
-      image.alt = `Imagem ${item.index} da sessão`;
+      image.alt = t("web.session_image_alt", { value_1: item.index });
       image.loading = "lazy";
       const caption = node("figcaption");
-      caption.append(node("strong", "", item.action || "Sem ação"), node("small", "", datasetDate(item.created_at)));
+      caption.append(node("strong", "", displayCode("actions", item.action) || t("web.no_action")), node("small", "", datasetDate(item.created_at)));
       figure.append(image, node("span", "image-index", `#${item.index}`), caption);
       fragment.append(figure);
       apiBlob(`/api/datasets/sessions/${encodeURIComponent(session)}/images/${encodeURIComponent(item.id)}?resolution=${encodeURIComponent(datasetResolution)}`).then((blob) => {
@@ -1751,11 +2089,11 @@ async function selectDatasetSession(session, append = false) {
         const url = URL.createObjectURL(blob);
         datasetUrls.push(url);
         image.src = url;
-      }).catch(() => { image.alt = "Imagem indisponível"; });
+      }).catch(() => { image.alt = t("web.image_unavailable"); });
     }
     $("dataset-images").append(fragment);
     datasetOffset += (result.items || []).length;
-    $("dataset-status").textContent = `${count(datasetOffset)} de ${count(datasetTotal)} imagens exibidas · ordem da mais antiga para a mais recente`;
+    $("dataset-status").textContent = t("web.images_displayed", { shown: count(datasetOffset), total: count(datasetTotal) });
     $("dataset-more").hidden = datasetOffset >= datasetTotal;
   } catch (error) {
     if (generation === datasetGeneration && authenticated) $("dataset-status").textContent = error.message;
@@ -1770,13 +2108,13 @@ async function selectDatasetSession(session, append = false) {
 async function deleteDataset(payload) {
   if (!datasetSession) return;
   const active = state.devices.some((device) => device.running && device.session_id === datasetSession);
-  const description = payload.all ? `toda a sessão nesta resolução (${datasetTotal} imagens)` : `as imagens de #${payload.start} até #${payload.end}`;
-  const warning = active ? " O bot desta sessão ainda está coletando e poderá criar novas imagens." : "";
-  if (!confirm(`Excluir ${description}? Essa ação remove os registros e os arquivos sem outra referência.${warning}`)) return;
+  const description = payload.all ? t("web.delete_session_scope", { value_1: datasetTotal }) : t("web.delete_image_scope", { value_1: payload.start, value_2: payload.end });
+  const warning = active ? t("web.active_collection_warning") : "";
+  if (!confirm(t("web.confirm_delete_dataset", { value_1: description, value_2: warning }))) return;
   $("dataset-selected").inert = true;
   try {
     const result = await api(`/api/datasets/sessions/${encodeURIComponent(datasetSession)}?resolution=${encodeURIComponent(datasetResolution)}`, { method: "DELETE", body: JSON.stringify(payload) });
-    toast(`${count(result.deleted)} registros e ${count(result.images_deleted)} imagens excluídos.`);
+    toast(t("web.dataset_deleted", { value_1: count(result.deleted), value_2: count(result.images_deleted) }));
     await refreshDatasetSessions(datasetSession);
   } catch (error) { if (authenticated) toast(error.message, true); }
   finally { $("dataset-selected").inert = false; }
@@ -1795,13 +2133,13 @@ async function connectAndroid(event) {
   const submit = $("connect-submit");
   submit.disabled = true;
   $("connect-form").inert = true;
-  $("connect-result").textContent = "Conectando…";
+  $("connect-result").textContent = t("web.adb_connecting");
   try {
     const result = await api("/api/adb/connect", { method: "POST", body: JSON.stringify({ address: $("connect-address").value.trim() }) });
     rememberAdbAddress(result.address);
     $("connect-result").textContent = "";
     $("connect-dialog").close();
-    toast(result.message || result.output || "Conexão solicitada. Confira o dispositivo no painel.");
+    toast(result.message || result.output || t("web.adb_connection_requested"));
     await refreshState(true);
   } catch (error) { if (authenticated) $("connect-result").textContent = error.message; }
   finally { submit.disabled = false; $("connect-form").inert = false; }
@@ -1811,14 +2149,14 @@ async function pairAndroid() {
   if ($("connect-form").inert) return;
   const address = $("pair-address").value.trim();
   const code = $("pair-code").value.trim();
-  if (!address || !/^\d{6}$/.test(code)) { $("connect-result").textContent = "Informe o endereço de pareamento e o código de 6 dígitos."; return; }
+  if (!address || !/^\d{6}$/.test(code)) { $("connect-result").textContent = t("web.pairing_input_required"); return; }
   $("pair-submit").disabled = true;
   $("connect-form").inert = true;
-  $("connect-result").textContent = "Pareando…";
+  $("connect-result").textContent = t("web.pairing");
   try {
     const result = await api("/api/adb/pair", { method: "POST", body: JSON.stringify({ address, code }) });
     $("pair-code").value = "";
-    $("connect-result").textContent = result.message || result.output || "Pareamento concluído. Informe o IP e a porta atual; o painel tentará mudar para 5555.";
+    $("connect-result").textContent = result.message || result.output || t("web.pair_success_hint");
   } catch (error) { if (authenticated) $("connect-result").textContent = error.message; }
   finally { $("pair-submit").disabled = false; $("connect-form").inert = false; }
 }
@@ -1829,12 +2167,12 @@ $("theme-toggle").addEventListener("click", () => setTheme(document.documentElem
 $("logout").addEventListener("click", () => logout());
 $("refresh").addEventListener("click", () => refreshState(true));
 $("shutdown-server").addEventListener("click", async () => {
-  if (!confirm("Encerrar o painel web e parar os bots em execução?")) return;
-  stopVision({ mode: "stopped", message: "O painel está sendo encerrado." });
+  if (!confirm(t("web.confirm_shutdown"))) return;
+  stopVision({ mode: "stopped", message: t("web.dashboard_stopping") });
   $("shutdown-server").disabled = true;
   try {
     const result = await api("/api/server/shutdown", { method: "POST" });
-    toast(result.message || "Encerrando o painel…");
+    toast(result.message || t("web.dashboard_shutdown_progress"));
   } catch (error) {
     $("shutdown-server").disabled = false;
     toast(error.message, true);
@@ -1852,7 +2190,7 @@ $("device-dialog").addEventListener("cancel", (event) => { event.preventDefault(
 $("save-profile").addEventListener("click", saveProfile);
 $("reset-profile").addEventListener("click", resetProfile);
 $("reset-thresholds").addEventListener("click", () => {
-  if (!draft || !confirm("Restaurar todas as fidelidades deste dispositivo? Salve o perfil para aplicar.")) return;
+  if (!draft || !confirm(t("web.confirm_reset_thresholds"))) return;
   draft.category_thresholds = {};
   draft.item_thresholds = {};
   renderItems();
@@ -1874,8 +2212,26 @@ for (const tab of document.querySelectorAll("[data-tab]")) {
     $(`tab-${tabs[index]}`).focus();
   });
 }
-$("log-pause").addEventListener("click", () => { logPaused = !logPaused; $("log-pause").textContent = logPaused ? "Retomar" : "Pausar"; if (!logPaused) pollLogs(); });
+$("log-pause").addEventListener("click", () => { logPaused = !logPaused; $("log-pause").textContent = logPaused ? t("web.resume") : t("web.pause"); if (!logPaused) pollLogs(); });
 $("log-download").addEventListener("click", downloadLogs);
+$("training-open").addEventListener("click", openTraining);
+$("training-close").addEventListener("click", () => closeTraining());
+$("training-dialog").addEventListener("cancel", (event) => { event.preventDefault(); closeTraining(); });
+$("training-refresh").addEventListener("click", () => refreshTraining(true));
+$("training-resolution").addEventListener("change", renderTrainingEstimate);
+$("training-limit").addEventListener("input", renderTrainingEstimate);
+$("training-start-form").addEventListener("submit", startTraining);
+$("training-cancel").addEventListener("click", cancelTraining);
+$("training-settings-form").addEventListener("submit", saveTrainingSettings);
+$("training-settings-form").addEventListener("input", () => {
+  trainingSettingsDirty = true;
+  renderTrainingSettings();
+  renderTrainingEstimate();
+});
+$("language-switch").addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-locale]");
+  if (button && button.dataset.locale !== locale) setLocale(button.dataset.locale);
+});
 $("vision-toggle").addEventListener("click", () => { if (visionWanted) stopVision(); else startVision(); });
 $("vision-details").addEventListener("change", () => {
   setVisionDetails($("vision-details").checked);
@@ -1935,12 +2291,12 @@ $("template-image").addEventListener("pointerup", (event) => {
     $("template-undo").disabled = !templateBlockSelections.length;
     $("template-confirm").disabled = !templateBlockSelections.length && !templateBlockEdited;
     $("template-selection-status").textContent = templateBlockSelections.length
-      ? `${templateBlockSelections.length} área(s) ignorada(s) selecionada(s). Continue arrastando ou confirme.`
-      : "A seleção precisa ter pelo menos 6×6px.";
+      ? t("web.areas_selected_hint", { value_1: templateBlockSelections.length })
+      : t("web.selection_min_size");
     return;
   }
   $("template-confirm").disabled = templateSelection.width < 6 || templateSelection.height < 6;
-  $("template-selection-status").textContent = `Seleção: ${templateSelection.width}×${templateSelection.height}px. Confira o preview e confirme.`;
+  $("template-selection-status").textContent = t("web.selection_review_hint", { value_1: templateSelection.width, value_2: templateSelection.height });
 });
 $("template-image").addEventListener("pointercancel", () => { templateStart = null; templatePointerId = null; });
 $("connect-open").addEventListener("click", () => { $("connect-result").textContent = ""; $("connect-dialog").showModal(); });
@@ -1963,7 +2319,7 @@ $("dataset-range-form").addEventListener("submit", (event) => {
   const start = Number($("dataset-range-start").value);
   const end = Number($("dataset-range-end").value);
   if (!Number.isInteger(start) || !Number.isInteger(end) || start < 1 || end < start || end > datasetTotal) {
-    toast(`Informe um intervalo entre 1 e ${datasetTotal}.`, true);
+    toast(t("web.invalid_image_range", { value_1: datasetTotal }), true);
     return;
   }
   deleteDataset({ start, end });
@@ -1972,16 +2328,24 @@ window.addEventListener("beforeunload", (event) => { if (changeCount()) { event.
 setInterval(() => { if (!document.hidden) refreshState(); }, 5000);
 setInterval(() => { if (!document.hidden) refreshRuntime(); }, 1000);
 setInterval(() => { if (!document.hidden) pollLogs(); }, 1500);
+setInterval(() => { if (!document.hidden) refreshTraining(); }, 3000);
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) {
     if (visionWanted) stopVision({ mode: "paused", pause: true });
   } else {
     refreshState();
     pollLogs();
+    refreshTraining();
     if (visionResume && activeTab === "vision") startVision();
   }
 });
 window.addEventListener("pagehide", () => stopVision());
-restoreTheme();
-restoreVisionDetails();
-bootstrapSession();
+loadMessages().catch(() => {
+  locale = document.documentElement.lang;
+  numberFormat = new Intl.NumberFormat(locale);
+}).then(() => {
+  renderLanguageSwitch();
+  restoreTheme();
+  restoreVisionDetails();
+  bootstrapSession();
+});

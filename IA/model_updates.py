@@ -1,9 +1,16 @@
 """Publicações imutáveis e carregamento de modelos fora do loop de captura."""
 
 import json
+import sys
 import threading
 from dataclasses import dataclass
 from pathlib import Path
+
+_source_root = str(Path(__file__).resolve().parent.parent / "src")
+if _source_root not in sys.path:
+    sys.path.insert(0, _source_root)
+
+from core.i18n import t
 
 
 @dataclass(frozen=True)
@@ -21,7 +28,7 @@ def resolve_publication(path):
         return ModelPublication(requested)
 
     if not isinstance(manifest, dict):
-        raise ValueError(f"Publicação inválida: {pointer}")
+        raise ValueError(t("messages.invalid_publication", pointer=pointer))
 
     run_id = manifest.get("run_id")
     model_path = manifest.get("model_path")
@@ -33,12 +40,12 @@ def resolve_publication(path):
         or not isinstance(model_path, str)
         or not model_path
     ):
-        raise ValueError(f"Publicação sem versão ou caminho válido: {pointer}")
+        raise ValueError(t("messages.publication_fields_missing", pointer=pointer))
 
     expected = (pointer.parent / "models" / run_id / "model.joblib").resolve()
     published = (pointer.parent / model_path).resolve()
     if Path(model_path).is_absolute() or published != expected:
-        raise ValueError(f"Caminho inválido para a publicação {run_id}")
+        raise ValueError(t("messages.invalid_publication_path", run_id=run_id))
 
     return ModelPublication(published, run_id)
 
@@ -97,7 +104,7 @@ class ModelWatcher:
                 if key not in self._reported_errors:
                     self._reported_errors.add(key)
                     self.logger.warning(
-                        "Atualização de modelo rejeitada; mantendo o anterior: %s",
+                        t("messages.model_update_rejected"),
                         error,
                     )
             self._stop.wait(self.interval)

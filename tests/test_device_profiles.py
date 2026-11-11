@@ -63,6 +63,21 @@ class DeviceProfilesTests(unittest.TestCase):
             with self.subTest(settings=settings), self.assertRaises(ValueError):
                 self.store.save("phone", {"settings": settings})
 
+    def test_accepts_swipe_overrides(self):
+        profile = self.store.save("phone", {"settings": {
+            "swipe_x": 500,
+            "swipe_y": 1200,
+            "swipe_distance": 650,
+            "swipe_duration_ms": 450,
+        }})
+
+        self.assertEqual(profile["settings"], {
+            "swipe_x": 500,
+            "swipe_y": 1200,
+            "swipe_distance": 650,
+            "swipe_duration_ms": 450,
+        })
+
     def test_rejects_unsafe_item_paths(self):
         for name in ("../outside.png", "food/../../outside.png", "food\\1.png", "food/a:1.png", "food/.hidden.png", "food/code.py"):
             with self.subTest(name=name), self.assertRaises(ValueError):

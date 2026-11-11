@@ -1,6 +1,7 @@
 """Prévia web sob demanda, com autorização temporária por sessão."""
 
 import json
+from core.i18n import t
 import logging
 import math
 import os
@@ -30,10 +31,10 @@ def _read_json(path):
     with path.open("r", encoding="utf-8") as source:
         raw = source.read(_MAX_JSON_BYTES + 1)
     if len(raw) > _MAX_JSON_BYTES:
-        raise ValueError("Metadados da prévia excedem o limite.")
+        raise ValueError(t("messages.preview_metadata_limit"))
     value = json.loads(raw)
     if not isinstance(value, dict):
-        raise ValueError("Metadados da prévia inválidos.")
+        raise ValueError(t("messages.invalid_preview_metadata"))
     return value
 
 
@@ -168,7 +169,7 @@ class FramePreview:
             if now - self._last_warning.get(type(error), float("-inf")) < 5:
                 return
             self._last_warning[type(error)] = now
-        logger.warning("Falha desenhando a visão IA: %s", error, exc_info=True)
+        logger.warning(t("messages.vision_draw_failed"), error, exc_info=True)
 
     def stop(self):
         with self._condition:

@@ -1,11 +1,28 @@
 """Log central; timestamp com milissegundos permite separar "detectou errado" de "detectou tarde"."""
 
 import logging
+import copy
+import json
 import os
 import sys
 import threading
 from datetime import datetime
 from pathlib import Path
+
+from core.i18n import SUPPORTED_LOCALES, Text, localized, locale, t
+
+
+LOG_PREFIX = "@eatventure-log:"
+
+
+def log_translations(record, formatter):
+    translations = {}
+    for language in SUPPORTED_LOCALES:
+        translated = copy.copy(record)
+        translated.msg = localized(record.msg, language)
+        translated.args = localized(record.args, language)
+        translations[language] = formatter.format(translated)
+    return translations
 
 
 class OutputCopy:
@@ -40,6 +57,13 @@ class ConsoleHandler(logging.StreamHandler):
 
     def emit(self, record):
         try:
+            if os.environ.get("EATVENTURE_LOG_JSON") == "1" and isinstance(record.msg, Text):
+                translations = log_translations(record, self.formatter)
+                self.stream.write(LOG_PREFIX + json.dumps({
+                    "text": translations[locale()], "translations": translations,
+                }, ensure_ascii=False) + self.terminator)
+                self.flush()
+                return
             panel = self.panel
             if panel is not None and panel.ansi:
                 message = self.format(record)
@@ -94,7 +118,7 @@ def setup(level="INFO", log_dir=None):
         # O console e o painel usam o stream original para não duplicar logs nem ANSI.
         sys.stdout = OutputCopy(sys.stdout, handler)
         sys.stderr = OutputCopy(sys.stderr, handler)
-        root.info("Log completo desta execução: %s", path)
+        root.info(t("messages.log_file_path"), path)
 
     return root
 

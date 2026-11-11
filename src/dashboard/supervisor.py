@@ -20,6 +20,7 @@ import time
 import uuid
 
 from core import config, log
+from core.i18n import SUPPORTED_LOCALES, Text, localized, t
 from core.block_regions import migrate_legacy_blocks
 from core.preview import FramePreview, preview_paths
 
@@ -57,9 +58,9 @@ def _adb_run(executable, args, timeout=8):
             **({"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}),
         )
     except FileNotFoundError as exc:
-        raise RuntimeError("ADB não encontrado. Instale o Android Platform Tools e confira o PATH.") from exc
+        raise RuntimeError(t("messages.adb_not_found")) from exc
     except (OSError, subprocess.TimeoutExpired) as exc:
-        raise RuntimeError(f"Falha ao executar ADB: {exc}") from exc
+        raise RuntimeError(t("messages.adb_execution_failed", exc=exc)) from exc
     if result.returncode:
         raise RuntimeError((result.stdout or "Falha ao executar ADB.").strip()[:2000])
     return result.stdout
@@ -67,27 +68,27 @@ def _adb_run(executable, args, timeout=8):
 
 def _network_address(address):
     if not isinstance(address, str):
-        raise ValueError("Informe o endereço no formato host:porta.")
+        raise ValueError(t("messages.address_format_required"))
     address = address.strip()
     if address.startswith("["):
         match = re.fullmatch(r"\[([^\]]+)\]:(\d{1,5})", address)
         if not match:
-            raise ValueError("Endereço IPv6 inválido. Use [endereço]:porta.")
+            raise ValueError(t("messages.ipv6_format_required"))
         host, port = match.groups()
         try:
             ipaddress.IPv6Address(host)
         except ValueError as exc:
-            raise ValueError("Endereço IPv6 inválido.") from exc
+            raise ValueError(t("messages.invalid_ipv6")) from exc
     else:
         match = re.fullmatch(r"([^:]+):(\d{1,5})", address)
         if not match or not _HOSTNAME.fullmatch(match.group(1)):
-            raise ValueError("Informe um IP ou nome de host seguido de :porta.")
+            raise ValueError(t("messages.host_port_required"))
         host, port = match.groups()
         if any(not label or len(label) > 63 or label.startswith("-") or label.endswith("-")
                for label in host.split(".")):
-            raise ValueError("Nome de host inválido.")
+            raise ValueError(t("messages.invalid_hostname"))
     if not 1 <= int(port) <= 65535:
-        raise ValueError("A porta deve estar entre 1 e 65535.")
+        raise ValueError(t("messages.invalid_port"))
     return address
 
 
@@ -305,7 +306,7 @@ class DeviceManager:
                 error = None
             except RuntimeError as exc:
                 devices = []
-                error = str(exc)
+                error = exc.args[0] if len(exc.args) == 1 and isinstance(exc.args[0], Text) else str(exc)
             with self._lock:
                 self._network_ids = network_ids if error is None else self._network_ids
                 self._devices = devices
@@ -321,7 +322,7 @@ class DeviceManager:
         address = _network_address(address)
         output = _adb_run(self._executable(), ["connect", address], timeout=12).strip()
         if not any(text in output.lower() for text in ("connected to", "already connected")):
-            raise RuntimeError(output or "O ADB não confirmou a conexão.")
+            raise RuntimeError(output or t("messages.adb_connection_unconfirmed"))
         target_address = address
         if address.rsplit(":", 1)[1] != "5555":
             try:
@@ -330,8 +331,7 @@ class DeviceManager:
                 ).strip()
             except RuntimeError as error:
                 output = (
-                    f"{output}\nNão foi possível aplicar a porta 5555; "
-                    f"a conexão continua em {address}. {error}"
+                    t("messages.adb_port_switch_failed", output=output, address=address, error=error)
                 )
             else:
                 target_address = f"{address.rsplit(':', 1)[0]}:5555"
@@ -356,8 +356,7 @@ class DeviceManager:
                 else:
                     detail = reconnect_output or reconnect_error or tcpip_output
                     raise RuntimeError(
-                        f"O ADB aplicou a porta 5555, mas não reconectou em "
-                        f"{target_address}. {detail}"
+                        t("messages.adb_reconnect_failed", target_address=target_address, detail=detail)
                     )
                 output = f"{output}\n{tcpip_output}\n{reconnect_output}".strip()
         self.invalidate()
@@ -366,10 +365,10 @@ class DeviceManager:
     def pair(self, address, code):
         address = _network_address(address)
         if not isinstance(code, str) or not re.fullmatch(r"[0-9]{6}", code.strip()):
-            raise ValueError("Informe o código de pareamento de seis dígitos.")
+            raise ValueError(t("messages.pairing_code_required"))
         output = _adb_run(self._executable(), ["pair", address, code.strip()], timeout=20).strip()
         if "successfully paired" not in output.lower():
-            raise RuntimeError(output or "O ADB não confirmou o pareamento.")
+            raise RuntimeError(output or t("messages.adb_pairing_unconfirmed"))
         self.invalidate()
         return output
 
@@ -421,6 +420,10 @@ class BotSupervisor:
         self._device_cache = {}
         self._auto_trainer = None
         self._closing = False
+        from dashboard.training import TrainingManager
+
+        self.training = TrainingManager(self.root, self.state_root, training_session=self._training_session)
+        self._auto_trainer = self.training
 
     def _operation_lock(self, device_id):
         with self._lock:
@@ -464,7 +467,7 @@ class BotSupervisor:
                 )
             os.replace(temporary, path)
         except OSError:
-            logger.warning("NÃ£o foi possÃ­vel salvar o relatÃ³rio de %s.", device_id)
+            logger.warning(t("messages.report_save_failed"), device_id)
         finally:
             if temporary is not None:
                 try:
@@ -603,50 +606,26 @@ class BotSupervisor:
         self._resolve(device_id)
 
     def _ensure_auto_trainer(self):
-        from core import config
-
         with self._lock:
-            if self._closing or self._auto_trainer is not None:
+            if self._closing:
                 return
-            enabled = False
-            for device_id, run in self._runs.items():
-                if run.process.poll() is not None:
-                    continue
-                profile = self.store.load(device_id)
-                if profile["settings"].get("ai_auto_train", config.AI_AUTO_TRAIN):
-                    enabled = True
-                    break
-            if not enabled:
-                return
-            from dataset.auto_train import AutoTrainer
-
-            trainer = AutoTrainer(
-                config.DATASET_DIR,
-                batch_size=config.AI_TRAIN_BATCH_SIZE,
-                interval=config.AI_TRAIN_CHECK_INTERVAL,
-                jobs=config.AI_TRAIN_JOBS,
-                pause_bot=False,
-                training_session=self._training_session,
-            )
-            self._auto_trainer = trainer
-        trainer.start()
+            self.training.start()
 
     @contextmanager
-    def _training_session(self, resolution):
+    def _training_session(self, resolution, pause=True, scope="resolution"):
         with self._auto_training_lock:
+            if not pause:
+                yield
+                return
             with self._lock:
                 active_runs = [
                     (device_id, run) for device_id, run in self._runs.items()
                     if run.process.poll() is None
                 ]
-            # O snapshot do dataset e a limpeza por linha já preservam dados
-            # escritos depois do início do treino. Só pausamos quem coleta a
-            # mesma resolução para reduzir disputa de CPU e I/O, sem derrubar
-            # aparelhos que treinam outro shard.
             device_ids = []
             for device_id, run in active_runs:
-                summary = self._metrics(device_id, run).get("summary", {})
-                if summary.get("resolution") == resolution:
+                summary = self._metrics(device_id, run).get("summary", {}) if scope != "all" else {}
+                if scope == "all" or summary.get("resolution") == resolution:
                     device_ids.append(device_id)
             restart_ids = []
             for device_id in device_ids:
@@ -655,14 +634,14 @@ class BotSupervisor:
                     restart_ids.append(device_id)
                 except (KeyError, RuntimeError, OSError):
                     logger.exception(
-                        "Não foi possível parar o bot %s antes do treino da resolução %s.",
+                        t("messages.training_stop_bot_failed"),
                         device_id, resolution,
                     )
                     for stopped_id in restart_ids:
                         try:
                             self.start(stopped_id)
                         except (KeyError, RuntimeError, OSError):
-                            logger.exception("Não foi possível retomar o bot %s.", stopped_id)
+                            logger.exception(t("messages.bot_resume_failed"), stopped_id)
                     raise
             try:
                 yield
@@ -672,7 +651,7 @@ class BotSupervisor:
                         try:
                             self.start(device_id)
                         except (KeyError, RuntimeError, OSError):
-                            logger.exception("Não foi possível retomar o bot %s após o treino.", device_id)
+                            logger.exception(t("messages.post_training_resume_failed"), device_id)
 
     def _metrics(self, device_id, run, allow_finished=False):
         if run is None or (not allow_finished and run.process.poll() is not None):
@@ -755,10 +734,23 @@ class BotSupervisor:
                 })
         return {
             "devices": [self._describe(device) for device in catalog.values()],
-            "error": self.devices.last_error,
+            "error": localized(self.devices.last_error),
         }
 
     def _append_log(self, run, text):
+        translations = None
+        if isinstance(text, Text):
+            translations = {language: text.render(language) for language in SUPPORTED_LOCALES}
+        elif text.startswith(log.LOG_PREFIX):
+            try:
+                payload = json.loads(text[len(log.LOG_PREFIX):])
+                if isinstance(payload, dict) and isinstance(payload.get("text"), str):
+                    text = payload["text"]
+                    candidate = payload.get("translations")
+                    if isinstance(candidate, dict) and all(isinstance(candidate.get(language), str) for language in SUPPORTED_LOCALES):
+                        translations = {language: candidate[language] for language in SUPPORTED_LOCALES}
+            except (ValueError, TypeError):
+                pass
         text = _ANSI.sub("", text).replace("\x00", "").strip("\r\n")
         if not text:
             return
@@ -769,18 +761,32 @@ class BotSupervisor:
             encoded = text.encode("utf-8")
         else:
             text = encoded.decode("utf-8")
+        if translations:
+            translations = {
+                language: _ANSI.sub("", value).replace("\x00", "").strip("\r\n").encode("utf-8")[:MAX_LOG_LINE_BYTES].decode("utf-8", errors="ignore")
+                for language, value in translations.items()
+            }
         with self._lock:
             run.cursor += 1
-            run.lines.append({"id": run.cursor, "time": _iso_time(time.time()), "text": text})
-            run.log_bytes += len(encoded)
+            line = {"id": run.cursor, "time": _iso_time(time.time()), "text": text}
+            if translations:
+                line["translations"] = translations
+            run.lines.append(line)
+            run.log_bytes += self._log_size(line)
             run.log_truncated += int(truncated)
             self._trim_logs(run)
+
+    @staticmethod
+    def _log_size(line):
+        return len(line["text"].encode("utf-8")) + sum(
+            len(value.encode("utf-8")) for value in line.get("translations", {}).values()
+        )
 
     @staticmethod
     def _trim_logs(run):
         while run.lines and (len(run.lines) > MAX_LOG_LINES or run.log_bytes > MAX_LOG_BYTES):
             removed = run.lines.popleft()
-            run.log_bytes -= len(removed["text"].encode("utf-8"))
+            run.log_bytes -= BotSupervisor._log_size(removed)
             run.log_dropped += 1
 
     def _read_output(self, run):
@@ -792,7 +798,7 @@ class BotSupervisor:
                         break
                     self._append_log(run, line)
         except (OSError, ValueError) as exc:
-            self._append_log(run, f"Falha lendo saída do bot: {exc}")
+            self._append_log(run, t("messages.bot_output_read_failed", exc=exc))
         finally:
             if run.process.stdout is not None:
                 run.process.stdout.close()
@@ -818,8 +824,7 @@ class BotSupervisor:
                 if self._closing or run.stop_requested or self._runs.get(device_id) is not run:
                     return
             self._append_log(run, (
-                f"Falha do bot (código {run.exit_code}). Recuperação "
-                f"{attempt}/{config.BOT_RESTART_LIMIT} em {config.BOT_RESTART_DELAY:.1f}s."
+                t("messages.bot_recovery_scheduled", value_1=run.exit_code, attempt=attempt, value_3=config.BOT_RESTART_LIMIT, value_4=config.BOT_RESTART_DELAY)
             ))
             if run.recovery_cancel.wait(config.BOT_RESTART_DELAY):
                 return
@@ -832,9 +837,9 @@ class BotSupervisor:
                     self._start(device_id, restart_attempt=attempt)
                 return
             except Exception as error:
-                self._append_log(run, f"Recuperação {attempt} falhou: {error}")
+                self._append_log(run, t("messages.recovery_attempt_failed", attempt=attempt, error=error))
         if not run.stop_requested and not self._closing:
-            self._append_log(run, f"Limite de {config.BOT_RESTART_LIMIT} recuperações atingido; bot encerrado.")
+            self._append_log(run, t("messages.bot_recovery_limit", value_1=config.BOT_RESTART_LIMIT))
 
     def _cleanup_group(self, run):
         FramePreview(run.status_file, run.session_id).clear()
@@ -863,15 +868,15 @@ class BotSupervisor:
         with self._operation_lock(device_id):
             with self._lock:
                 if self._closing:
-                    raise RuntimeError("O painel está sendo encerrado.")
+                    raise RuntimeError(t("messages.dashboard_stopping"))
                 previous = self._runs.get(device_id)
                 if previous is not None and previous.process.poll() is None:
                     return self._describe(device)
                 for running_id, active in self._runs.items():
                     if running_id != device_id and active.serial in device["aliases"] and active.process.poll() is None:
-                        raise RuntimeError("Este aparelho já está em execução por outra conexão ADB.")
+                        raise RuntimeError(t("messages.duplicate_adb_connection"))
             if not device["connected"]:
-                raise RuntimeError("O dispositivo não está autorizado e conectado ao ADB.")
+                raise RuntimeError(t("messages.device_not_authorized"))
             profile = migrate_legacy_blocks(self.store, device_id, device.get("aliases", []))
             profile_path = Path(self.store.path_for(device_id))
             if not profile_path.is_file():
@@ -897,6 +902,7 @@ class BotSupervisor:
                 "EATVENTURE_PAUSE_FILE": str(pause_file),
                 "EATVENTURE_SESSION_ID": session_id,
                 "EATVENTURE_AUTO_TRAIN_EXTERNAL": "1",
+                "EATVENTURE_LOG_JSON": "1",
             })
             command = [sys.executable, "-u", str(self.root / "src" / "web_worker.py"), "--device", device["serial"]]
             options = profile.get("run", {})
@@ -907,10 +913,10 @@ class BotSupervisor:
             started_at = time.time()
             with self._lock:
                 if self._closing:
-                    raise RuntimeError("O painel está sendo encerrado.")
+                    raise RuntimeError(t("messages.dashboard_stopping"))
                 for running_id, active in self._runs.items():
                     if running_id != device_id and active.serial in device["aliases"] and active.process.poll() is None:
-                        raise RuntimeError("Este aparelho já está em execução por outra conexão ADB.")
+                        raise RuntimeError(t("messages.duplicate_adb_connection"))
                 try:
                     dataset_base = self._sample_catalog()
                     process = subprocess.Popen(
@@ -927,7 +933,7 @@ class BotSupervisor:
                         **process_options,
                     )
                 except OSError as exc:
-                    raise RuntimeError(f"Não foi possível iniciar o bot: {exc}") from exc
+                    raise RuntimeError(t("messages.bot_start_failed", exc=exc)) from exc
                 run = _Run(
                     process, started_at, session_id, device["serial"], status_file,
                     stop_file, pause_file=pause_file,
@@ -944,9 +950,9 @@ class BotSupervisor:
                     run.log_truncated = previous.log_truncated
                     self._trim_logs(run)
                 self._runs[device_id] = run
-            self._append_log(run, f"Bot iniciado (PID {process.pid}).")
+            self._append_log(run, t("messages.bot_started", value_1=process.pid))
             if restart_attempt:
-                self._append_log(run, f"Bot recuperado: tentativa {restart_attempt}/{config.BOT_RESTART_LIMIT}.")
+                self._append_log(run, t("messages.bot_recovered", restart_attempt=restart_attempt, value_2=config.BOT_RESTART_LIMIT))
             run.reader = threading.Thread(target=self._read_output, args=(run,), name=f"bot-log-{process.pid}", daemon=True)
             run.watcher = threading.Thread(target=self._watch_process, args=(run,), name=f"bot-wait-{process.pid}", daemon=True)
             run.reader.start()
@@ -981,7 +987,7 @@ class BotSupervisor:
         try:
             run.process.wait(timeout=3)
         except subprocess.TimeoutExpired as exc:
-            raise RuntimeError("Não foi possível encerrar o processo do bot.") from exc
+            raise RuntimeError(t("messages.bot_stop_failed")) from exc
 
     def stop(self, device_id):
         with self._auto_training_lock:
@@ -1002,7 +1008,7 @@ class BotSupervisor:
                     return self._describe(device)
                 run.stopping = True
                 run.stop_requested = True
-            self._append_log(run, "Encerramento solicitado pelo painel.")
+            self._append_log(run, t("messages.dashboard_stop_requested"))
             try:
                 run.stop_file.write_text(run.session_id, encoding="utf-8")
             except OSError:
@@ -1026,7 +1032,7 @@ class BotSupervisor:
             run.stopping = False
             if run.reader is not None:
                 run.reader.join(timeout=1)
-            self._append_log(run, f"Bot encerrado (código {run.exit_code}).")
+            self._append_log(run, t("messages.bot_stopped", value_1=run.exit_code))
             return self._describe(device)
 
     def restart(self, device_id):
@@ -1038,14 +1044,14 @@ class BotSupervisor:
 
     def request_vision(self, device_id, enabled, mode="vision"):
         if mode not in {"vision", "template", "clean"}:
-            raise ValueError("Modo de prévia inválido.")
+            raise ValueError(t("messages.invalid_preview_mode"))
         device_id = self._runtime_device_id(device_id)
         with self._operation_lock(device_id):
             with self._lock:
                 run = self._runs.get(device_id)
                 if run is None or run.process.poll() is not None:
                     if enabled:
-                        raise RuntimeError("Inicie o bot para abrir a visão IA.")
+                        raise RuntimeError(t("messages.vision_requires_running_bot"))
                     if run is not None:
                         FramePreview(run.status_file, run.session_id).clear()
                         run.template_snapshots.clear()
@@ -1060,7 +1066,7 @@ class BotSupervisor:
                     json.dump(request, output, allow_nan=False)
                 os.replace(temporary, path)
             except OSError as error:
-                raise RuntimeError("Não foi possível alterar a visualização IA.") from error
+                raise RuntimeError(t("messages.vision_toggle_failed")) from error
             finally:
                 if temporary is not None:
                     temporary.unlink(missing_ok=True)
@@ -1075,7 +1081,7 @@ class BotSupervisor:
                     else:
                         run.pause_file.unlink(missing_ok=True)
                 except OSError as error:
-                    raise RuntimeError("Não foi possível alterar a pausa para selecionar o template.") from error
+                    raise RuntimeError(t("messages.template_pause_failed")) from error
             return {"enabled": enabled}
 
     def vision_frame(self, device_id, mode="vision"):
@@ -1097,10 +1103,10 @@ class BotSupervisor:
                     or updated_at < run.started_at
                     or not -2 <= time.time() - updated_at <= 5
                     or not 0 < stat.st_size <= 5_000_000):
-                raise ValueError("Prévia indisponível.")
+                raise ValueError(t("messages.preview_unavailable"))
             return paths["image"]
         except (OSError, ValueError, TypeError, AttributeError) as error:
-            raise RuntimeError("Aguardando frame da visão IA.") from error
+            raise RuntimeError(t("messages.waiting_vision_frame")) from error
 
     def template_snapshot(self, device_id, snapshot_id=None):
         device_id = self._runtime_device_id(device_id)
@@ -1108,14 +1114,14 @@ class BotSupervisor:
         try:
             content = path.read_bytes()
         except OSError as error:
-            raise RuntimeError("Não foi possível congelar o frame para o template.") from error
+            raise RuntimeError(t("messages.template_freeze_failed")) from error
         if not 0 < len(content) <= 5_000_000:
-            raise RuntimeError("O frame para o template é inválido.")
+            raise RuntimeError(t("messages.invalid_template_frame"))
         if snapshot_id is not None and (
             not isinstance(snapshot_id, str)
             or re.fullmatch(r"[0-9a-f]{32}", snapshot_id) is None
         ):
-            raise ValueError("Identificador do frame inválido.")
+            raise ValueError(t("messages.invalid_frame_id"))
         snapshot = {
             "id": snapshot_id or uuid.uuid4().hex,
             "content": content,
@@ -1124,7 +1130,7 @@ class BotSupervisor:
         with self._lock:
             run = self._runs.get(device_id)
             if run is None or run.process.poll() is not None:
-                raise RuntimeError("A sessão do bot foi encerrada.")
+                raise RuntimeError(t("messages.bot_session_ended"))
             run.template_snapshots[snapshot["id"]] = snapshot
             while len(run.template_snapshots) > 4:
                 run.template_snapshots.pop(next(iter(run.template_snapshots)))
@@ -1136,33 +1142,33 @@ class BotSupervisor:
         import unicodedata
 
         if not isinstance(category, str) or re.fullmatch(r"[a-z][a-z0-9_]{0,63}", category) is None:
-            raise ValueError("Categoria de template inválida.")
+            raise ValueError(t("messages.invalid_template_category"))
         if not isinstance(name, str) or len(name) > 64 or (name and not name.isprintable()):
-            raise ValueError("Nome de template inválido.")
+            raise ValueError(t("messages.invalid_template_name"))
         if category != "food" and name.strip():
-            raise ValueError("O nome personalizado está disponível somente para food.")
+            raise ValueError(t("messages.custom_name_requires_food"))
         normalized_name = unicodedata.normalize("NFKD", name.strip()).encode("ascii", "ignore").decode()
         normalized_name = re.sub(r"[^a-z0-9]+", "_", normalized_name.lower()).strip("_")
         if name.strip() and not normalized_name:
-            raise ValueError("Informe um nome com letras ou números.")
+            raise ValueError(t("messages.template_name_required"))
         values = (x, y, width, height)
         if any(type(value) is not int for value in values) or width < 6 or height < 6:
-            raise ValueError("Selecione uma área de pelo menos 6x6 pixels.")
+            raise ValueError(t("messages.selection_too_small"))
         if not isinstance(snapshot_id, str) or re.fullmatch(r"[0-9a-f]{32}", snapshot_id) is None:
-            raise ValueError("O frame selecionado é inválido.")
+            raise ValueError(t("messages.invalid_selected_frame"))
         device_id = self._runtime_device_id(device_id)
         with self._lock:
             run = self._runs.get(device_id)
             snapshot = run.template_snapshots.get(snapshot_id) if run is not None else None
             if snapshot is None:
-                raise RuntimeError("O frame selecionado expirou. Atualize o frame e selecione novamente.")
+                raise RuntimeError(t("messages.selected_frame_expired"))
             content = snapshot["content"]
         image = cv2.imdecode(np.frombuffer(content, np.uint8), cv2.IMREAD_COLOR)
         if image is None:
-            raise RuntimeError("Não foi possível ler o frame congelado.")
+            raise RuntimeError(t("messages.frozen_frame_unreadable"))
         frame_height, frame_width = image.shape[:2]
         if x < 0 or y < 0 or x + width > frame_width or y + height > frame_height:
-            raise ValueError("A seleção está fora do frame congelado.")
+            raise ValueError(t("messages.selection_outside_frame"))
         crop = image[y:y + height, x:x + width]
         folder = self.root / "src" / "vision" / "templates" / "default" / category
         with self._lock:
@@ -1180,17 +1186,17 @@ class BotSupervisor:
             index = max(indexes, default=0) + 1
             destination = folder / f"{frame_width}x{frame_height}_{file_name}_{index:03d}.png"
             if not cv2.imwrite(str(destination), crop):
-                raise RuntimeError("Não foi possível salvar o template.")
+                raise RuntimeError(t("messages.template_save_failed"))
             if run.pause_file is not None:
                 try:
                     run.pause_file.unlink(missing_ok=True)
                 except OSError as error:
-                    raise RuntimeError("Template salvo, mas não foi possível retomar o bot.") from error
+                    raise RuntimeError(t("messages.template_resume_failed")) from error
         return {"path": str(destination), "category": category, "width": width, "height": height}
 
     def open_vision_stream(self, device_id, mode="vision"):
         if mode not in {"vision", "clean"}:
-            raise ValueError("Modo de prévia inválido.")
+            raise ValueError(t("messages.invalid_preview_mode"))
         if not isinstance(device_id, str) or not device_id or len(device_id) > 512:
             raise KeyError(device_id)
         with self._lock:
@@ -1206,13 +1212,13 @@ class BotSupervisor:
             )
         if identifier is None:
             if known or self.store.path_for(device_id).is_file():
-                raise RuntimeError("Inicie o bot para abrir a visão IA.")
+                raise RuntimeError(t("messages.vision_requires_running_bot"))
             raise KeyError(device_id)
         with self._operation_lock(identifier):
             with self._lock:
                 run = self._runs.get(identifier)
                 if run is None or run.process.poll() is not None:
-                    raise RuntimeError("Inicie o bot para abrir a visão IA.")
+                    raise RuntimeError(t("messages.vision_requires_running_bot"))
                 session_id = run.session_id
             self.request_vision(identifier, True, mode)
             return {"device_id": identifier, "session_id": session_id}
@@ -1222,7 +1228,7 @@ class BotSupervisor:
             with self._lock:
                 run = self._runs.get(device_id)
                 if run is None or run.session_id != session_id or run.process.poll() is not None:
-                    raise RuntimeError("A sessão da visão IA foi encerrada.")
+                    raise RuntimeError(t("messages.vision_session_ended"))
                 return run
 
         run = current_run()
@@ -1259,7 +1265,7 @@ class BotSupervisor:
         except (OSError, ValueError, TypeError, AttributeError):
             return None
         if current_run() is not run:
-            raise RuntimeError("A sessão da visão IA foi encerrada.")
+            raise RuntimeError(t("messages.vision_session_ended"))
         return {"signature": signature, "content": content}
 
     def logs(self, device_id, after=0, limit=200):
@@ -1268,7 +1274,7 @@ class BotSupervisor:
             after = max(0, int(after))
             limit = min(1000, max(1, int(limit)))
         except (ValueError, TypeError) as exc:
-            raise ValueError("Cursor e limite dos logs devem ser números inteiros.") from exc
+            raise ValueError(t("messages.log_integer_required")) from exc
         with self._lock:
             run = self._runs.get(device_id)
             lines = [dict(line) for line in run.lines if line["id"] > after][:limit] if run else []

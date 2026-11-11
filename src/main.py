@@ -9,6 +9,8 @@ import sys
 import time
 
 from core import config, log
+from core.cli import ArgumentParser, configure_locale
+from core.i18n import t
 from core.config import (
     AI_WINDOW_NAME,
     AI_WINDOW_POSITION,
@@ -29,33 +31,32 @@ from core.config import (
 
 
 def parse_args(argv=None):
+    configure_locale(argv)
 
-    parser = argparse.ArgumentParser(
-        description="EatVenture AI",
+    parser = ArgumentParser(
+        description=t("terminal.main_description"),
     )
-    parser.add_argument("--state-dir", type=Path, help="pasta de perfis locais usada pelo painel")
+    parser.add_argument("--state-dir", type=Path, help=t("terminal.state_dir_help"))
     parser.add_argument("--detector", choices=("templates", "ai"), default=config.DETECTOR_MODE)
 
     parser.add_argument(
         "--device",
         metavar="SERIAL",
         help=(
-            "serial do device (adb devices). Sem isto, usa "
-            "DEVICE_SERIAL do config; sem os dois, pergunta "
-            "quando houver mais de um conectado."
+            t("terminal.main_device_help")
         ),
     )
 
     parser.add_argument(
         "--ai-collect",
         action="store_true",
-        help="Ativa coleta de dados de IA para o dataset.",
+        help=t("terminal.ai_collect_help"),
     )
 
     parser.add_argument(
         "--log",
         action="store_true",
-        help="Salva o log completo da execução em arquivo na pasta logs/.",
+        help=t("terminal.log_help"),
     )
 
     parser.add_argument(
@@ -93,7 +94,7 @@ def start_scrcpy(device_id):
 
     window_title = f"EatVenture ({device_id})"
 
-    logger.info("Iniciando %s...", window_title)
+    logger.info(t("terminal.starting", title=window_title))
 
     process = subprocess.Popen(
         [
@@ -252,23 +253,23 @@ def run_loop(
         )
 
         if not capture.is_running():
-            raise RuntimeError("Stream de captura encerrado inesperadamente.")
+            raise RuntimeError(t("messages.capture_stream_ended"))
 
         if vision.consecutive_failures >= config.VISION_FAILURE_LIMIT:
             update_panel()
             raise RuntimeError(
-                f"Detector falhou {vision.consecutive_failures} vezes consecutivas: {vision.last_error}"
+                t("messages.detector_failure_limit", value_1=vision.consecutive_failures, value_2=vision.last_error)
             )
         if not vision.is_alive():
-            raise RuntimeError(f"Thread da visão encerrada: {vision.last_error or 'motivo desconhecido'}")
+            raise RuntimeError(t("messages.vision_thread_ended", value_1=vision.last_error or t("messages.unknown_reason")))
 
         if paused:
             if pause_started is None:
                 pause_started = time.monotonic()
                 vision.set_frame_floor(float("inf"))
                 logger.info(
-                    "Bot pausado %s.",
-                    "para selecionar template" if template_paused else "para o treino automático",
+                    t("messages.bot_paused"),
+                    t("messages.template_selection_pause") if template_paused else t("messages.automatic_training_pause"),
                 )
             recorder = state_machine.recorder
             if training_paused and not actions.is_busy() and (recorder is None or recorder.prepare_for_training()):
@@ -277,7 +278,7 @@ def run_loop(
             resume_floor = time.monotonic()
             state_machine.resume_after_pause(resume_floor - pause_started)
             pause_started = None
-            logger.info("Treino automático encerrado; retomando o bot.")
+            logger.info(t("messages.training_finished"))
 
         if frame is None or version == last_version:
             update_panel()
@@ -374,7 +375,7 @@ def run_loop(
             "waiting_settle": vision.waiting_settle,
             "vision_error": (
                 vision.last_error if vision.is_alive()
-                else vision.last_error or "thread da visão parada"
+                else vision.last_error or t("messages.vision_thread_stopped")
             ),
         }
 
@@ -408,7 +409,7 @@ def main(argv=None, runtime=None):
 
     except KeyboardInterrupt:
 
-        logger.info("Cancelado.")
+        logger.info(t("messages.cancelled"))
 
         return 1
 
@@ -422,9 +423,9 @@ def main(argv=None, runtime=None):
     ]
 
     logger.info(
-        "Janelas: %s | encerrar com %s",
-        ", ".join(windows) or "nenhuma (headless)",
-        "ESC ou Ctrl+C" if SHOW_AI_VISION else "Ctrl+C",
+        t("messages.window_exit_info"),
+        ", ".join(windows) or t("messages.headless_windows"),
+        t("messages.exit_keys") if SHOW_AI_VISION else t("messages.exit_ctrl_c"),
     )
 
     scrcpy_process = None
@@ -442,7 +443,7 @@ def main(argv=None, runtime=None):
         detector = ModelDetector(block_regions=[*config.BLOCK_REGIONS, *terminal_blocks])
     else:
         detector = Detector(block_regions=[*config.BLOCK_REGIONS, *terminal_blocks])
-    logger.info("Modo de detecção: %s.", args.detector)
+    logger.info(t("messages.detection_mode"), args.detector)
 
     vision = VisionWorker(detector)
 
@@ -520,7 +521,7 @@ def main(argv=None, runtime=None):
 
     except KeyboardInterrupt:
 
-        logger.info("Interrompido pelo usuário.")
+        logger.info(t("messages.user_interrupted"))
 
     finally:
 
@@ -533,7 +534,7 @@ def main(argv=None, runtime=None):
             finally:
                 log.set_console_panel(None)
 
-        logger.info("Encerrando EatVenture AI...")
+        logger.info(t("messages.bot_stopping"))
 
         # Antes do resto: fecha a amostra pendente e termina a fila local.
         if recorder:

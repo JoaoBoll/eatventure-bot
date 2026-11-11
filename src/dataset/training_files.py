@@ -1,6 +1,7 @@
 """Snapshots e limpeza de lotes sem interromper a gravação da coleta."""
 
 import json
+from core.i18n import t
 import os
 import tempfile
 import time
@@ -29,7 +30,7 @@ def _file_lock(path, blocking=True):
                     if error.errno not in (11, 13, 36):
                         raise
                     if not blocking:
-                        raise BlockingIOError("Já existe um treino em andamento.") from error
+                        raise BlockingIOError(t("messages.training_in_progress")) from error
                     time.sleep(0.02)
             try:
                 yield
