@@ -1,6 +1,7 @@
 """ActionManager: despacho por tabela, execução assíncrona em thread própria."""
 
 import queue
+from core.i18n import t
 import threading
 import time
 
@@ -103,7 +104,7 @@ class ActionManager:
         if self.device_size:
 
             logger.info(
-                "Device: %dx%d",
+                t("messages.device_resolution"),
                 self.device_size[0],
                 self.device_size[1],
             )
@@ -116,8 +117,7 @@ class ActionManager:
             )
 
             logger.warning(
-                "Resolução do device desconhecida, "
-                "assumindo %dx%d",
+                t("messages.unknown_device_resolution"),
                 REFERENCE_WIDTH,
                 REFERENCE_HEIGHT,
             )
@@ -164,8 +164,7 @@ class ActionManager:
         if self.device_size and size != self.device_size:
 
             logger.warning(
-                "Frame %dx%d != device %dx%d — "
-                "convertendo coordenadas de toque.",
+                t("messages.touch_coordinates_scaled"),
                 width,
                 height,
                 self.device_size[0],
@@ -257,7 +256,7 @@ class ActionManager:
         if kind is None:
 
             logger.warning(
-                "Ação desconhecida: %s",
+                t("messages.unknown_action"),
                 action,
             )
 
@@ -319,7 +318,7 @@ class ActionManager:
             except Exception as error:
 
                 logger.exception(
-                    "Erro executando %s: %s",
+                    t("messages.action_error"),
                     job,
                     error,
                 )
@@ -394,7 +393,7 @@ class ActionManager:
     def _click(self, name, x, y):
 
         logger.info(
-            "%s -> click (%d, %d)",
+            t("messages.click"),
             name,
             x,
             y,
@@ -406,7 +405,7 @@ class ActionManager:
         """N cliques num único comando adb (evita overhead de N processos)."""
 
         logger.info(
-            "%s -> %d clicks (%d, %d)",
+            t("messages.clicks"),
             name,
             UPGRADE_ITEM_CLICKS,
             x,
@@ -419,7 +418,7 @@ class ActionManager:
         """Toque mantido curto em ponto fixo (diferente de _press, que segura no centro da detecção)."""
 
         logger.info(
-            "%s -> hold (%d, %d) por %.2fs",
+            t("messages.hold"),
             name,
             x,
             y,
@@ -435,7 +434,7 @@ class ActionManager:
     def _press(self, name, x, y):
 
         logger.info(
-            "%s -> press (%d, %d) por %.1fs",
+            t("messages.press"),
             name,
             x,
             y,
@@ -452,7 +451,7 @@ class ActionManager:
         """Sequência de swipes até o fim da tela. Roda na thread de ação, não bloqueia o loop principal."""
 
         logger.info(
-            "%s -> %d swipes '%s' (rolar até o fim)",
+            t("messages.scroll_to_end"),
             name,
             SCROLL_BOTTOM_SWIPES,
             SCROLL_BOTTOM_DIRECTION,
@@ -493,7 +492,7 @@ class ActionManager:
         else:
 
             logger.warning(
-                "Direção de swipe inválida: %s",
+                t("messages.invalid_swipe_direction"),
                 direction,
             )
 
@@ -510,7 +509,7 @@ class ActionManager:
         )
 
         logger.info(
-            "swipe %s (%d -> %d)",
+            t("messages.swipe"),
             direction,
             start_y,
             target_y,

@@ -1,6 +1,7 @@
 """Modelo treinado integrado à captura, ações e prévia do bot principal."""
 
 from pathlib import Path
+from core.i18n import t
 import sys
 
 from core import config, log
@@ -24,7 +25,7 @@ class ModelDetector(Detector):
     def __init__(self, *, block_regions=None):
         super().__init__(block_regions=block_regions, learn_resolution_templates=False)
         self.model = None
-        self.model_label = "Aguardando resolução"
+        self.model_label = t("messages.waiting_resolution")
         self._model_path = None
         self._watcher = None
         self._source = ProposerSource() if config.AI_SOURCE == "proposer" else None
@@ -36,7 +37,7 @@ class ModelDetector(Detector):
         except SystemExit as error:
             raise RuntimeError(str(error)) from error
         if model.kind != "category":
-            raise RuntimeError("A IA precisa de um modelo de categoria, não de ação.")
+            raise RuntimeError(t("messages.category_model_required"))
         return model
 
     def _model_for(self, width, height):
@@ -53,11 +54,11 @@ class ModelDetector(Detector):
             self._model_path = path
             self._watcher = ModelWatcher(path, model, self._load_model, logger=logger)
             self._watcher.start()
-            logger.info("IA ativa: %s; fonte de regiões: %s.", path, config.AI_SOURCE)
+            logger.info(t("messages.ai_active"), path, config.AI_SOURCE)
         updated = self._watcher.take_pending()
         if updated is not None:
             self.model = updated
-            logger.info("Modelo atualizado: %s.", updated.meta.get("run_id"))
+            logger.info(t("messages.model_updated"), updated.meta.get("run_id"))
         self.model_label = f"{path.parent.name}/{path.name}: {self.model.meta.get('run_id') or 'local'}"
         return self.model
 

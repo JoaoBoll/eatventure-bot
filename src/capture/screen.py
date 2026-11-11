@@ -1,6 +1,7 @@
 """ScreenCapture: stream H.264 do scrcpy-server, versioning, FPS cap."""
 
 import random
+from core.i18n import t
 import re
 import socket
 import subprocess
@@ -82,7 +83,7 @@ class ScreenCapture:
             return
 
         if self.capture_thread and self.capture_thread.is_alive():
-            raise RuntimeError("A captura anterior ainda está encerrando.")
+            raise RuntimeError(t("messages.capture_still_stopping"))
 
         if self.socket or self.server_process or self._forward_port is not None or self._server_pushed:
             self.stop()
@@ -104,7 +105,7 @@ class ScreenCapture:
         self.DEVICE_JAR = f"{jar_base}-{self.scid:08x}{jar_ext}"
 
         logger.info(
-            "Iniciando scrcpy-server %s (socket @%s)...",
+            t("messages.scrcpy_server_starting"),
             self.SERVER_VERSION,
             self.socket_name,
         )
@@ -113,7 +114,7 @@ class ScreenCapture:
         self._setup_forward()
         self._start_server()
 
-        logger.info("Conectando ao stream H.264...")
+        logger.info(t("messages.h264_connecting"))
         self.socket, self.first_chunk = self._connect(CAPTURE_CONNECT_TIMEOUT)
 
         if self.socket is None:
@@ -121,28 +122,22 @@ class ScreenCapture:
             raise RuntimeError(
                 "\n".join(
                     [
-                        "Não conseguiu ler o stream em "
-                        f"{CAPTURE_CONNECT_TIMEOUT:.0f}s "
-                        f"(porta {self.PORT}, socket "
-                        f"@{self.socket_name}).",
+                        t("messages.stream_read_timeout", CAPTURE_CONNECT_TIMEOUT=CAPTURE_CONNECT_TIMEOUT, value_2=self.PORT, value_3=self.socket_name),
 
-                        "Causas prováveis:",
+                        t("messages.likely_causes"),
 
-                        "  - a tela do device está desligada "
-                        "(o encoder captura o display)",
+                        t("messages.screen_encoder_hint"),
 
-                        "  - SCRCPY_SERVER_VERSION não bate "
-                        "com o scrcpy-server instalado",
+                        t("messages.scrcpy_version_hint"),
 
-                        "  - servidor não subiu: rode "
+                        t("messages.server_start_hint")
                         + " ".join(self._adb("shell", "cat"))
-                        + " /proc/net/unix | grep scrcpy "
-                        "e veja se o socket aparece",
+                        + t("messages.socket_check_hint"),
                     ]
                 )
             )
 
-        logger.info("Stream aberto (%d bytes iniciais).", len(self.first_chunk))
+        logger.info(t("messages.stream_opened"), len(self.first_chunk))
 
         self.codec = av.CodecContext.create("h264", "r")
 
@@ -153,27 +148,22 @@ class ScreenCapture:
             daemon=True,
         )
         self.capture_thread.start()
-        logger.info("Thread de captura iniciada.")
+        logger.info(t("messages.capture_thread_started"))
 
         if not self._wait_first_frame(CAPTURE_START_TIMEOUT):
 
             raise RuntimeError(
                 "\n".join(
                     [
-                        f"Nenhum frame em "
-                        f"{CAPTURE_START_TIMEOUT:.0f}s na "
-                        f"porta {self.PORT}.",
+                        t("messages.first_frame_timeout", CAPTURE_START_TIMEOUT=CAPTURE_START_TIMEOUT, value_2=self.PORT),
 
-                        "Causas prováveis:",
+                        t("messages.likely_causes"),
 
-                        "  - outro processo usando a porta "
-                        "(o espelho do scrcpy usa "
-                        "27183-27199 por padrão)",
+                        t("messages.port_in_use_hint"),
 
-                        "  - a tela do device está desligada",
+                        t("messages.screen_off_hint"),
 
-                        "  - SCRCPY_SERVER_VERSION não bate "
-                        "com o scrcpy-server instalado",
+                        t("messages.scrcpy_version_hint"),
                     ]
                 )
             )
@@ -232,7 +222,7 @@ class ScreenCapture:
                 candidato.settimeout(2)
 
                 logger.debug(
-                    "Stream respondeu na tentativa %d.",
+                    t("messages.stream_connected_attempt"),
                     tentativas,
                 )
 
@@ -246,7 +236,7 @@ class ScreenCapture:
             time.sleep(0.15)
 
         logger.warning(
-            "Sem stream após %d tentativas.",
+            t("messages.stream_attempts_exhausted"),
             tentativas,
         )
 
@@ -316,7 +306,7 @@ class ScreenCapture:
                 if self.running:
 
                     logger.warning(
-                        "Socket caiu: %s",
+                        t("messages.socket_disconnected"),
                         error,
                     )
 
@@ -325,9 +315,7 @@ class ScreenCapture:
             if not data:
 
                 logger.warning(
-                    "Stream fechou do outro lado (0 bytes). "
-                    "Porta %d ocupada por outro processo, ou "
-                    "servidor encerrou.",
+                    t("messages.remote_stream_closed"),
                     self.PORT,
                 )
 
@@ -349,13 +337,13 @@ class ScreenCapture:
 
         except av.error.EOFError:
 
-            logger.warning("Decoder H264 recebeu EOF.")
+            logger.warning(t("messages.h264_eof"))
 
             return False
 
         except av.error.FFmpegError as error:
 
-            logger.warning("Erro H264: %s", error)
+            logger.warning(t("messages.h264_error"), error)
 
         return True
 
@@ -437,14 +425,12 @@ class ScreenCapture:
 
         if not self.SERVER_PATH:
             raise RuntimeError(
-                "Caminho do scrcpy-server não configurado (SCRCPY_SERVER_PATH vazio). "
-                "No Ubuntu, instale scrcpy, scrcpy-server e adb pelo apt. "
-                "O servidor é procurado junto ao executável, em share/scrcpy, lib/scrcpy e tools/scrcpy."
+                t("messages.scrcpy_server_path_missing")
             )
 
         if not os.path.exists(self.SERVER_PATH):
             raise RuntimeError(
-                f"scrcpy-server não encontrado em '{self.SERVER_PATH}'. Verifique SCRCPY_SERVER_PATH."
+                t("messages.scrcpy_server_not_found", value_1=self.SERVER_PATH)
             )
 
         result = subprocess.run(
@@ -455,7 +441,7 @@ class ScreenCapture:
         )
 
         if result.returncode != 0:
-            raise RuntimeError("Erro ao enviar scrcpy-server:\n" + (result.stderr or ""))
+            raise RuntimeError(t("messages.scrcpy_upload_error") + (result.stderr or ""))
 
         self._server_pushed = True
 
@@ -488,22 +474,21 @@ class ScreenCapture:
                     check=True,
                 )
             except (OSError, subprocess.SubprocessError) as error:
-                raise RuntimeError("Não foi possível consultar a versão do scrcpy instalado.") from error
+                raise RuntimeError(t("messages.scrcpy_version_query_failed")) from error
 
             output = result.stdout + "\n" + result.stderr
             match = re.search(r"(?m)^scrcpy\s+(\S+)", output)
             if match is None:
-                raise RuntimeError("Versão do scrcpy não reconhecida na saída de scrcpy --version.")
+                raise RuntimeError(t("messages.scrcpy_version_unrecognized"))
             self.SERVER_VERSION = match.group(1)
 
         match = re.match(r"(\d+)\.(\d+)", self.SERVER_VERSION)
         if match is None:
-            raise RuntimeError(f"Versão do scrcpy inválida: {self.SERVER_VERSION!r}.")
+            raise RuntimeError(t("messages.invalid_scrcpy_version", value_1=self.SERVER_VERSION))
         version = tuple(map(int, match.groups()))
         if version < (1, 23):
             raise RuntimeError(
-                f"scrcpy {self.SERVER_VERSION} não suporta a captura usada pelo bot. "
-                "Atualize o scrcpy para a versão 1.23 ou superior."
+                t("messages.scrcpy_upgrade_required", value_1=self.SERVER_VERSION)
             )
         return version
 
@@ -535,7 +520,7 @@ class ScreenCapture:
         )
 
     def stop(self):
-        logger.info("Encerrando captura...")
+        logger.info(t("messages.capture_stopping"))
 
         with self.condition:
             self.running = False
@@ -580,10 +565,10 @@ class ScreenCapture:
                     timeout=5.0,
                 )
             except (OSError, subprocess.SubprocessError) as error:
-                logger.warning("Não foi possível remover o servidor: %s", error)
+                logger.warning(t("messages.server_cleanup_failed"), error)
             self._server_pushed = False
 
-        logger.info("Captura encerrada.")
+        logger.info(t("messages.capture_stopped"))
 
     def _cleanup_forward(self):
 
@@ -598,5 +583,5 @@ class ScreenCapture:
                 timeout=5.0,
             )
         except (OSError, subprocess.SubprocessError) as error:
-            logger.warning("Não foi possível remover o túnel: %s", error)
+            logger.warning(t("messages.tunnel_cleanup_failed"), error)
         self._forward_port = None

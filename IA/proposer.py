@@ -1,7 +1,16 @@
 """Proposer: candidates por saturação + contorno (experimental, validar com --debug-proposals)."""
 
+import sys
+from pathlib import Path
+
 import cv2
 import numpy as np
+
+_source_root = str(Path(__file__).resolve().parent.parent / "src")
+if _source_root not in sys.path:
+    sys.path.insert(0, _source_root)
+
+from core.i18n import t
 
 # Faixa de tamanho aceitável, medida no dataset com folga.
 MIN_SIDE = 24
@@ -41,7 +50,7 @@ def propose(frame, escala=0.5):
         return []
 
     if not 0 < escala <= 1:
-        raise ValueError("escala deve ficar entre 0 (exclusivo) e 1")
+        raise ValueError(t("messages.invalid_preview_scale"))
 
     altura, largura = frame.shape[:2]
 

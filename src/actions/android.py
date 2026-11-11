@@ -1,6 +1,7 @@
 """Camada mais baixa: comandos adb no device. Falha transitória vira WARNING e devolve False, nunca derruba o bot."""
 
 import re
+from core.i18n import t
 import subprocess
 
 from core import log, config
@@ -40,7 +41,7 @@ class AndroidActions:
         except subprocess.TimeoutExpired:
 
             logger.warning(
-                "adb travou (timeout %.1fs): %s",
+                t("messages.adb_timeout"),
                 timeout,
                 " ".join(args),
             )
@@ -50,7 +51,7 @@ class AndroidActions:
         except OSError as error:
 
             logger.warning(
-                "adb indisponível: %s",
+                t("messages.adb_unavailable"),
                 error,
             )
 
@@ -59,7 +60,7 @@ class AndroidActions:
         if result.returncode != 0:
 
             logger.warning(
-                "adb falhou (%d): %s | %s",
+                t("messages.adb_failed"),
                 result.returncode,
                 " ".join(args),
                 (result.stderr or "").strip(),
@@ -103,7 +104,7 @@ class AndroidActions:
 
         except (KeyError, ValueError):
 
-            logger.warning("dumpsys battery sem 'level' legível")
+            logger.warning(t("messages.battery_level_unreadable"))
 
             return None
 
@@ -210,7 +211,7 @@ class AndroidActions:
         duration_ms = int(duration * 1000)
 
         logger.debug(
-            "long press (%d, %d) -> %.1fs",
+            t("messages.long_press"),
             x,
             y,
             duration,

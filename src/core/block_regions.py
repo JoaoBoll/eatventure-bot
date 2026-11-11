@@ -1,6 +1,7 @@
 """Persistência das áreas BLOCK criadas pelo seletor visual do terminal."""
 
 import hashlib
+from core.i18n import t
 import json
 import math
 from pathlib import Path
@@ -12,20 +13,20 @@ DEFAULT_STATE_ROOT = Path(__file__).resolve().parents[2] / "local"
 
 def _path(serial, root=None):
     if not isinstance(serial, str) or not serial:
-        raise ValueError("Dispositivo inválido para as áreas BLOCK.")
+        raise ValueError(t("messages.invalid_block_device"))
     digest = hashlib.sha256(serial.encode("utf-8")).hexdigest()
     return Path(root or DEFAULT_STATE_ROOT / "blocks") / f"{digest}.json"
 
 
 def validate_regions(regions):
     if not isinstance(regions, (list, tuple)) or len(regions) > MAX_BLOCK_REGIONS:
-        raise ValueError(f"Informe no máximo {MAX_BLOCK_REGIONS} áreas BLOCK.")
+        raise ValueError(t("messages.block_limit", MAX_BLOCK_REGIONS=MAX_BLOCK_REGIONS))
     validated = []
     for index, region in enumerate(regions, 1):
         if not isinstance(region, (list, tuple)) or len(region) != 4:
-            raise ValueError(f"BLOCK {index} inválido.")
+            raise ValueError(t("messages.invalid_block", index=index))
         if any(isinstance(value, bool) or not isinstance(value, (int, float)) for value in region):
-            raise ValueError(f"BLOCK {index}: informe números.")
+            raise ValueError(t("messages.block_numbers_required", index=index))
         values = tuple(float(value) for value in region)
         x, y, width, height = values
         if (
@@ -35,7 +36,7 @@ def validate_regions(regions):
             or x + width > 1 + 1e-9
             or y + height > 1 + 1e-9
         ):
-            raise ValueError(f"BLOCK {index} deve ficar dentro da tela.")
+            raise ValueError(t("messages.block_outside_screen", index=index))
         validated.append([x, y, min(width, 1 - x), min(height, 1 - y)])
     return validated
 
@@ -47,9 +48,9 @@ def _load_legacy_regions(serial, root=None):
     except FileNotFoundError:
         return []
     except (OSError, ValueError, UnicodeError) as error:
-        raise ValueError(f"Arquivo de BLOCKs inválido: {path}") from error
+        raise ValueError(t("messages.invalid_block_file", path=path)) from error
     if not isinstance(data, dict) or data.get("device") != serial:
-        raise ValueError("O arquivo de BLOCKs pertence a outro dispositivo.")
+        raise ValueError(t("messages.block_device_mismatch"))
     return validate_regions(data.get("regions", []))
 
 
@@ -82,7 +83,7 @@ def terminal_profile(serial, state_root=None):
         if serial == device["id"] or serial in device["aliases"]
     ), None)
     if device is None:
-        raise RuntimeError(manager.last_error or f"Dispositivo não encontrado: {serial}")
+        raise RuntimeError(manager.last_error or t("messages.device_not_found_serial", serial=serial))
     store = ProfileStore(Path(state_root or DEFAULT_STATE_ROOT) / "devices")
     profile = migrate_legacy_blocks(store, device["id"], device["aliases"])
     return store, profile

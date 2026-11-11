@@ -1,6 +1,7 @@
 """Máquina de estados: tabela de regras por estado, única função _act, timeout por estado."""
 
 import logging
+from core.i18n import t
 import time
 from collections import Counter
 
@@ -345,9 +346,7 @@ class StateMachine:
             if now - self._stale_warned > 5.0:
 
                 logger.warning(
-                    "Detecções com %.0f ms de atraso "
-                    "(máx %.0f ms) — não vou clicar. "
-                    "Detector lento demais?",
+                    t("messages.stale_detections"),
                     self._lag * 1000,
                     MAX_DETECTION_AGE * 1000,
                 )
@@ -403,13 +402,13 @@ class StateMachine:
                 )
 
                 logger.debug(
-                    "%s prio %d/%d: %s -> %s | na tela: %s",
+                    t("messages.action_priority"),
                     self.state,
                     prioridade,
                     len(rules),
                     category,
                     action,
-                    na_tela or "nada",
+                    na_tela or t("messages.nothing"),
                 )
 
             if action != "food":
@@ -448,7 +447,7 @@ class StateMachine:
         )
 
         logger.info(
-            "%s: %s (F=%.3f)",
+            t("messages.detection_log"),
             self.state,
             action,
             confidence,
@@ -555,14 +554,14 @@ class StateMachine:
         self.cycle_count += 1
 
         logger.info(
-            "Ciclo %d fechado por '%s' em %s%s",
+            t("messages.cycle_completed"),
             self.cycle_count,
             category,
             formata_duracao(duracao),
             (
-                f" (anterior {formata_duracao(self.cycle_last)})"
+                t("messages.previous_cycle", duration=formata_duracao(self.cycle_last))
                 if self.cycle_last is not None
-                else " (contado desde o start)"
+                else t("messages.since_start")
             ),
         )
 
@@ -631,9 +630,7 @@ class StateMachine:
         self._dismiss_rounds += 1
 
         logger.warning(
-            "'%s' não fechou em %d tentativas (rodada %d) — "
-            "rolando a tela até o fim para achar posição onde "
-            "o ponto seja seguro",
+            t("messages.dismiss_retry_limit"),
             action,
             DISMISS_ATTEMPTS_BEFORE_SCROLL,
             self._dismiss_rounds,
@@ -657,9 +654,7 @@ class StateMachine:
             return
 
         logger.warning(
-            "'%s' repetiu %d vezes seguidas em %s sem "
-            "resolver. Ponto de dispensa errado, ou falta "
-            "template para o que está na tela?",
+            t("messages.repeated_action"),
             action,
             self._repeat_count,
             self.state,
@@ -735,13 +730,12 @@ class StateMachine:
             ):
 
                 logger.debug(
-                    "%s: esperando frame que mostre o efeito "
-                    "de %s (falta %.0f ms)",
+                    t("messages.awaiting_action_frame"),
                     self.state,
                     (
-                        "um swipe"
+                        t("messages.swipe_action")
                         if self._last_was_swipe
-                        else "ação"
+                        else t("messages.generic_action")
                     ),
                     (piso - self._frame_time) * 1000,
                 )
@@ -760,7 +754,7 @@ class StateMachine:
         previous_state = self.state
 
         logger.info(
-            "%s -> %s",
+            t("messages.transition_log"),
             self.state,
             state,
         )
@@ -795,7 +789,7 @@ class StateMachine:
             return False
 
         logger.warning(
-            "%s travado por %.1fs — voltando para NORMAL",
+            t("messages.state_timeout"),
             self.state,
             elapsed,
         )
@@ -873,7 +867,7 @@ class StateMachine:
             return
 
         logger.info(
-            "Nenhum up_food em %.1fs",
+            t("messages.food_upgrade_missing"),
             UP_FOOD_WAIT,
         )
 
@@ -903,8 +897,7 @@ class StateMachine:
             return
 
         logger.warning(
-            "'food' sem up_food em %d tentativas seguidas — "
-            "ignorando até o próximo swipe",
+            t("messages.food_upgrade_retry_limit"),
             FOOD_MAX_ATTEMPTS,
         )
 
@@ -1013,7 +1006,7 @@ class StateMachine:
             return
 
         logger.info(
-            "explore: swipe %s %d/%d",
+            t("messages.explore_swipe"),
             self.swipe_direction,
             self.swipe_count + 1,
             self.max_swipes,

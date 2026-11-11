@@ -1,6 +1,7 @@
 """Grava dataset: frame, detecções (caixas+categoria), ação e resultado. Assíncrono com fila descartável."""
 
 import hashlib
+from core.i18n import t
 import json
 import os
 import queue
@@ -200,7 +201,7 @@ class DatasetRecorder:
             self.auto_trainer.start()
 
         logger.info(
-            "Gravando dataset em %s (sessão %s)",
+            t("messages.dataset_recording"),
             self.root,
             self.session[:8],
         )
@@ -230,7 +231,7 @@ class DatasetRecorder:
             if self.thread.is_alive():
 
                 logger.warning(
-                    "A gravação do dataset ainda está finalizando a fila."
+                    t("messages.dataset_queue_draining")
                 )
 
             else:
@@ -238,8 +239,7 @@ class DatasetRecorder:
                 self.thread = None
 
         logger.info(
-            "Dataset: %d gravadas (%.1f MB), %d duplicadas, "
-            "%d descartadas por fila cheia %s",
+            t("messages.dataset_summary"),
             self.saved,
             self.bytes_written / 1_000_000,
             self.duplicates,
@@ -467,10 +467,7 @@ class DatasetRecorder:
             if self.dropped % 20 == 1:
 
                 logger.warning(
-                    "Fila do dataset cheia — %d amostra(s) "
-                    "descartada(s). Disco lento, ou "
-                    "DATASET_IMAGE_FORMAT em png com o bot "
-                    "muito rápido?",
+                    t("messages.dataset_queue_full"),
                     self.dropped,
                 )
 
@@ -489,7 +486,7 @@ class DatasetRecorder:
         try:
             records, _ = snapshot_records(self.root)
         except OSError as error:
-            logger.warning("Não foi possível revisar o intervalo inválido: %s", error)
+            logger.warning(t("messages.dataset_review_failed"), error)
             return 0
         discarded = [
             record for record in records
@@ -504,7 +501,7 @@ class DatasetRecorder:
         self.saved = max(0, self.saved - removed)
         self.disk_bytes = max(0, self.disk_bytes - result.get("bytes_freed", 0))
         logger.warning(
-            "Dataset: descartadas %d amostras sem ação relevante (%d imagens).",
+            t("messages.dataset_irrelevant_samples"),
             removed, result.get("images_removed", 0),
         )
         return removed
@@ -548,7 +545,7 @@ class DatasetRecorder:
             except Exception as error:
 
                 logger.exception(
-                    "Erro gravando amostra: %s",
+                    t("messages.sample_write_failed"),
                     error,
                 )
 
@@ -575,8 +572,7 @@ class DatasetRecorder:
             if not self.disk_warned:
 
                 logger.warning(
-                    "Dataset chegou ao teto de %d MB; a coleta "
-                    "aguardará a liberação de espaço.",
+                    t("messages.dataset_disk_limit"),
                     DATASET_MAX_DISK_MB,
                 )
 
@@ -605,8 +601,7 @@ class DatasetRecorder:
                 ):
 
                     logger.info(
-                        "'%s' preso em unchanged — parando de "
-                        "gravar até mudar de ação ou dar certo",
+                        t("messages.dataset_action_stuck"),
                         sample.action,
                     )
 
@@ -650,7 +645,7 @@ class DatasetRecorder:
         if not cv2.imwrite(str(caminho), frame, params):
 
             logger.warning(
-                "Não conseguiu gravar %s",
+                t("messages.file_write_failed"),
                 caminho,
             )
 

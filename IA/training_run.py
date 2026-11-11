@@ -118,6 +118,7 @@ class TrainingRun:
         self.started = time.monotonic()
         self.data = {
             "run_id": self.id,
+            "web_request_id": os.environ.get("EATVENTURE_TRAIN_REQUEST_ID"),
             "started_at_utc": utc_now(),
             "finished_at_utc": None,
             "duration_seconds": None,
@@ -160,7 +161,7 @@ class TrainingRun:
             key: self.data[key]
             for key in (
                 "run_id", "started_at_utc", "finished_at_utc",
-                "duration_seconds", "trigger", "status",
+                "duration_seconds", "trigger", "status", "web_request_id",
             )
             if key in self.data
         } | {

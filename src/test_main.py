@@ -7,6 +7,8 @@ import cv2
 
 from capture.screen import ScreenCapture
 from core import devices, log
+from core.cli import ArgumentParser, configure_locale
+from core.i18n import t
 from core.config import (
     DEVICE_SERIAL,
     LOG_LEVEL,
@@ -18,19 +20,20 @@ WINDOW_NAME = "AI Raw"
 
 
 def main(argv=None):
+    configure_locale(argv)
 
     log.setup(LOG_LEVEL)
 
     logger = log.get("raw")
 
-    parser = argparse.ArgumentParser(
-        description="Visualizador do stream cru",
+    parser = ArgumentParser(
+        description=t("terminal.preview_description"),
     )
 
     parser.add_argument(
         "--device",
         metavar="SERIAL",
-        help="serial do device (adb devices)",
+        help=t("terminal.device_help"),
     )
 
     args = parser.parse_args(argv)
@@ -63,7 +66,7 @@ def main(argv=None):
 
             if not capture.is_running():
 
-                logger.warning("Stream encerrado.")
+                logger.warning(t("terminal.stream_ended"))
 
                 break
 
@@ -79,7 +82,7 @@ def main(argv=None):
 
     except KeyboardInterrupt:
 
-        logger.info("Interrompido pelo usuário.")
+        logger.info(t("terminal.interrupted"))
 
     finally:
 

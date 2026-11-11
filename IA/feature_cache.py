@@ -20,10 +20,17 @@ O treino preserva esse cache e interrompe a execução nesse caso.
 
 import json
 import os
+import sys
 import tempfile
 from pathlib import Path
 
 import numpy as np
+
+_source_root = str(Path(__file__).resolve().parent.parent / "src")
+if _source_root not in sys.path:
+    sys.path.insert(0, _source_root)
+
+from core.i18n import t
 
 META_NAME = "meta.json"
 
@@ -79,8 +86,7 @@ class FeatureCache:
 
     def descartar(self):
         raise RuntimeError(
-            f"O cache {self.dir} contém memória acumulada e não é apagado "
-            "automaticamente. Use outro --cache-root para features incompatíveis."
+            t("messages.cache_preserved_warning", value_1=self.dir)
         )
 
     def metadata(self):
@@ -88,7 +94,7 @@ class FeatureCache:
         for arquivo in sorted(self.dir.glob("*.records.json")):
             lote = json.loads(arquivo.read_text(encoding="utf-8"))
             if not isinstance(lote, dict):
-                raise ValueError(f"Metadados de cache inválidos: {arquivo}")
+                raise ValueError(t("messages.invalid_cache_metadata", arquivo=arquivo))
             registros.update(lote)
         return registros
 
@@ -114,9 +120,7 @@ class FeatureCache:
         ausentes = conhecidos - existentes.keys()
         if ausentes:
             raise RuntimeError(
-                f"Cache legado em {self.dir}: faltam metadados de "
-                f"{len(ausentes)} amostra(s). Preserve o cache e restaure os "
-                "dados originais, ou use outro --cache-root."
+                t("messages.legacy_cache_metadata_missing", value_1=self.dir, value_2=len(ausentes))
             )
         return existentes
 
@@ -185,7 +189,7 @@ class FeatureCache:
         from training_run import atomic_json
 
         if not self.valido():
-            raise RuntimeError(f"Cache incompatível preservado: {self.dir}")
+            raise RuntimeError(t("messages.incompatible_cache_preserved", value_1=self.dir))
 
         atomic_json(self.meta_path, self.assinatura)
 
@@ -215,7 +219,7 @@ class FeatureCache:
             if records is not None:
                 utilizados = set(str(dono) for dono in ids)
                 if utilizados - records.keys():
-                    raise ValueError("Há features sem metadados de amostra.")
+                    raise ValueError(t("messages.sample_metadata_missing"))
                 atomic_json(
                     destino.with_suffix(".records.json"),
                     {dono: records[dono] for dono in sorted(utilizados)},
