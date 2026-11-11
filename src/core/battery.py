@@ -1,6 +1,7 @@
 """Leitura da bateria fora do caminho crítico: `dumpsys battery` custa ~56ms (>3x uma passada do detector), então roda em thread própria e o loop só lê o último valor em memória."""
 
 import threading
+from core.i18n import t
 import time
 
 from core import log
@@ -96,9 +97,9 @@ class BatteryMonitor:
                 if anterior != nivel:
 
                     logger.info(
-                        "Bateria: %d%%%s",
+                        t("messages.battery_changed"),
                         nivel,
-                        " (carregando)" if carregando else "",
+                        t("messages.charging_log") if carregando else "",
                     )
 
             # Espera interrompível.

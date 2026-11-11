@@ -3,6 +3,7 @@
 from contextlib import asynccontextmanager
 import asyncio
 import hmac
+from html import escape
 import json
 import os
 from pathlib import Path
@@ -13,11 +14,14 @@ import time
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from core import config
 from core.device_profiles import ProfileStore, settings_schema, template_key
+from core.i18n import DEFAULT_LOCALE, Text, locale, locale_scope, localized, messages, t
 from core.preview import MIN_FRAME_INTERVAL
 from dashboard.supervisor import BotSupervisor
 from dataset import layout
@@ -25,6 +29,7 @@ from dataset.manager import DatasetManager
 
 
 STATIC = Path(__file__).resolve().parent / "static"
+LOCALES = Path(__file__).resolve().parents[1] / "locales"
 MAX_BODY = 300_000
 
 
@@ -61,7 +66,7 @@ def access_token(state_root):
     supplied = os.environ.get("EATVENTURE_WEB_TOKEN")
     if supplied:
         if len(supplied) < 24 or len(supplied) > 512:
-            raise ValueError("EATVENTURE_WEB_TOKEN deve ter entre 24 e 512 caracteres.")
+            raise ValueError(t("messages.invalid_env_token"))
         return supplied
     path = Path(state_root) / "dashboard.token"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -74,7 +79,7 @@ def access_token(state_root):
         with os.fdopen(descriptor, "w", encoding="utf-8") as output:
             output.write(token + "\n")
     if len(token) < 24 or len(token) > 512:
-        raise ValueError(f"Token local inválido em {path}.")
+        raise ValueError(t("messages.invalid_local_token", path=path))
     return token
 
 
@@ -124,9 +129,9 @@ def template_catalog(root):
 
 def model_catalog(root):
     root = Path(root)
-    models = [{"value": "auto", "label": "Automático pela resolução da captura"}]
+    models = [{"value": "auto", "label": t("messages.auto_capture_model"), "label_key": "messages.auto_capture_model"}]
     if (root / "IA" / "model.joblib").is_file() or (root / "IA" / "model.current.json").is_file():
-        models.append({"value": "IA/model.joblib", "label": "Modelo geral (IA/model.joblib)"})
+        models.append({"value": "IA/model.joblib", "label": t("messages.general_model"), "label_key": "messages.general_model"})
     directory = root / "IA" / "models"
     if directory.is_dir():
         for folder in sorted(directory.iterdir()):
@@ -179,7 +184,7 @@ def create_app(root=None, state_root=None, token=None, supervisor=None, require_
     if not token:
         token = access_token(state_root) if require_token else None
     if token is not None and not 24 <= len(token) <= 512:
-        raise ValueError("O token deve ter entre 24 e 512 caracteres.")
+        raise ValueError(t("messages.invalid_token_length"))
     catalog_lock = threading.Lock()
     catalog_cache = {"at": 0.0, "value": None}
     training_cache = {"at": 0.0, "value": None}
@@ -208,6 +213,9 @@ def create_app(root=None, state_root=None, token=None, supervisor=None, require_
 
     @asynccontextmanager
     async def lifespan(app):
+        starter = getattr(supervisor, "_ensure_auto_trainer", None)
+        if starter is not None:
+            starter()
         yield
         # O encerramento também funciona ao executar como serviço no Linux.
         from starlette.concurrency import run_in_threadpool
@@ -227,68 +235,85 @@ def create_app(root=None, state_root=None, token=None, supervisor=None, require_
 
     @app.middleware("http")
     async def authorize(request, call_next):
-        if request.url.path.startswith("/api/"):
-            if request.url.path != "/api/session" and not authenticated(request):
-                return JSONResponse({"detail": "Token de acesso inválido."}, status_code=401)
-            origin = request.headers.get("origin")
-            if origin:
-                try:
-                    parsed = urlsplit(origin)
-                    valid_origin = (parsed.scheme, parsed.netloc) == (request.url.scheme, request.url.netloc)
-                except ValueError:
-                    valid_origin = False
-                if not valid_origin:
-                    return JSONResponse({"detail": "Origem não autorizada."}, status_code=403)
-            if request.method in ("POST", "PUT", "DELETE"):
-                try:
-                    size = int(request.headers.get("content-length", "0"))
-                except ValueError:
-                    return JSONResponse({"detail": "Tamanho de requisição inválido."}, status_code=400)
-                if size < 0 or size > MAX_BODY:
-                    return JSONResponse({"detail": "Requisição muito grande."}, status_code=413)
-        response = await call_next(request)
-        response.headers.update({
-            "Cache-Control": "no-store",
-            "X-Content-Type-Options": "nosniff",
-            "Referrer-Policy": "no-referrer",
-            "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self'; "
-                "img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'none'; "
-                "base-uri 'none'; object-src 'none'; form-action 'self'",
-        })
-        return response
+        language = request.headers.get("X-Eatventure-Locale") or locale()
+        with locale_scope(language):
+            if request.url.path.startswith("/api/"):
+                if request.url.path != "/api/session" and not authenticated(request):
+                    return JSONResponse({"detail": t("messages.invalid_access_token")}, status_code=401)
+                origin = request.headers.get("origin")
+                if origin:
+                    try:
+                        parsed = urlsplit(origin)
+                        valid_origin = (parsed.scheme, parsed.netloc) == (request.url.scheme, request.url.netloc)
+                    except ValueError:
+                        valid_origin = False
+                    if not valid_origin:
+                        return JSONResponse({"detail": t("messages.unauthorized_origin")}, status_code=403)
+                if request.method in ("POST", "PUT", "DELETE"):
+                    try:
+                        size = int(request.headers.get("content-length", "0"))
+                    except ValueError:
+                        return JSONResponse({"detail": t("messages.invalid_request_size")}, status_code=400)
+                    if size < 0 or size > MAX_BODY:
+                        return JSONResponse({"detail": t("messages.request_too_large")}, status_code=413)
+            response = await call_next(request)
+            response.headers.update({
+                "Cache-Control": "no-store",
+                "X-Content-Type-Options": "nosniff",
+                "Referrer-Policy": "no-referrer",
+                "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self'; "
+                    "img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'none'; "
+                    "base-uri 'none'; object-src 'none'; form-action 'self'",
+            })
+            return response
+
+    @app.exception_handler(RequestValidationError)
+    async def invalid_fields(request, error):
+        fields = sorted({".".join(map(str, item["loc"])) for item in error.errors()})
+        return JSONResponse({"detail": t("http.invalid_fields", fields=", ".join(fields))}, status_code=422)
+
+    @app.exception_handler(StarletteHTTPException)
+    async def http_error(request, error):
+        if isinstance(error.detail, Text):
+            detail = localized(error.detail)
+        elif error.status_code in (400, 401, 403, 404, 405, 409, 413, 422, 503):
+            detail = t(f"http.status_{error.status_code}")
+        else:
+            detail = t("http.status_other", status=error.status_code)
+        return JSONResponse({"detail": detail}, status_code=error.status_code, headers=error.headers)
 
     @app.exception_handler(ValueError)
     async def invalid(request, error):
-        return JSONResponse({"detail": str(error)}, status_code=400)
+        return JSONResponse({"detail": str(localized(error))}, status_code=400)
 
     @app.exception_handler(KeyError)
     async def missing(request, error):
-        return JSONResponse({"detail": "Dispositivo não encontrado."}, status_code=404)
+        return JSONResponse({"detail": t("messages.device_not_found")}, status_code=404)
 
     @app.exception_handler(RuntimeError)
     async def unavailable(request, error):
-        return JSONResponse({"detail": str(error)}, status_code=409)
+        return JSONResponse({"detail": str(localized(error))}, status_code=409)
 
     def known(device_id):
         supervisor.require_device(device_id)
 
     def dataset_resolution(value):
         if value is not None and re.fullmatch(r"[1-9]\d*x[1-9]\d*", value) is None:
-            raise ValueError("Resolução do dataset inválida.")
+            raise ValueError(t("messages.invalid_dataset_resolution"))
         return value
 
     async def body(request):
         raw = bytearray()
         async for chunk in request.stream():
             if len(raw) + len(chunk) > MAX_BODY:
-                raise HTTPException(status_code=413, detail="Requisição muito grande.")
+                raise HTTPException(status_code=413, detail=t("messages.request_too_large"))
             raw.extend(chunk)
         try:
             value = json.loads(raw)
         except (ValueError, UnicodeError, RecursionError) as error:
-            raise ValueError("JSON inválido.") from error
+            raise ValueError(t("messages.invalid_json")) from error
         if not isinstance(value, dict):
-            raise ValueError("Envie um objeto JSON.")
+            raise ValueError(t("messages.json_object_required"))
         return value
 
     @app.get("/api/session")
@@ -299,24 +324,26 @@ def create_app(root=None, state_root=None, token=None, supervisor=None, require_
     def shutdown_server():
         server = app.state.web_server
         if server is None:
-            raise HTTPException(status_code=503, detail="Encerramento do painel indisponível.")
+            raise HTTPException(status_code=503, detail=t("messages.shutdown_unavailable"))
         # A transmissão da Visão IA mantém uma resposta HTTP aberta. Pare os bots
         # antes de encerrar o Uvicorn para que a transmissão não retenha o shutdown.
         supervisor.shutdown()
         server.should_exit = True
-        return {"message": "Encerramento do painel solicitado."}
+        return {"message": t("messages.shutdown_requested")}
 
     @app.get("/api/state")
     def state(refresh: bool = False):
         return {
             "devices": supervisor.list_devices(refresh=refresh),
-            "schema": settings_schema(vars(config)),
+            "schema": [field for field in settings_schema(vars(config)) if field["key"] not in {
+                "ai_auto_train", "ai_train_batch_size", "ai_train_jobs", "ai_pause_bot_while_training",
+            }],
             "templates": catalog(),
             "models": model_catalog(root),
             "training": training(),
             "collected": collected(),
             "server": {"name": "EatVenture Control", "profiles": "local/devices", "requires_restart": True},
-            "error": getattr(supervisor.devices, "last_error", None),
+            "error": localized(getattr(supervisor.devices, "last_error", None)),
         }
 
     @app.get("/api/templates")
@@ -327,6 +354,27 @@ def create_app(root=None, state_root=None, token=None, supervisor=None, require_
     def runtime():
         return supervisor.runtime_state()
 
+    @app.get("/api/training")
+    def training_overview(refresh: bool = False):
+        return supervisor.training.overview(refresh)
+
+    @app.put("/api/training/settings")
+    async def training_settings(request: Request):
+        from starlette.concurrency import run_in_threadpool
+        data = await body(request)
+        return await run_in_threadpool(supervisor.training.configure, data)
+
+    @app.post("/api/training/start")
+    async def start_training(request: Request):
+        from starlette.concurrency import run_in_threadpool
+        data = await body(request)
+        return await run_in_threadpool(supervisor.training.request, data)
+
+    @app.post("/api/training/cancel")
+    async def cancel_training():
+        from starlette.concurrency import run_in_threadpool
+        return await run_in_threadpool(supervisor.training.cancel)
+
     @app.get("/api/datasets/sessions")
     def dataset_sessions(resolution: str | None = None, session_id: str | None = None):
         return {"sessions": datasets.sessions(dataset_resolution(resolution), session_id)}
@@ -334,18 +382,18 @@ def create_app(root=None, state_root=None, token=None, supervisor=None, require_
     @app.get("/api/datasets/sessions/{session_id}")
     def dataset_session(session_id: str, offset: int = 0, limit: int = 200, resolution: str | None = None):
         if offset < 0 or not 1 <= limit <= 500:
-            raise ValueError("Paginação inválida.")
+            raise ValueError(t("messages.invalid_pagination"))
         try:
             return datasets.page(session_id, offset, limit, dataset_resolution(resolution))
         except KeyError as error:
-            raise HTTPException(status_code=404, detail="Sessão do dataset não encontrada.") from error
+            raise HTTPException(status_code=404, detail=t("messages.dataset_session_not_found")) from error
 
     @app.get("/api/datasets/sessions/{session_id}/images/{sample_id}")
     def dataset_image(session_id: str, sample_id: str, resolution: str | None = None):
         try:
             path = datasets.image(session_id, sample_id, dataset_resolution(resolution))
         except KeyError as error:
-            raise HTTPException(status_code=404, detail="Imagem do dataset não encontrada.") from error
+            raise HTTPException(status_code=404, detail=t("messages.dataset_image_not_found")) from error
         media_type = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
         return FileResponse(path, media_type=media_type)
 
@@ -359,7 +407,7 @@ def create_app(root=None, state_root=None, token=None, supervisor=None, require_
                 data.get("all") is True, dataset_resolution(resolution),
             )
         except KeyError as error:
-            raise HTTPException(status_code=404, detail="Sessão do dataset não encontrada.") from error
+            raise HTTPException(status_code=404, detail=t("messages.dataset_session_not_found")) from error
 
     @app.get("/api/devices/{device_id}/profile")
     def profile(device_id: str):
@@ -382,10 +430,10 @@ def create_app(root=None, state_root=None, token=None, supervisor=None, require_
         from starlette.concurrency import run_in_threadpool
         data = await body(request)
         if type(data.get("enabled")) is not bool:
-            raise ValueError("Informe enabled como verdadeiro ou falso.")
+            raise ValueError(t("messages.enabled_boolean_required"))
         mode = data.get("mode", "vision")
         if mode not in ("vision", "template", "clean"):
-            raise ValueError("Modo de prévia inválido.")
+            raise ValueError(t("messages.invalid_preview_mode"))
         return await run_in_threadpool(supervisor.request_vision, device_id, data["enabled"], mode)
 
     @app.get("/api/devices/{device_id}/vision")
@@ -400,7 +448,7 @@ def create_app(root=None, state_root=None, token=None, supervisor=None, require_
         try:
             content = path.read_bytes()
         except OSError as error:
-            raise RuntimeError("Aguardando frame da visão IA.") from error
+            raise RuntimeError(t("messages.waiting_vision_frame")) from error
         return Response(content, media_type="image/jpeg")
 
     @app.post("/api/devices/{device_id}/templates")
@@ -417,7 +465,7 @@ def create_app(root=None, state_root=None, token=None, supervisor=None, require_
     async def vision_stream(device_id: str, request: Request, mode: str = "vision"):
         from starlette.concurrency import run_in_threadpool
         if mode not in ("vision", "clean"):
-            raise ValueError("Modo de prévia inválido.")
+            raise ValueError(t("messages.invalid_preview_mode"))
         stream = await run_in_threadpool(supervisor.open_vision_stream, device_id, mode)
         return StreamingResponse(
             vision_stream_frames(request, supervisor, stream["device_id"], stream["session_id"], mode),
@@ -428,7 +476,7 @@ def create_app(root=None, state_root=None, token=None, supervisor=None, require_
     @app.post("/api/devices/{device_id}/{action}")
     def device_action(device_id: str, action: str):
         if action not in ("start", "stop", "restart"):
-            raise HTTPException(status_code=404, detail="Ação não encontrada.")
+            raise HTTPException(status_code=404, detail=t("messages.action_not_found"))
         return getattr(supervisor, action)(device_id)
 
     @app.post("/api/actions")
@@ -437,9 +485,9 @@ def create_app(root=None, state_root=None, token=None, supervisor=None, require_
         data = await body(request)
         action, identifiers = data.get("action"), data.get("device_ids")
         if action not in ("start", "stop", "restart") or not isinstance(identifiers, list) or not 1 <= len(identifiers) <= 64:
-            raise ValueError("Escolha uma ação e de 1 a 64 dispositivos.")
+            raise ValueError(t("messages.invalid_bulk_action"))
         if any(not isinstance(item, str) for item in identifiers):
-            raise ValueError("Dispositivos inválidos.")
+            raise ValueError(t("messages.invalid_devices"))
         limit = asyncio.Semaphore(16)
 
         async def perform(identifier):
@@ -456,7 +504,7 @@ def create_app(root=None, state_root=None, token=None, supervisor=None, require_
     def logs(device_id: str, after: int = 0):
         known(device_id)
         if after < 0:
-            raise ValueError("Cursor inválido.")
+            raise ValueError(t("messages.invalid_log_cursor"))
         return supervisor.logs(device_id, after=after)
 
     @app.post("/api/adb/{action}")
@@ -467,11 +515,19 @@ def create_app(root=None, state_root=None, token=None, supervisor=None, require_
             return await run_in_threadpool(supervisor.connect, data.get("address"))
         if action == "pair":
             return await run_in_threadpool(supervisor.pair, data.get("address"), data.get("code"))
-        raise HTTPException(status_code=404, detail="Ação não encontrada.")
+        raise HTTPException(status_code=404, detail=t("messages.action_not_found"))
 
     @app.get("/")
     def index():
-        return FileResponse(STATIC / "index.html")
+        language = locale()
+        if re.fullmatch(r"[A-Za-z0-9-]{2,35}", language) is None or not (LOCALES / f"{language}.json").is_file():
+            language = DEFAULT_LOCALE
+        content = (STATIC / "index.html").read_text(encoding="utf-8")
+        content = re.sub(r"\{\{([a-zA-Z0-9_.]+)\}\}", lambda match: escape(t(match[1]), quote=True), content)
+        bootstrap = json.dumps(messages(language), ensure_ascii=True).replace("<", "\\u003c")
+        content = content.replace("<!-- locale-catalog -->", f'<script id="locale-catalog" type="application/json">{bootstrap}</script>')
+        return Response(content.replace('lang="pt-BR"', f'lang="{language}"', 1), media_type="text/html")
 
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
+    app.mount("/locales", StaticFiles(directory=LOCALES), name="locales")
     return app

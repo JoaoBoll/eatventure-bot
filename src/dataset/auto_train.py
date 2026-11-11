@@ -1,6 +1,7 @@
 """Agenda o treino em outro processo quando há um lote completo na coleta."""
 
 import os
+from core.i18n import t
 import re
 import subprocess
 import sys
@@ -60,7 +61,7 @@ class AutoTrainer:
             return True
         self._pause_ready.clear()
         self._pause_requested.set()
-        logger.info("Aguardando o bot pausar para iniciar o treino automático.")
+        logger.info(t("messages.training_waiting_pause"))
         while not self._stop.is_set():
             if self._pause_ready.wait(timeout=0.1):
                 return not self._stop.is_set()
@@ -71,7 +72,7 @@ class AutoTrainer:
         with self._lock:
             process = self._process
             if process is not None:
-                logger.info("Encerrando treino automático; dados não consumidos serão preservados.")
+                logger.info(t("messages.training_stopping"))
                 self._terminate(process)
         if self.thread is not None:
             self.thread.join(timeout=5)
@@ -86,7 +87,7 @@ class AutoTrainer:
                         break
                     self._train(resolution)
             except Exception:
-                logger.exception("Não foi possível agendar o treino automático; coleta preservada.")
+                logger.exception(t("messages.training_schedule_failed"))
             if self._stop.wait(self.interval):
                 break
 
@@ -106,7 +107,7 @@ class AutoTrainer:
                 novos[resolution].add(key)
         for resolution, records in sorted(totais.items()):
             logger.info(
-                "Treino automático: resolução %s tem %d amostras válidas, %d novas (%d já processadas); limite %d.",
+                t("messages.training_sample_summary"),
                 resolution, len(records), len(novos[resolution]),
                 len(records) - len(novos[resolution]), self.batch_size,
             )
@@ -127,11 +128,11 @@ class AutoTrainer:
         except (OSError, subprocess.TimeoutExpired):
             if process.poll() is None:
                 self._stop.set()
-                logger.warning("Não foi possível encerrar o processo de treino.", exc_info=True)
+                logger.warning(t("messages.training_stop_failed"), exc_info=True)
 
     def _train(self, resolution="legacy"):
         if not re.fullmatch(r"(?:[1-9]\d*x[1-9]\d*|legacy)", resolution):
-            raise ValueError(f"Resolução inválida para treino: {resolution}")
+            raise ValueError(t("messages.invalid_training_resolution", resolution=resolution))
         command = [
             sys.executable, "-u", str(ROOT / "IA" / "train_ai.py"),
             "--dataset-root", str(self.directory.resolve()),
@@ -153,7 +154,7 @@ class AutoTrainer:
                     if self._stop.is_set():
                         return
                     logger.info(
-                        "Lote de %d registros da resolução %s disponível; iniciando treino automático.",
+                        t("messages.training_batch_started"),
                         self.batch_size, resolution,
                     )
                     process = subprocess.Popen(
@@ -168,7 +169,7 @@ class AutoTrainer:
                 if output_thread is not None:
                     output_thread.join(timeout=5)
                 if not self._stop.is_set() and returncode:
-                    logger.warning("Treino automático não concluído (código %d); dados preservados.", returncode)
+                    logger.warning(t("messages.training_incomplete"), returncode)
         finally:
             with self._lock:
                 if process is not None:

@@ -16,6 +16,8 @@ ROOT = Path(__file__).resolve().parent.parent
 for candidato in (str(ROOT), str(ROOT / "src"), str(ROOT / "IA")):
     if candidato not in sys.path:
         sys.path.insert(0, candidato)
+from core.cli import ArgumentParser, configure_locale
+from core.i18n import display_code, t
 
 from features import (                                # noqa: E402
     FEATURE_SIZE,
@@ -137,8 +139,7 @@ class Model:
         if not self.labels:
 
             raise SystemExit(
-                f"Modelo sem classes: {path}\n"
-                "Treine de novo com IA/train_ai.py."
+                t("messages.model_classes_missing", path=path)
             )
 
     @classmethod
@@ -153,9 +154,7 @@ class Model:
         if not caminho.exists():
 
             raise SystemExit(
-                f"Modelo não encontrado: {caminho}\n\n"
-                "Treine primeiro:\n"
-                "  python IA/train_ai.py\n"
+                t("messages.model_training_required", caminho=caminho)
             )
 
         meta_path = caminho.with_suffix(".meta.json")
@@ -172,21 +171,20 @@ class Model:
             except json.JSONDecodeError:
 
                 if publication.run_id is not None:
-                    raise ValueError(f"Metadados ilegíveis: {meta_path}") from None
+                    raise ValueError(t("messages.metadata_unreadable", meta_path=meta_path)) from None
 
                 print(
-                    f"[aviso] {meta_path.name} ilegível — "
-                    "assumindo modelo de categoria."
+                    t("messages.metadata_fallback_warning", value_1=meta_path.name)
                 )
 
         if not isinstance(meta, dict):
-            raise ValueError(f"Metadados inválidos: {meta_path}")
+            raise ValueError(t("messages.invalid_metadata", meta_path=meta_path))
 
         if publication.run_id is not None:
             if meta.get("run_id") != publication.run_id:
-                raise ValueError(f"Versão dos metadados difere de {publication.run_id}")
+                raise ValueError(t("messages.metadata_version_mismatch", value_1=publication.run_id))
             if meta.get("kind") != "category":
-                raise ValueError("A publicação deve conter um modelo de categoria")
+                raise ValueError(t("messages.publication_category_required"))
             feature_metadata = meta.get("features")
             expected_features = {
                 "patch_size": PATCH_SIZE,
@@ -198,14 +196,14 @@ class Model:
                 feature_metadata.get(name) != expected
                 for name, expected in expected_features.items()
             ):
-                raise ValueError("Features publicadas incompatíveis com IA/features.py")
+                raise ValueError(t("messages.published_features_incompatible"))
 
         import joblib
 
         clf = joblib.load(caminho)
 
         if publication.run_id is not None and getattr(clf, "n_features_in_", None) is None:
-            raise ValueError("Modelo publicado sem informação das features de entrada")
+            raise ValueError(t("messages.published_features_missing"))
 
         modelo = cls(clf, meta, caminho)
 
@@ -217,7 +215,7 @@ class Model:
             categories = known_categories()
             labels = set(modelo.labels)
             if not labels.intersection(categories):
-                raise ValueError("Modelo publicado sem categorias de visão reconhecidas")
+                raise ValueError(t("messages.published_categories_missing"))
 
         return modelo
 
@@ -238,12 +236,7 @@ class Model:
         if int(esperado) != int(atual):
 
             raise SystemExit(
-                f"Modelo incompatível: {self.path.name} espera "
-                f"{esperado} features, mas IA/features.py produz "
-                f"{atual}.\n\n"
-                "IA/features.py mudou depois do treino. "
-                "Retreine:\n"
-                f"  python IA/train_ai.py --kind {self.kind}\n"
+                t("messages.model_features_incompatible", value_1=self.path.name, esperado=esperado, atual=atual, value_4=self.kind)
             )
 
     def _check_labels(self):
@@ -264,15 +257,7 @@ class Model:
             return
 
         raise SystemExit(
-            f"As classes de {self.path.name} não são categorias "
-            "de visão:\n"
-            f"  {', '.join(self.labels[:12])}\n\n"
-            "Isso é um modelo de AÇÃO rodando como se fosse de "
-            "categoria. Nenhuma previsão casa com as regras da "
-            "StateMachine, então o bot não age — parece "
-            "travado, sem erro no log.\n\n"
-            "Retreine:\n"
-            "  python IA/train_ai.py --kind category\n"
+            t("messages.model_classes_incompatible", value_1=self.path.name, value_2=', '.join(self.labels[:12]))
         )
 
     def classify_batch(self, vetores):
@@ -516,7 +501,7 @@ def demo(model, args):
 
     if not registros:
 
-        print("Nenhuma amostra no dataset.")
+        print(t("messages.dataset_empty"))
 
         return 1
 
@@ -591,21 +576,20 @@ def demo(model, args):
         cv2.destroyAllWindows()
 
     print()
-    print(f"caixas avaliadas ... {total}")
+    print(t("messages.evaluated_boxes", total=total))
 
     if total:
-        print(f"categoria correta .. {acertos / total:.2%}")
+        print(t("messages.category_accuracy", value_1=acertos / total))
 
     if confusao:
 
         print()
-        print("maiores confusões:")
+        print(t("messages.top_confusions"))
 
         for (verdade, palpite), quantas in confusao.most_common(10):
 
             print(
-                f"  {verdade:<14} previsto como "
-                f"{palpite:<14} {quantas:5d}"
+                t("messages.predicted_category", verdade=verdade, palpite=palpite, quantas=quantas)
             )
 
     return 0
@@ -654,8 +638,7 @@ def live(model, args):
         acoes.swipe = lambda direction: True
 
         print(
-            "MODO SEGURO: nenhuma ação é enviada ao device. "
-            "Use --auto para deixar agir."
+            t("messages.safe_mode")
         )
 
     versao = 0
@@ -686,7 +669,7 @@ def live(model, args):
 
             if not captura.is_running():
 
-                print("Stream encerrado.")
+                print(t("messages.stream_ended"))
 
                 break
 
@@ -696,7 +679,7 @@ def live(model, args):
             updated_model = watcher.take_pending()
             if updated_model is not None:
                 model = updated_model
-                logger.info("Modelo atualizado para %s", model.meta["run_id"])
+                logger.info(t("messages.model_version_updated"), model.meta["run_id"])
 
             altura, largura = frame.shape[:2]
 
@@ -820,21 +803,19 @@ def live(model, args):
     if concordancia[1]:
 
         print(
-            f"concordância com o template matching: "
-            f"{concordancia[0] / concordancia[1]:.2%} "
-            f"({concordancia[0]}/{concordancia[1]} caixas)"
+            t("messages.template_agreement", value_1=concordancia[0] / concordancia[1], value_2=concordancia[0], value_3=concordancia[1])
         )
 
     if contagem:
 
-        print("o que apareceu:")
+        print(t("messages.observed_categories"))
 
         for chave, quantas in contagem.most_common(15):
             print(f"  {chave:<24} {quantas}")
 
     # fora do most_common de propósito: `fly` é raro e cairia do corte de 15
     print()
-    print("categorias que fecham RENOVATE:")
+    print(t("messages.renovate_categories"))
 
     for categoria in CATEGORIAS_CRITICAS:
 
@@ -844,18 +825,18 @@ def live(model, args):
 
 
 def parse_args(argv=None):
+    configure_locale(argv)
 
-    parser = argparse.ArgumentParser(
+    parser = ArgumentParser(
         description=(
-            "Bot com visão por modelo treinado. A ação vem da "
-            "StateMachine, não do modelo."
+            t("messages.ai_bot_description")
         ),
     )
 
     parser.add_argument(
         "--model",
         default=str(DEFAULT_MODEL),
-        help="modelo treinado (padrão: IA/model.joblib)",
+        help=t("messages.model_help"),
     )
 
     parser.add_argument(
@@ -863,25 +844,21 @@ def parse_args(argv=None):
         choices=("templates", "proposer"),
         default="templates",
         help=(
-            "de onde vêm as caixas candidatas. templates "
-            "(padrão): o detector atual diz onde olhar e o "
-            "modelo diz o que é — serve para medir o modelo. "
-            "proposer: por cor e contorno, EXPERIMENTAL."
+            t("messages.source_help")
         ),
     )
 
     parser.add_argument(
         "--device",
         default=None,
-        help="serial do device; sem isto pergunta",
+        help=t("messages.device_help"),
     )
 
     parser.add_argument(
         "--auto",
         action="store_true",
         help=(
-            "deixa o bot TOCAR no device. Sem isto nada é "
-            "enviado."
+            t("messages.allow_actions_help")
         ),
     )
 
@@ -890,8 +867,7 @@ def parse_args(argv=None):
         type=float,
         default=0.60,
         help=(
-            "confiança mínima para uma detecção contar "
-            "(padrão: 0.60)"
+            t("messages.confidence_help")
         ),
     )
 
@@ -899,24 +875,21 @@ def parse_args(argv=None):
         "--compare",
         action="store_true",
         help=(
-            "compara a categoria do modelo com a do template "
-            "matching, caixa a caixa. Só com "
-            "--source templates."
+            t("messages.compare_help")
         ),
     )
 
     parser.add_argument(
         "--debug-proposals",
         action="store_true",
-        help="desenha também as caixas candidatas descartadas",
+        help=t("messages.debug_proposals_help"),
     )
 
     parser.add_argument(
         "--demo",
         action="store_true",
         help=(
-            "roda sobre imagens do dataset e mede o acerto de "
-            "categoria contra os rótulos. Sem device."
+            t("messages.demo_help")
         ),
     )
 
@@ -924,19 +897,19 @@ def parse_args(argv=None):
         "--demo-limit",
         type=int,
         default=50,
-        help="quantas amostras no modo demo (padrão: 50)",
+        help=t("messages.demo_limit_help"),
     )
 
     parser.add_argument(
         "--dataset-root",
         default=str(DATASET_ROOT),
-        help="pasta do dataset, para o modo demo",
+        help=t("messages.demo_dataset_help"),
     )
 
     parser.add_argument(
         "--headless",
         action="store_true",
-        help="sem janela",
+        help=t("messages.headless_help"),
     )
 
     return parser.parse_args(argv)
@@ -948,31 +921,25 @@ def main(argv=None):
 
     model = Model.load(args.model)
 
-    print(f"modelo .......... {model.path.name}")
-    print(f"tipo ............ {model.kind}")
-    print(f"classes ......... {', '.join(model.labels)}")
+    print(t("messages.model_name", value_1=model.path.name))
+    print(t("messages.model_kind", value_1=model.kind))
+    print(t("messages.model_classes", value_1=', '.join(model.labels)))
 
     if model.meta.get("accuracy") is not None:
 
         print(
-            f"acurácia (teste)  "
-            f"{model.meta['accuracy']:.2%}"
+            t("messages.test_accuracy", value_1=model.meta['accuracy'])
         )
 
     for nome, valor in (model.meta.get("baselines") or {}).items():
-        print(f"  referência: {nome} {valor:.2%}")
+            print(t("messages.baseline_accuracy", nome=display_code("baselines", nome), valor=valor))
 
     print()
 
     if model.kind != "category":
 
         print(
-            "AVISO: este é um modelo de tela inteira "
-            "(--kind action).\n"
-            "Ele não localiza nada, então não serve para "
-            "guiar o clique.\n"
-            "Treine o de categoria:\n"
-            "  python IA/train_ai.py --kind category\n"
+            t("messages.full_screen_model_warning")
         )
 
         return 1
@@ -986,12 +953,7 @@ def main(argv=None):
     if ausentes:
 
         print(
-            f"AVISO: o modelo não conhece {', '.join(ausentes)}.\n"
-            "Essas são as únicas categorias que fecham o estado "
-            "RENOVATE, então o bot vai travar na tela de "
-            "reforma.\n"
-            "Grave dataset passando por uma reforma e retreine:\n"
-            "  python IA/train_ai.py --kind category\n"
+            t("messages.missing_critical_categories", value_1=', '.join(ausentes))
         )
 
     if args.demo:

@@ -1,12 +1,13 @@
 """Entrada isolada usada pelo supervisor; não inicia interface gráfica."""
 
 import os
+from core.i18n import t
 
 
 def main():
     required = ("EATVENTURE_PROFILE", "EATVENTURE_DEVICE_ID", "EATVENTURE_STATUS_FILE", "EATVENTURE_STOP_FILE")
     if any(not os.environ.get(key) for key in required):
-        raise SystemExit("Este processo deve ser iniciado pelo painel web.")
+        raise SystemExit(t("messages.web_worker_required"))
     from core import config
     from core.runtime import RuntimeControl
     runtime = RuntimeControl(

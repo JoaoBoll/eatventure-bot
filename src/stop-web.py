@@ -8,6 +8,9 @@ import signal
 import subprocess
 import time
 
+from core.cli import ArgumentParser, configure_locale
+from core.i18n import t
+
 from core.processes import process_alive
 
 
@@ -98,7 +101,8 @@ def remove_pid(path, pid):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Encerra o painel web do EatVenture")
+    configure_locale(argv)
+    parser = ArgumentParser(description=t("terminal.stop_web_description"))
     parser.add_argument(
         "--state-dir",
         type=Path,
@@ -110,14 +114,14 @@ def main(argv=None):
     try:
         pid = int(path.read_text(encoding="ascii").strip())
     except (OSError, ValueError):
-        print("Painel web não está em execução.")
+        print(t("terminal.panel_not_running"))
         return 0
     if not alive(pid):
         remove_pid(path, pid)
-        print("PID antigo removido; painel web não está em execução.")
+        print(t("terminal.stale_pid_removed"))
         return 0
     if not web_process(pid):
-        raise SystemExit(f"O PID {pid} não pertence ao painel web; não foi encerrado.")
+        raise SystemExit(t("terminal.wrong_pid", pid=pid))
 
     os.kill(pid, signal.SIGTERM)
     deadline = time.monotonic() + max(0.0, args.timeout)
@@ -129,7 +133,7 @@ def main(argv=None):
         else:
             os.kill(pid, signal.SIGKILL)
     remove_pid(path, pid)
-    print("Painel web encerrado.")
+    print(t("terminal.panel_stopped"))
     return 0
 
 

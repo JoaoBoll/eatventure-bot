@@ -14,6 +14,9 @@ for candidato in (str(ROOT), str(ROOT / "src"), str(ROOT / "IA")):
     if candidato not in sys.path:
         sys.path.insert(0, candidato)
 
+from core.cli import ArgumentParser, configure_locale
+from core.i18n import t
+
 DEFAULT_DATASET = ROOT / "dataset"
 DEFAULT_MODEL = ROOT / "IA" / "model.joblib"
 DEFAULT_OUTPUT = ROOT / "IA" / "simulation_report.json"
@@ -34,9 +37,7 @@ def check_dependencies():
 
     if faltando:
         raise SystemExit(
-            "Faltam dependências.\n\n"
-            f"  {sys.executable} -m pip install "
-            f"{' '.join(faltando)}\n"
+            t("messages.missing_dependencies", value_1=sys.executable, value_2=' '.join(faltando))
         )
 
 
@@ -73,24 +74,23 @@ def simulate_bot(args):
     raiz = Path(args.dataset_root).expanduser().resolve()
     modelo_path = resolve_publication(args.model).model_path
 
-    print(f"dataset ......... {raiz}")
-    print(f"modelo .......... {modelo_path}")
+    print(t("messages.dataset_path", raiz=raiz))
+    print(t("messages.model_path", modelo_path=modelo_path))
 
     if not modelo_path.exists():
-        raise SystemExit(f"Modelo não encontrado: {modelo_path}")
+        raise SystemExit(t("messages.model_not_found", modelo_path=modelo_path))
 
     registros, aviso = read_index(raiz)
-    print(f"amostras ........ {len(registros)}")
+    print(t("messages.sample_count", value_1=len(registros)))
 
     if aviso["invalidas"] or aviso["sem_imagem"]:
         print(
-            f"  ignoradas: {aviso['invalidas']} linha(s) "
-            f"inválida(s), {aviso['sem_imagem']} sem imagem"
+            t("messages.skipped_samples", value_1=aviso['invalidas'], value_2=aviso['sem_imagem'])
         )
 
     if args.limit:
         registros = registros[:args.limit]
-        print(f"limite .......... {len(registros)} amostras")
+        print(t("messages.sample_limit", value_1=len(registros)))
 
     clf = joblib.load(modelo_path)
 
@@ -232,16 +232,16 @@ def report_simulation(resultados, args):
 
     print()
     print("=" * 62)
-    print("  SIMULAÇÃO DO BOT")
+    print(t("messages.simulation_heading"))
     print("=" * 62)
     print()
-    print(f"  Total de frames ............. {total:7d}")
-    print(f"  Ações corretas ............. {corretos:7d} ({taxa:6.2f}%)")
-    print(f"  Divergências ............... {divergencias:7d}")
+    print(t("messages.frame_count", total=total))
+    print(t("messages.correct_actions", corretos=corretos, taxa=taxa))
+    print(t("messages.mismatch_count", divergencias=divergencias))
     print()
 
     print("-" * 62)
-    print("  POR ESTADO")
+    print(t("messages.state_summary"))
     print("-" * 62)
     print()
 
@@ -251,13 +251,12 @@ def report_simulation(resultados, args):
         taxa_estado = (stats["corretos"] / stats["total"] * 100) if stats["total"] > 0 else 0
 
         print(
-            f"  {estado:<16} {stats['total']:6d} | "
-            f"acertos {taxa_estado:6.2f}%"
+            t("messages.state_accuracy", estado=estado, value_2=stats['total'], taxa_estado=taxa_estado)
         )
 
     print()
     print("-" * 62)
-    print("  AÇÕES: ESPERADAS vs PREDITAS")
+    print(t("messages.action_comparison"))
     print("-" * 62)
     print()
 
@@ -265,13 +264,13 @@ def report_simulation(resultados, args):
     for acao in sorted(todas_acoes):
         esp = resultados["acoes_esperadas"].get(acao, 0)
         pred = resultados["acoes_preditas"].get(acao, 0)
-        print(f"  {acao:<20} esperada {esp:6d} | predita {pred:6d}")
+        print(t("messages.expected_action_count", acao=acao, esp=esp, pred=pred))
 
     print()
     if resultados["divergencias"]:
 
         print("-" * 62)
-        print("  MAIORES DIVERGÊNCIAS")
+        print(t("messages.top_mismatches"))
         print("-" * 62)
         print()
 
@@ -283,21 +282,19 @@ def report_simulation(resultados, args):
 
         for (estado, esp, pred), quantas in confusoes.most_common(10):
             print(
-                f"  {estado:<12} | esperava {esp:<16} "
-                f"| fez {pred:<16} ({quantas:4d}x)"
+                t("messages.action_mismatch", estado=estado, esp=esp, pred=pred, quantas=quantas)
             )
 
         print()
-        print("  Exemplos:")
+        print(t("messages.examples"))
         for div in resultados["divergencias"][:5]:
             print(
-                f"    {div['estado']:<12} esperava {div['esperada']:<16} "
-                f"fez {div['predita']:<16} ({div['deteccoes']} dets)"
+                t("messages.mismatch_example", value_1=div['estado'], value_2=div['esperada'], value_3=div['predita'], value_4=div['deteccoes'])
             )
 
     print()
     print("-" * 62)
-    print("  TRANSIÇÕES MAIS FREQUENTES")
+    print(t("messages.frequent_transitions"))
     print("-" * 62)
     print()
     for transicao, quantas in resultados["estado_transicoes"].most_common(15):
@@ -330,19 +327,20 @@ def save_simulation(resultados, output_path):
         encoding="utf-8",
     )
 
-    print(f"Relatório salvo em: {output_path}")
+    print(t("messages.report_saved", output_path=output_path))
 
 
 def parse_args(argv=None):
-    parser = argparse.ArgumentParser(
-        description="Simula bot em dados coletados (sem executar ações).",
+    configure_locale(argv)
+    parser = ArgumentParser(
+        description=t("messages.simulation_description"),
     )
 
-    parser.add_argument("--dataset-root", default=str(DEFAULT_DATASET), help="pasta do dataset")
-    parser.add_argument("--model", default=str(DEFAULT_MODEL), help="modelo treinado")
-    parser.add_argument("--output", default=str(DEFAULT_OUTPUT), help="saída JSON")
-    parser.add_argument("--limit", type=int, default=None, help="N primeiras amostras")
-    parser.add_argument("--show-mismatches", action="store_true", help="só divergências")
+    parser.add_argument("--dataset-root", default=str(DEFAULT_DATASET), help=t("messages.dataset_help"))
+    parser.add_argument("--model", default=str(DEFAULT_MODEL), help=t("messages.trained_model_help"))
+    parser.add_argument("--output", default=str(DEFAULT_OUTPUT), help=t("messages.json_output_help"))
+    parser.add_argument("--limit", type=int, default=None, help=t("messages.sample_limit_help"))
+    parser.add_argument("--show-mismatches", action="store_true", help=t("messages.mismatches_only_help"))
 
     return parser.parse_args(argv)
 
@@ -355,7 +353,7 @@ def main(argv=None):
 
     print()
     print("=" * 62)
-    print("  SIMULADOR DO BOT")
+    print(t("messages.simulator_heading"))
     print("=" * 62)
     print()
 
@@ -366,7 +364,7 @@ def main(argv=None):
     save_simulation(resultados, args.output)
 
     print()
-    print("✓ Simulação concluída.")
+    print(t("messages.simulation_completed"))
     print()
 
     return 0

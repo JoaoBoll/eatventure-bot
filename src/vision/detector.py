@@ -1,6 +1,7 @@
 """Detector por template matching: 2-stage search, ROI/category filters, NMS."""
 
 from pathlib import Path
+from core.i18n import t
 from functools import partial
 
 import json
@@ -263,7 +264,7 @@ class Detector:
         stopped = not self._learn_thread.is_alive()
 
         if not stopped:
-            logger.warning("Aprendizado ainda encerrando após %.1fs", timeout)
+            logger.warning(t("messages.learning_still_stopping"), timeout)
 
         if stopped:
             self._flush_dirty_templates()
@@ -330,7 +331,7 @@ class Detector:
         if not TEMPLATES_DIR.exists():
 
             logger.error(
-                "Pasta de templates não encontrada: %s",
+                t("messages.template_folder_missing"),
                 TEMPLATES_DIR,
             )
 
@@ -377,8 +378,7 @@ class Detector:
             if resolucao is None:
 
                 logger.warning(
-                    "Pasta de templates ignorada (nome não é "
-                    "'LARGURAxALTURA'): %s",
+                    t("messages.invalid_template_folder"),
                     resolution_dir.name,
                 )
 
@@ -414,8 +414,7 @@ class Detector:
         }
         override_count = sum(overrides.values())
         logger.info(
-            "Templates carregados: %d total | %d default em %d categorias %s | "
-            "%d overrides para %d resolução(ões) %s",
+            t("messages.templates_loaded"),
             len(self.templates) + override_count,
             len(self.templates),
             len(self.by_category),
@@ -433,8 +432,7 @@ class Detector:
         if not self.templates:
 
             logger.error(
-                "NENHUM template default carregado de %s — a thread "
-                "de atualização não poderá gerar templates novos.",
+                t("messages.default_templates_missing"),
                 DEFAULT_TEMPLATES_DIR,
             )
 
@@ -566,7 +564,7 @@ class Detector:
             )
 
             logger.info(
-                "Pasta de templates mudou (%s) — recarregando.",
+                t("messages.templates_reloading"),
                 "overrides"
                 if manter_defaults
                 else "defaults",
@@ -712,7 +710,7 @@ class Detector:
         except (OSError, ValueError) as error:
 
             logger.warning(
-                "Não consegui ler %s: %s",
+                t("messages.file_read_failed"),
                 caminho,
                 error,
             )
@@ -754,7 +752,7 @@ class Detector:
         except OSError as error:
 
             logger.warning(
-                "Não consegui salvar %s: %s",
+                t("messages.file_save_failed"),
                 self._fidelity_path(resolution_dir),
                 error,
             )
@@ -769,7 +767,7 @@ class Detector:
         if raw is None:
 
             logger.error(
-                "Erro ao carregar: %s",
+                t("messages.file_load_failed"),
                 image_path,
             )
 
@@ -925,8 +923,7 @@ class Detector:
         if TEMPLATE_SCALE_BASIS != "short_side":
 
             logger.warning(
-                "TEMPLATE_SCALE_BASIS desconhecido (%r) — "
-                "usando 'short_side'.",
+                t("messages.unknown_scale_basis"),
                 TEMPLATE_SCALE_BASIS,
             )
 
@@ -1141,8 +1138,7 @@ class Detector:
                 ).append(variante)
 
         logger.info(
-            "Frame %dx%d (referência %dx%d) — %d "
-            "templates default em %d escala(s) %s (base %.3f por '%s').",
+            t("messages.frame_template_scales"),
             frame_width,
             frame_height,
             REFERENCE_WIDTH,
@@ -1317,7 +1313,7 @@ class Detector:
             except Exception:
 
                 logger.exception(
-                    "Erro processando candidata de aprendizado"
+                    t("messages.learning_candidate_error")
                 )
 
             finally:
@@ -1419,7 +1415,7 @@ class Detector:
         if not cv2.imwrite(str(destino), crop):
 
             logger.warning(
-                "Não conseguiu gravar template aprendido: %s",
+                t("messages.learned_template_save_failed"),
                 destino,
             )
 
@@ -1462,7 +1458,7 @@ class Detector:
             self._dirty_templates.pop(fidelity_id, None)
 
         logger.info(
-            "Override %dx%d %s/%s: fidelidade %s -> %.4f",
+            t("messages.override_threshold"),
             frame_width,
             frame_height,
             categoria,
@@ -1602,7 +1598,7 @@ class Detector:
         if x2 <= x1 or y2 <= y1:
 
             logger.warning(
-                "ROI inválida para %s: %s",
+                t("messages.invalid_roi"),
                 category,
                 roi,
             )
@@ -2512,7 +2508,7 @@ class Detector:
         self._miss_at = agora
 
         logger.info(
-            "não detectado (melhor match / corte): %s",
+            t("messages.detection_miss_report"),
             self._miss_text,
         )
 
@@ -2663,11 +2659,11 @@ class Detector:
             if source is None and self._last_frame_size is not None:
                 source = "x".join(str(n) for n in self._last_frame_size)
 
-            return source or "resolucao"
+            return source or t("messages.resolution_label")
 
         # No default a resolução é procedência: diz em qual tela o recorte
         # foi tirado, não em qual ele casou.
-        return f"default {source}" if source else "default"
+        return t("messages.default_source", source=source) if source else t("messages.default_label")
 
     def draw(self, frame, detections, stats=None, scale=1.0):
         """stats: capture_fps, detect_fps, detect_ms, lag, battery, cycle — chaves ausentes não aparecem. `scale` reconverte detecções (em coords de frame cheio) para o frame reduzido que chega aqui, senão as caixas aparecem fora de lugar."""
@@ -2687,7 +2683,7 @@ class Detector:
                 cv2.addWeighted(red, 0.35, blocked, 0.65, 0, blocked)
             cv2.rectangle(output, (x1, y1), (x2, y2), (30, 30, 230), 2)
             cv2.putText(
-                output, f"BLOCK {index}", (x1 + 6, min(y2 - 6, y1 + 24)),
+                output, t("messages.block_label", index=index), (x1 + 6, min(y2 - 6, y1 + 24)),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (230, 230, 255), 2, cv2.LINE_AA,
             )
 
@@ -2730,10 +2726,9 @@ class Detector:
                 for linha in (
                     self._layout_label(detection),
                     (
-                        f"{rotulo} IA:{detection['confidence']:.2f}"
+                        t("messages.ai_match_label", category=rotulo, confidence=detection['confidence'])
                         if from_model else
-                        f"{rotulo} F:{detection['confidence']:.2f} "
-                        f"C:{detection.get('color_similarity', 0.0):.2f}"
+                        t("messages.match_label", category=rotulo, confidence=detection['confidence'], color=detection.get('color_similarity', 0.0))
                     ),
                 )
                 if linha
@@ -2768,7 +2763,7 @@ class Detector:
         y = 50
 
         mode = stats.get("detector_mode", "templates")
-        self._hud_text(output, "MODO: IA" if mode == "ai" else "MODO: TEMPLATES", y, self.HUD_NEUTRAL)
+        self._hud_text(output, t("messages.ai_mode") if mode == "ai" else t("messages.template_mode"), y, self.HUD_NEUTRAL)
         y += 40
         if mode == "ai" and stats.get("model"):
             self._hud_text(output, str(stats["model"])[:70], y, self.HUD_NEUTRAL, scale=0.5)
@@ -2785,7 +2780,7 @@ class Detector:
 
                 self._hud_text(
                     output,
-                    f"captura  {capture_fps:5.1f} fps",
+                    t("messages.capture_fps", capture_fps=capture_fps),
                     y,
                     self.HUD_NEUTRAL,
                 )
@@ -2796,13 +2791,13 @@ class Detector:
 
             if detect_fps is not None:
 
-                label = f"detector {detect_fps:5.1f} fps"
+                label = t("messages.detector_fps", detect_fps=detect_fps)
 
                 detect_ms = stats.get("detect_ms")
 
                 if detect_ms:
 
-                    label += f"  {detect_ms:.0f} ms"
+                    label += t("messages.detection_time", detect_ms=detect_ms)
 
                 # Abaixo de 1/MAX_DETECTION_AGE as detecções já nascem velhas
                 # e a StateMachine para de clicar — mesmo limite da checagem de idade.
@@ -2836,7 +2831,7 @@ class Detector:
 
             self._hud_text(
                 output,
-                f"atraso   {lag * 1000:5.0f} ms",
+                t("messages.detection_lag", value_1=lag * 1000),
                 y,
                 self.HUD_OK
                 if lag <= limit * 0.5
@@ -2854,15 +2849,15 @@ class Detector:
 
             if level is not None:
 
-                label = f"bateria  {level:5d} %"
+                label = t("messages.battery_hud", level=level)
 
                 if charging:
-                    label += "  carregando"
+                    label += t("messages.charging_hud")
 
                 # Leitura velha é pior que ausente (parece atual); passar do
                 # dobro do intervalo é sinal de adb travado.
                 elif age > BATTERY_POLL_INTERVAL * 2:
-                    label += f"  ({age:.0f}s atras)"
+                    label += t("messages.battery_age_hud", age=age)
 
                 self._hud_text(
                     output,
@@ -2885,7 +2880,7 @@ class Detector:
 
         if estado:
 
-            label = f"estado   {estado}"
+            label = t("messages.state_hud", estado=estado)
 
             procurados = stats.get("searched")
 
@@ -2895,7 +2890,7 @@ class Detector:
                 # categoria a passada olha de propósito uma fração da lista,
                 # e só "12" pareceria detector quebrado.
                 na_lista = stats.get("searchable")
-                search_label = "regioes" if mode == "ai" else "templates"
+                search_label = t("messages.regions_label") if mode == "ai" else t("messages.templates")
 
                 label += (
                     f"  ({procurados} {search_label})"
@@ -2923,7 +2918,7 @@ class Detector:
 
             self._hud_text(
                 output,
-                f"template {cobertos:4d}/{total} da resolucao",
+                t("messages.resolution_template_count", cobertos=cobertos, total=total),
                 y,
                 self.HUD_OK
                 if total and cobertos >= total
@@ -2940,10 +2935,10 @@ class Detector:
 
         if quantas is not None:
 
-            label = f"deteccoes {quantas:4d}"
+            label = t("messages.detection_count", quantas=quantas)
 
             if aguardando:
-                label += "  (aguardando a tela parar)"
+                label += t("messages.waiting_screen_settle")
 
             self._hud_text(
                 output,
@@ -2966,7 +2961,7 @@ class Detector:
 
             self._hud_text(
                 output,
-                f"VISAO: {erro[:48]}",
+                t("messages.vision_error_hud", value_1=erro[:48]),
                 y,
                 self.HUD_BAD,
                 scale=0.6,
@@ -2980,10 +2975,10 @@ class Detector:
 
             corrido, ultimo, quantos = cycle
 
-            label = f"reforma {quantos:5d}  {formata_duracao(corrido)}"
+            label = t("messages.renovation_hud", quantos=quantos, value_2=formata_duracao(corrido))
 
             if ultimo is not None:
-                label += f"  (ult {formata_duracao(ultimo)})"
+                label += t("messages.last_cycle_hud", value_1=formata_duracao(ultimo))
 
             # Vermelho só quando há com o que comparar: sem
             # ciclo anterior, "demorado" não quer dizer nada.

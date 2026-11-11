@@ -1,6 +1,7 @@
 """Garante que o Eatventure esteja aberto e exibindo a tela de jogo."""
 
 import time
+from core.i18n import t
 
 from core import log
 from core.config import (
@@ -63,11 +64,11 @@ class EatventureGuard:
             or window_rotation is None
             or ignore_app_request is None
         ):
-            logger.warning("Não foi possível bloquear a rotação em retrato.")
+            logger.warning(t("messages.portrait_lock_failed"))
             return False
 
         logger.info(
-            "Rotação automática desativada; Window Manager fixado em retrato."
+            t("messages.portrait_locked")
         )
         return True
 
@@ -81,7 +82,7 @@ class EatventureGuard:
             timeout=8.0,
         )
         if started is None:
-            logger.warning("Não foi possível abrir o Eatventure (%s).", self.package)
+            logger.warning(t("messages.game_open_failed"), self.package)
             return False
 
         # O app pode alterar a preferência de orientação durante a própria
@@ -93,8 +94,8 @@ class EatventureGuard:
             self.startup_grace, self.idle_seconds,
         )
         logger.warning(
-            "%s Eatventure (%s).",
-            "Reiniciando" if restart else "Abrindo", self.package,
+            t("messages.game_launch"),
+            t("messages.restarting") if restart else t("messages.opening"), self.package,
         )
         return True
 
@@ -126,7 +127,7 @@ class EatventureGuard:
     def request_scan(self, token):
         self._pending_scan = token
         logger.info(
-            "Sem ação relevante há %.0fs; verificando o template engine.",
+            t("messages.idle_engine_check"),
             self.idle_seconds,
         )
 
@@ -151,19 +152,19 @@ class EatventureGuard:
         if detections:
             self._startup_validation = False
             logger.info(
-                "Template engine encontrado: %.1f%% (escala %.3f) em %d,%d (%s); Eatventure permanece aberto.",
+                t("messages.engine_found"),
                 confidence * 100,
                 float(detection.get("template_scale", 1.0)),
                 detection.get("x", 0),
                 detection.get("y", 0),
-                detection.get("template_path") or detection.get("name") or "template desconhecido",
+                detection.get("template_path") or detection.get("name") or t("messages.unknown_template"),
             )
             return True
-        logger.warning("Template engine não encontrado (0.0%% acima do limiar).")
+        logger.warning(t("messages.engine_not_found"))
         if not self._running():
-            logger.warning("Template engine ausente e processo não encontrado.")
+            logger.warning(t("messages.engine_process_missing"))
             self._launch()
             return False
-        logger.warning("Template engine ausente; reiniciando o Eatventure.")
+        logger.warning(t("messages.engine_restart"))
         self._launch(restart=True)
         return False

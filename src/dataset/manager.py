@@ -1,6 +1,7 @@
 """Consulta e exclusão segura de amostras do dataset para o painel web."""
 
 from collections import defaultdict
+from core.i18n import t
 from pathlib import Path
 import threading
 
@@ -111,7 +112,7 @@ class DatasetManager:
             selected = records
         else:
             if type(start) is not int or type(end) is not int or start < 1 or end < start or end > len(records):
-                raise ValueError(f"Informe um intervalo entre 1 e {len(records)}.")
+                raise ValueError(t("messages.invalid_image_range", value_1=len(records)))
             selected = records[start - 1:end]
         identifiers = {str(record.get("id") or Path(record["_path"]).stem) for record in selected}
         result = cleanup_records(self.root, selected, identifiers)
@@ -120,7 +121,7 @@ class DatasetManager:
             self._by_session = None
             self._images = None
         if result["errors"]:
-            raise RuntimeError("A limpeza não foi concluída: " + "; ".join(result["errors"]))
+            raise RuntimeError(t("messages.cleanup_incomplete") + "; ".join(result["errors"]))
         return {
             "session": session,
             "deleted": result["records_removed"],

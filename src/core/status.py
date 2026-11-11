@@ -1,6 +1,7 @@
 """Status e último evento em uma tela do terminal, sem acumular linhas."""
 
 import os
+from core.i18n import display_code, t
 import platform
 import shutil
 import sys
@@ -24,20 +25,20 @@ def formata_bateria(leitura):
     """
 
     if not leitura:
-        return "bateria ?"
+        return t("messages.battery_unknown")
 
     nivel, carregando, idade = leitura
 
     if nivel is None:
-        return "bateria ?"
+        return t("messages.battery_unknown")
 
-    texto = f"bateria {nivel}%"
+    texto = t("messages.battery_status", nivel=nivel)
 
     if carregando:
-        return texto + " carregando"
+        return texto + t("messages.charging_suffix")
 
     if idade and idade > BATTERY_POLL_INTERVAL * 2:
-        texto += f" ({idade:.0f}s atras)"
+        texto += t("messages.battery_age", idade=idade)
 
     return texto
 
@@ -82,7 +83,7 @@ class StatusPanel:
         self._resumo = {"estado": "iniciando", "templates": templates}
         self._extra = None
         self._misses = None
-        self._mensagem = "Aguardando eventos."
+        self._mensagem = t("messages.waiting_events")
 
         self.iniciado = time.monotonic()
 
@@ -174,33 +175,31 @@ class StatusPanel:
 
     def _linhas(self, resumo, extra=None, misses=None):
 
-        acao = resumo.get("acao") or "—"
+        acao = display_code("actions", resumo.get("acao")) or "—"
 
         acao_ha = resumo.get("acao_ha")
 
         # "há quanto tempo" é o que diferencia bot trabalhando
         # de bot parado numa ação que deu certo uma vez.
         if acao_ha is not None and acao_ha > 1.0:
-            acao = f"{acao}  ({acao_ha:.0f}s atrás)"
+            acao = t("messages.action_age", acao=acao, acao_ha=acao_ha)
 
         corrido = time.monotonic() - self.iniciado
 
         linhas = [
-            f"Dispositivo conectado: {self.device}",
-            f"Templates encontrados: {resumo.get('templates', 0)}",
-            f"Voou: {resumo.get('voos', 0)} vezes",
-            f"Renovou: {resumo.get('reformas', 0)} vezes",
-            f"Ação: {acao}",
+            t("messages.connected_device", value_1=self.device),
+            t("messages.template_count", value_1=resumo.get('templates', 0)),
+            t("messages.flight_count", value_1=resumo.get('voos', 0)),
+            t("messages.renovation_count", value_1=resumo.get('reformas', 0)),
+            t("messages.current_action", acao=acao),
         ]
         if resumo.get("vision_error"):
             linhas.append(
-                f"Visão: {resumo['vision_error']} ({resumo.get('vision_failures', 0)} falhas consecutivas)"
+                t("messages.vision_failures", value_1=resumo['vision_error'], value_2=resumo.get('vision_failures', 0))
             )
 
         rodape = (
-            f"estado {resumo.get('estado', '?')}"
-            f" | {resumo.get('acoes', 0)} ações"
-            f" | {formata_duracao(corrido)} rodando"
+            t("messages.runtime_summary", value_1=display_code('states', resumo.get('estado', '?')), value_2=resumo.get('acoes', 0), value_3=formata_duracao(corrido))
         )
 
         if extra:
@@ -211,9 +210,9 @@ class StatusPanel:
         if self.misses_line:
 
             linhas.append(
-                f"Sem deteccao: {misses}"
+                t("messages.detection_misses", misses=misses)
                 if misses
-                else "Sem deteccao: —"
+                else t("messages.no_detection_misses")
             )
 
         assert len(linhas) == self.linhas, (
@@ -262,7 +261,7 @@ class StatusPanel:
             return
 
         altura = max(1, shutil.get_terminal_size(fallback=(100, 24)).lines - 1)
-        linhas.extend(("", "Último log:"))
+        linhas.extend(("", t("messages.latest_log")))
         disponiveis = max(0, altura - len(linhas))
         if disponiveis:
             linhas.extend(

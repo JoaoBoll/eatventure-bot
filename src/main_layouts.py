@@ -20,6 +20,8 @@ import cv2
 
 from capture.screen import ScreenCapture
 from core import config, devices, log
+from core.cli import ArgumentParser, configure_locale
+from core.i18n import t
 from core.block_regions import load_block_regions
 from core.config import (
     AI_WINDOW_NAME,
@@ -45,19 +47,18 @@ REPORT_INTERVAL = 10.0
 
 
 def parse_args(argv=None):
+    configure_locale(argv)
 
-    parser = argparse.ArgumentParser(
-        description="EatVenture AI — atualizador de layouts",
+    parser = ArgumentParser(
+        description=t("terminal.layouts_description"),
     )
-    parser.add_argument("--state-dir", type=Path, help="pasta de perfis locais usada pelo painel")
+    parser.add_argument("--state-dir", type=Path, help=t("terminal.state_dir_help"))
 
     parser.add_argument(
         "--device",
         metavar="SERIAL",
         help=(
-            "serial do device (adb devices). Sem isto, usa "
-            "DEVICE_SERIAL do config; sem os dois, pergunta "
-            "quando houver mais de um conectado."
+            t("terminal.main_device_help")
         ),
     )
 
@@ -68,7 +69,7 @@ def start_scrcpy(device_id):
 
     window_title = f"EatVenture layouts ({device_id})"
 
-    logger.info("Iniciando %s...", window_title)
+    logger.info(t("terminal.starting", title=window_title))
 
     return subprocess.Popen(
         [
@@ -116,7 +117,7 @@ def run_loop(capture, detector):
 
         if not capture.is_running():
 
-            logger.warning("Stream encerrado.")
+            logger.warning(t("messages.stream_ended"))
 
             break
 
@@ -147,7 +148,7 @@ def run_loop(capture, detector):
                 cobertos, total = detector.template_coverage() or (0, 0)
 
                 logger.info(
-                    "cobertura da resolução atual: %d/%d defaults com override",
+                    t("messages.template_coverage"),
                     cobertos,
                     total,
                 )
@@ -212,7 +213,7 @@ def main(argv=None):
 
     except KeyboardInterrupt:
 
-        logger.info("Cancelado.")
+        logger.info(t("messages.cancelled"))
 
         return 1
 
@@ -224,9 +225,9 @@ def main(argv=None):
     detector = Detector(block_regions=[*config.BLOCK_REGIONS, *terminal_blocks])
 
     logger.info(
-        "Atualizador de layouts rodando para %s — encerrar com %s",
+        t("messages.layout_updater_running"),
         device_id,
-        "ESC ou Ctrl+C" if SHOW_AI_VISION else "Ctrl+C",
+        t("messages.exit_keys") if SHOW_AI_VISION else t("messages.exit_ctrl_c"),
     )
 
     try:
@@ -243,11 +244,11 @@ def main(argv=None):
 
     except KeyboardInterrupt:
 
-        logger.info("Interrompido pelo usuário.")
+        logger.info(t("messages.user_interrupted"))
 
     finally:
 
-        logger.info("Encerrando atualizador de layouts...")
+        logger.info(t("messages.layout_updater_stopping"))
 
         detector.stop()
 

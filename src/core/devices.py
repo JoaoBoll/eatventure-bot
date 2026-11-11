@@ -4,6 +4,7 @@ import subprocess
 import sys
 
 from core import log, config
+from core.i18n import t
 
 logger = log.get("devices")
 ADB = config.ADB_PATH
@@ -106,7 +107,7 @@ def rotular(fichas):
         if hardware and primeira.get(hardware, indice) != indice:
 
             partes.append(
-                f"(mesmo aparelho do {primeira[hardware]})"
+                t("messages.duplicate_device_hint", value_1=primeira[hardware])
             )
 
         linhas.append(f"  {indice} - " + " ".join(partes).rstrip())
@@ -141,8 +142,7 @@ def escolher(seriais, pedido=None, perguntar=None, fichas=None):
     if not seriais:
 
         raise RuntimeError(
-            "Nenhum dispositivo Android encontrado.\n"
-            "Confira o cabo, a depuração USB e 'adb devices'."
+            t("messages.no_android_devices")
         )
 
     if pedido:
@@ -151,8 +151,7 @@ def escolher(seriais, pedido=None, perguntar=None, fichas=None):
             return pedido
 
         raise RuntimeError(
-            f"Dispositivo '{pedido}' não está conectado.\n"
-            "Disponíveis:\n"
+            t("messages.device_not_connected", pedido=pedido)
             + "\n".join(f"  {s}" for s in seriais)
         )
 
@@ -167,24 +166,22 @@ def escolher(seriais, pedido=None, perguntar=None, fichas=None):
     texto = "\n".join(
         [
             "",
-            "Mais de um dispositivo conectado:",
+            t("messages.multiple_devices"),
             "",
         ]
         + rotular(fichas)
         + [
             "",
-            f"Qual usar? [{sugerido}]: ",
+            t("messages.device_choice_prompt", sugerido=sugerido),
         ]
     )
 
     def sem_resposta():
 
         return RuntimeError(
-            "Mais de um dispositivo conectado e não há como "
-            "perguntar (entrada não interativa).\n"
+            t("messages.device_selection_unavailable")
             + "\n".join(rotular(fichas))
-            + "\n\nUse --device SERIAL ou defina DEVICE_SERIAL "
-            "no config."
+            + t("messages.device_selection_help")
         )
 
     if perguntar is None:
@@ -213,14 +210,14 @@ def escolher(seriais, pedido=None, perguntar=None, fichas=None):
             if 1 <= escolha <= len(fichas):
                 return fichas[escolha - 1][0]
 
-            print(f"Escolha entre 1 e {len(fichas)}.")
+            print(t("terminal.choose_device", total=len(fichas)))
 
             continue
 
         if resposta in seriais:
             return resposta
 
-        print("Número da lista ou serial completo.")
+        print(t("terminal.device_prompt"))
 
 
 def resolver(pedido=None):
@@ -233,6 +230,6 @@ def resolver(pedido=None):
 
     serial = escolher(seriais, pedido=pedido, perguntar=perguntar)
 
-    logger.info("Dispositivo: %s", serial)
+    logger.info(t("messages.device_selected"), serial)
 
     return serial
