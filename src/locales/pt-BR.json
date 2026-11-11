@@ -434,7 +434,7 @@
     "training_cpu_jobs": "Processos de treino",
     "training_trees": "Árvores do modelo",
     "training_pause_bots": "Interromper e retomar bots da mesma resolução",
-    "training_pause_hint": "Quando habilitado, os bots dessa resolução são encerrados antes do treino e reiniciados ao terminar. As demais resoluções continuam executando.",
+    "training_pause_hint": "Quando a pausa estiver habilitada, os bots selecionados serão parados e reiniciados ao terminar o treino.",
     "training_auto_hint": "O intervalo define quando verificar a coleta, e não garante um treino a cada período. O automático exige o mínimo de amostras novas e remove os dados consumidos somente após a ativação do modelo. Processos e árvores valem também para o treino manual.",
     "training_save_settings": "Salvar configurações",
     "training_current": "Execução atual / última execução",
@@ -490,7 +490,14 @@
     "training_legacy": "Legado",
     "training_all_resolutions": "Todas as resoluções",
     "training_check_after_run": "A próxima verificação aguardará o treino atual terminar.",
-    "training_exit_code": "O treino encerrou com código {code}. Consulte os logs para ver o motivo."
+    "training_exit_code": "O treino encerrou com código {code}. Consulte os logs para ver o motivo.",
+    "training_global_enabled": "Permitir treinamentos de IA (global)",
+    "training_global_hint": "Controla todos os treinos deste painel, manuais e automáticos. Ao desabilitar e salvar, solicita o cancelamento do treino atual. Comandos iniciados fora do painel são independentes.",
+    "training_global_blocked": "Treinamento de IA bloqueado pelo controle global. Habilite e salve a permissão global para iniciar um treino.",
+    "training_auto_blocked": "O automático está marcado, mas não executará: a permissão global de treinamento está desabilitada.",
+    "training_pause_scope": "Bots a parar durante o treino",
+    "training_pause_resolution": "Apenas os da resolução do treino",
+    "training_pause_all": "Todos os bots do painel"
   },
   "messages": {
     "capture_stream_ended": "Stream de captura encerrado inesperadamente.",

@@ -87,6 +87,9 @@
           <h3 id="training-settings-title" data-i18n="web.training_automation">{{web.training_automation}}</h3>
           <form id="training-settings-form" class="training-form">
             <fieldset id="training-settings-fields" disabled>
+              <label class="check-label"><input id="training-allowed" type="checkbox"><span data-i18n="web.training_global_enabled">{{web.training_global_enabled}}</span></label>
+              <p class="setting-hint" data-i18n="web.training_global_hint">{{web.training_global_hint}}</p>
+              <p id="training-global-warning" class="setting-hint" role="alert"></p>
               <label class="check-label"><input id="training-enabled" type="checkbox"><span data-i18n="web.training_auto_enabled">{{web.training_auto_enabled}}</span></label>
               <div class="training-fields">
                 <label><span data-i18n="web.training_interval">{{web.training_interval}}</span><input id="training-interval" type="number" min="1" max="1440" step="1" required></label>
@@ -96,6 +99,7 @@
                 <label><span data-i18n="web.training_trees">{{web.training_trees}}</span><input id="training-trees" type="number" min="10" max="2000" step="1" required></label>
               </div>
               <label class="check-label"><input id="training-pause-bots" type="checkbox"><span data-i18n="web.training_pause_bots">{{web.training_pause_bots}}</span></label>
+              <label><span data-i18n="web.training_pause_scope">{{web.training_pause_scope}}</span><select id="training-pause-scope"><option value="resolution" data-i18n="web.training_pause_resolution">{{web.training_pause_resolution}}</option><option value="all" data-i18n="web.training_pause_all">{{web.training_pause_all}}</option></select></label>
               <p class="setting-hint" data-i18n="web.training_pause_hint">{{web.training_pause_hint}}</p>
               <p class="setting-hint" data-i18n="web.training_auto_hint">{{web.training_auto_hint}}</p>
               <p id="training-settings-status" class="setting-hint" role="status"></p>

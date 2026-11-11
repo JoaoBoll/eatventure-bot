@@ -44,7 +44,7 @@ class TrainingManager:
         self.root = Path(root).resolve()
         self.dataset = self.root / "dataset"
         self.path = Path(state_root) / "training.json"
-        self.training_session = training_session or (lambda resolution, pause: nullcontext())
+        self.training_session = training_session or (lambda resolution, pause, scope: nullcontext())
         self._condition = threading.Condition(threading.RLock())
         self._catalog_lock = threading.Lock()
         self._catalog = None
@@ -60,6 +60,8 @@ class TrainingManager:
         self._scan_error = None
         defaults = {
             "enabled": config.AI_AUTO_TRAIN,
+            "training_allowed": True,
+            "pause_scope": "resolution",
             "interval_seconds": int(config.AI_TRAIN_CHECK_INTERVAL),
             "min_samples": config.AI_TRAIN_BATCH_SIZE,
             "batch_size": 0,
@@ -82,10 +84,10 @@ class TrainingManager:
 
     @classmethod
     def _validate_settings(cls, data):
-        expected = {"enabled", "interval_seconds", "min_samples", "batch_size", "jobs", "trees", "pause_bots"}
+        expected = {"enabled", "interval_seconds", "min_samples", "batch_size", "jobs", "trees", "pause_bots", "training_allowed", "pause_scope"}
         if not isinstance(data, dict) or data.keys() != expected:
             raise ValueError(t("web.training_invalid_settings"))
-        if type(data["enabled"]) is not bool or type(data["pause_bots"]) is not bool:
+        if any(type(data[key]) is not bool for key in ("enabled", "pause_bots", "training_allowed")) or data["pause_scope"] not in ("resolution", "all"):
             raise ValueError(t("web.training_invalid_settings"))
         result = dict(data)
         for key, minimum, maximum in (
@@ -123,6 +125,11 @@ class TrainingManager:
                 if temporary is not None:
                     temporary.unlink(missing_ok=True)
             self._settings = settings
+            if not settings["training_allowed"] and self._active and self._active["status"] in BUSY:
+                self._cancel.set()
+                self._active["status"] = "cancelling"
+                if self._process is not None:
+                    self._terminate(self._process)
             self._next_check = time.monotonic() + settings["interval_seconds"]
             self._condition.notify_all()
         self.start()
@@ -224,10 +231,11 @@ class TrainingManager:
         with self._condition:
             return {
                 "settings": dict(self._settings),
+                "warnings": (["web.training_global_blocked"] if not self._settings["training_allowed"] else []),
                 "active": dict(self._active) if self._active else None,
                 "busy": bool(self._active and self._active["status"] in BUSY),
                 "last_check": self._last_check,
-                "next_check_in": max(0, round(self._next_check - time.monotonic())) if self._settings["enabled"] else None,
+                "next_check_in": max(0, round(self._next_check - time.monotonic())) if self._settings["enabled"] and self._settings["training_allowed"] else None,
                 "logs": list(self._logs), "scan_error": self._scan_error,
             }
 
@@ -235,6 +243,9 @@ class TrainingManager:
         return {**self.catalog(refresh), **self.status(), "reports": self.reports()}
 
     def request(self, data):
+        with self._condition:
+            if not self._settings["training_allowed"]:
+                raise RuntimeError(t("web.training_global_blocked"))
         if not isinstance(data, dict) or data.keys() != {"resolution", "limit", "cleanup"}:
             raise ValueError(t("web.training_invalid_request"))
         resolution = data["resolution"]
@@ -250,6 +261,8 @@ class TrainingManager:
         with self._condition:
             if self._closing:
                 raise RuntimeError(t("messages.dashboard_stopping"))
+            if not self._settings["training_allowed"]:
+                raise RuntimeError(t("web.training_global_blocked"))
             if self._active and self._active["status"] in BUSY:
                 raise RuntimeError(t("web.training_busy"))
             self._pending = self._job(resolution, False, limit, data["cleanup"], locale())
@@ -306,7 +319,7 @@ class TrainingManager:
         while True:
             with self._condition:
                 while not self._closing and self._pending is None:
-                    delay = self._next_check - time.monotonic() if self._settings["enabled"] else None
+                    delay = self._next_check - time.monotonic() if self._settings["enabled"] and self._settings["training_allowed"] else None
                     if delay is not None and delay <= 0:
                         break
                     self._condition.wait(timeout=delay)
@@ -324,7 +337,7 @@ class TrainingManager:
                     group = next((group for group in groups if group["pending"] >= settings["min_samples"]), None)
                     with self._condition:
                         self._scan_error = None
-                        if self._closing or self._pending is not None or group is None:
+                        if self._closing or self._pending is not None or group is None or not self._settings["training_allowed"] or not self._settings["enabled"]:
                             continue
                         job = self._job(group["resolution"], True)
                         self._active = job
@@ -374,10 +387,11 @@ class TrainingManager:
                     job["status"] = "preparing"
             if self._cancel.is_set():
                 return
-            with self.training_session(job["resolution"], settings["pause_bots"]):
+            with self.training_session(job["resolution"], settings["pause_bots"], settings["pause_scope"]):
                 try:
                     with self._condition:
-                        if self._closing or self._cancel.is_set():
+                        if self._closing or self._cancel.is_set() or not self._settings["training_allowed"]:
+                            self._cancel.set()
                             return
                         environment = {**os.environ, "PYTHONUNBUFFERED": "1", "EATVENTURE_LOCALE": job["language"], "EATVENTURE_TRAIN_REQUEST_ID": job["id"]}
                         process = subprocess.Popen(

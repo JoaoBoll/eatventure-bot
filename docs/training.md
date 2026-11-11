@@ -23,7 +23,7 @@ O treino automático da web é centralizado nesta janela. O intervalo define a f
 
 Processos de treino, quantidade de árvores e interrupção dos bots valem para os próximos treinos manuais e automáticos. Uma execução em andamento mantém a configuração com que começou.
 
-Quando a interrupção está habilitada, os bots em execução na resolução treinada são encerrados e reiniciados ao terminar. Os bots de outras resoluções continuam executando. O automático mantém a limpeza após ativação que já existia no projeto.
+Quando a interrupção está habilitada, os bots selecionados são encerrados e reiniciados ao terminar. A opção de abrangência permite parar apenas os bots da resolução treinada (padrão) ou todos os bots do painel. O automático mantém a limpeza após ativação que já existia no projeto.
 
 As configurações são persistidas em `local/training.json`, respeitando o diretório de estado do painel. Os comandos de terminal continuam utilizando seus parâmetros e padrões próprios.
 
@@ -32,3 +32,7 @@ As configurações são persistidas em `local/training.json`, respeitando o dire
 O painel executa um treino por vez e permite solicitar seu cancelamento. Fechar a janela não cancela a execução. O histórico exibe até 30 relatórios recentes; a saída da execução mantém até 200 linhas.
 
 Textos da janela e mensagens próprias de validação usam os catálogos JSON em português e inglês. A saída do processo mantém o idioma escolhido ao solicitar o treino; o agendamento usa o idioma padrão do servidor.
+
+## Permissão global
+
+**Permitir treinamentos de IA (global)** tem prioridade sobre o automático e o manual no painel. Ao desabilitar e salvar, novos treinos são bloqueados e o cancelamento da execução atual é solicitado. O modelo já ativo continua sendo utilizado pelos bots. A interface avisa quando o automático está marcado com a permissão global desabilitada; a API também rejeita solicitações manuais bloqueadas. Configurações antigas mantêm a permissão habilitada e a pausa restrita à resolução. Comandos iniciados fora do painel não são controlados por essa permissão.

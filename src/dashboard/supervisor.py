@@ -612,7 +612,7 @@ class BotSupervisor:
             self.training.start()
 
     @contextmanager
-    def _training_session(self, resolution, pause=True):
+    def _training_session(self, resolution, pause=True, scope="resolution"):
         with self._auto_training_lock:
             if not pause:
                 yield
@@ -622,14 +622,10 @@ class BotSupervisor:
                     (device_id, run) for device_id, run in self._runs.items()
                     if run.process.poll() is None
                 ]
-            # O snapshot do dataset e a limpeza por linha já preservam dados
-            # escritos depois do início do treino. Só pausamos quem coleta a
-            # mesma resolução para reduzir disputa de CPU e I/O, sem derrubar
-            # aparelhos que treinam outro shard.
             device_ids = []
             for device_id, run in active_runs:
-                summary = self._metrics(device_id, run).get("summary", {})
-                if summary.get("resolution") == resolution:
+                summary = self._metrics(device_id, run).get("summary", {}) if scope != "all" else {}
+                if scope == "all" or summary.get("resolution") == resolution:
                     device_ids.append(device_id)
             restart_ids = []
             for device_id in device_ids:

@@ -1800,6 +1800,8 @@ function renderTrainingSettings() {
   const snapshot = JSON.stringify(settings);
   if (!trainingSettingsDirty && snapshot !== trainingSettingsSnapshot) {
     $("training-enabled").checked = settings.enabled;
+    $("training-allowed").checked = settings.training_allowed;
+    $("training-pause-scope").value = settings.pause_scope;
     $("training-interval").value = settings.interval_seconds / 60;
     $("training-min-samples").value = settings.min_samples;
     $("training-batch-size").value = settings.batch_size;
@@ -1808,6 +1810,10 @@ function renderTrainingSettings() {
     $("training-pause-bots").checked = settings.pause_bots;
     trainingSettingsSnapshot = snapshot;
   }
+  $("training-global-warning").textContent = !$("training-allowed").checked
+    ? t($("training-enabled").checked ? "web.training_auto_blocked" : "web.training_global_blocked")
+    : (trainingData.warnings || []).map((key) => t(key)).join(" ");
+  $("training-pause-scope").disabled = !$("training-pause-bots").checked;
   $("training-settings-fields").disabled = trainingSubmitting;
   $("training-save-settings").disabled = !trainingSettingsDirty || trainingSubmitting;
   $("training-settings-status").textContent = t(trainingSettingsDirty ? "web.training_settings_pending" : "web.training_settings_hint");
@@ -1823,7 +1829,7 @@ function renderTrainingEstimate() {
   $("training-categories").textContent = group && Object.keys(group.categories).length
     ? t("web.training_category_summary", { categories: Object.entries(group.categories).map(([name, total]) => `${displayCode("categories", name)}: ${count(total)}`).join(" · ") })
     : "";
-  $("training-start").disabled = !group || samples < 20 || trainingData?.busy || trainingSettingsDirty || trainingSubmitting;
+  $("training-start").disabled = !group || samples < 20 || !trainingData?.settings?.training_allowed || trainingData?.busy || trainingSettingsDirty || trainingSubmitting;
   $("training-cancel").disabled = !trainingData?.busy || trainingData.active?.status === "cancelling" || trainingSubmitting;
 }
 
@@ -1831,7 +1837,7 @@ function renderTraining() {
   const data = trainingData;
   if (!data) return;
   renderTrainingSettings();
-  $("training-schedule-status").textContent = data.settings.enabled
+  $("training-schedule-status").textContent = data.settings.enabled && data.settings.training_allowed
     ? data.busy && data.next_check_in === 0 ? t("web.training_check_after_run") : t("web.training_next_check", { time: new Date(Date.now() + (data.next_check_in || 0) * 1000).toLocaleTimeString(locale) })
     : t("web.training_auto_disabled");
   const groups = data.resolutions || [];
@@ -1918,6 +1924,8 @@ async function saveTrainingSettings(event) {
   try {
     const result = await api("/api/training/settings", { method: "PUT", body: JSON.stringify({
       enabled: $("training-enabled").checked,
+      training_allowed: $("training-allowed").checked,
+      pause_scope: $("training-pause-scope").value,
       interval_seconds: Number($("training-interval").value) * 60,
       min_samples: Number($("training-min-samples").value), batch_size: batch,
       jobs: Number($("training-jobs").value), trees: Number($("training-trees").value),

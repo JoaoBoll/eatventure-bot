@@ -434,7 +434,7 @@
     "training_cpu_jobs": "Training processes",
     "training_trees": "Model trees",
     "training_pause_bots": "Stop and resume bots at the same resolution",
-    "training_pause_hint": "When enabled, bots at that resolution are stopped before training and restarted afterwards. Other resolutions keep running.",
+    "training_pause_hint": "When pausing is enabled, the selected bots are stopped and restarted after training.",
     "training_auto_hint": "The interval determines when to check collected data; it does not guarantee a training run every period. Automatic training requires enough new samples and removes consumed data only after model activation. Processes and trees also apply to manual runs.",
     "training_save_settings": "Save settings",
     "training_current": "Current / last run",
@@ -490,7 +490,14 @@
     "training_legacy": "Legacy",
     "training_all_resolutions": "All resolutions",
     "training_check_after_run": "The next check will wait for the current training job to finish.",
-    "training_exit_code": "Training exited with code {code}. Check the logs for details."
+    "training_exit_code": "Training exited with code {code}. Check the logs for details.",
+    "training_global_enabled": "Allow AI training (global)",
+    "training_global_hint": "Controls all manual and automatic training managed by this dashboard. Disabling and saving requests cancellation of the current run. Commands started outside the dashboard are independent.",
+    "training_global_blocked": "AI training is blocked by the global control. Enable and save the global permission to start training.",
+    "training_auto_blocked": "Automatic training is selected but will not run: the global training permission is disabled.",
+    "training_pause_scope": "Bots to stop during training",
+    "training_pause_resolution": "Only bots at the training resolution",
+    "training_pause_all": "All dashboard bots"
   },
   "messages": {
     "capture_stream_ended": "Capture stream ended unexpectedly.",
