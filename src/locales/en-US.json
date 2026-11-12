@@ -14,6 +14,7 @@
   },
   "terminal": {
     "ai_collect_help": "Enables AI data collection for the dataset.",
+    "reload_help": "Automatically restart the dashboard when code changes (development).",
     "choose_device": "Choose a number from 1 to {total}.",
     "device_help": "device serial (adb devices)",
     "device_prompt": "List number or full serial.",
@@ -940,6 +941,8 @@
     "check_for_new_templates": "Check for new templates (s; 0 disables)",
     "jpeg_quality": "Collection JPEG quality",
     "dataset_size_limit": "Dataset limit (MB; 0 unlimited)",
+    "max_swipes": "Exploration swipes per direction",
+    "scroll_bottom_swipes": "Swipes when scrolling to the end",
     "automatic_training": "Automatic training",
     "training_samples": "Samples per training run",
     "training_processes": "Training processes",

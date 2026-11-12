@@ -289,6 +289,22 @@ async function apiBlob(path) {
   return response.blob();
 }
 
+let dashboardRevision = null;
+
+async function refreshDashboardRevision() {
+  if (!authenticated) return;
+  try {
+    const response = await api("/api/revision");
+    const revision = response.revision;
+    if (typeof revision !== "string" || !revision) return;
+    if (dashboardRevision && dashboardRevision !== revision) window.location.reload();
+    dashboardRevision = revision;
+  } catch {
+    // Durante o reinício o request pode falhar; a próxima tentativa compara
+    // a revisão do novo processo e atualiza a página sem intervenção manual.
+  }
+}
+
 async function login(event) {
   event?.preventDefault();
   const submit = $("login-form").querySelector("button[type=submit]");
@@ -317,6 +333,7 @@ async function enterApp(session) {
   $("app").hidden = false;
   $("logout").hidden = !authRequired;
   await refreshState(true);
+  await refreshDashboardRevision();
 }
 
 async function bootstrapSession() {
@@ -2329,6 +2346,7 @@ setInterval(() => { if (!document.hidden) refreshState(); }, 5000);
 setInterval(() => { if (!document.hidden) refreshRuntime(); }, 1000);
 setInterval(() => { if (!document.hidden) pollLogs(); }, 1500);
 setInterval(() => { if (!document.hidden) refreshTraining(); }, 3000);
+setInterval(() => { if (!document.hidden) refreshDashboardRevision(); }, 4000);
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) {
     if (visionWanted) stopVision({ mode: "paused", pause: true });
