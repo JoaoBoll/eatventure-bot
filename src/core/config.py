@@ -303,10 +303,14 @@ CATEGORY_ROIS = {
 BLOCK_REGIONS = []
 BLOCK_CATEGORIES = frozenset({"box", "food", "new_point"})
 
-DETECTOR_MODE = "templates"
+DETECTOR_MODE = "continuous"
 AI_MODEL = "auto"
 AI_SOURCE = "templates"
 AI_MIN_CONFIDENCE = 0.60
+# No modo contínuo, templates são o professor local. A leitura estreita ocorre
+# junto da visão normal e esta varredura global só confirma negativos.
+AI_TEACHER_SCAN_INTERVAL = 20.0
+AI_MODEL_POLL_INTERVAL = 2.0
 
 # Total de recuperações por execução; uma parada manual nunca é recuperada.
 BOT_RESTART_LIMIT = 3

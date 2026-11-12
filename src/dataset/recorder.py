@@ -17,10 +17,10 @@ import numpy as np
 
 from core import log
 from dataset import layout
+from dataset.collection_budget import CollectionBudget
 from dataset.training_files import (
     cleanup_records,
     index_lock,
-    raw_dataset_bytes,
     snapshot_records,
 )
 from core.config import (
@@ -71,6 +71,7 @@ class Sample:
         "cycle_count",
         "outcome",
         "outcome_after",
+        "label_evidence",
         "thumb",
     )
 
@@ -92,7 +93,7 @@ class DatasetRecorder:
 
         self.root = Path(
             DATASET_DIR if directory is None else directory
-        )
+        ).resolve()
 
         self.session = session or uuid.uuid4().hex
         self.created_at = time.time()
@@ -135,15 +136,14 @@ class DatasetRecorder:
         self.dropped = 0
         self.duplicates = 0
         self.by_action = {}
-        self.by_label = {}
+        self.budget = CollectionBudget(self.root)
 
         # Última negativa, para espaçá-las no TEMPO. Começa no
         # passado para a primeira sair logo.
         self.last_negative = 0.0
+        self.empty_observation = None
 
         self.bytes_written = 0
-        self.disk_bytes = 0
-        self.last_disk_check = 0.0
 
         self.disk_warned = False
         self._discard_ranges = []
@@ -275,6 +275,9 @@ class DatasetRecorder:
         if not self.running:
             return
 
+        self.empty_observation = None
+        # Uma segunda ação (mesmo fora da coleta) impede atribuir o efeito à primeira.
+        self._flush_pending(UNKNOWN, None)
         if action_kind not in ("scroll", "swipe"):
             self._resume_collection(time.time())
 
@@ -287,10 +290,12 @@ class DatasetRecorder:
         if DATASET_MAX_SAMPLES and self.saved >= DATASET_MAX_SAMPLES:
             return
 
-        # A pendente anterior nunca recebeu veredito.
-        self._flush_pending(UNKNOWN, None)
-
         agora = time.monotonic()
+
+        # A ação pode ter sido escolhida pela IA, mas o rótulo só é aceito se
+        # houver a mesma região confirmada pelo professor (templates).
+        teacher = list(getattr(detections, "teacher_detections", detections) or [])
+        target = self._teacher_target(detection, teacher)
 
         with self.lock:
 
@@ -302,19 +307,41 @@ class DatasetRecorder:
                 # Cópia própria: o frame do ScreenCapture não sobrevive além do loop.
                 frame=frame.copy(),
 
-                detections=list(detections or []),
+                detections=teacher,
 
                 # Miniatura do ANTES, para julgar ação sem alvo pela mudança de tela.
                 thumb=self._thumb(frame),
 
                 action=action,
                 action_kind=action_kind,
-                target=detection,
+                target=target,
                 click=click,
                 state=state,
                 lag=lag,
                 cycle_count=cycle_count,
             )
+
+    @staticmethod
+    def _teacher_target(detection, teachers):
+        if detection is None:
+            return None
+        category = detection.get("category")
+        if not category:
+            return None
+        best, best_score = None, 0.0
+        for candidate in teachers:
+            if candidate.get("category") != category:
+                continue
+            if candidate is detection:
+                return candidate
+            width = max(1, int(detection.get("width", 0)))
+            height = max(1, int(detection.get("height", 0)))
+            dx = abs(int(candidate.get("x", 0)) - int(detection.get("x", 0))) / width
+            dy = abs(int(candidate.get("y", 0)) - int(detection.get("y", 0))) / height
+            score = 1.0 - max(dx, dy)
+            if score > best_score:
+                best, best_score = candidate, score
+        return best if best_score >= 0.5 else None
 
     def observe(self, frame, detections, frame_time, state):
         """Julga a ação pendente e, de vez em quando, recolhe uma amostra NEGATIVA
@@ -323,9 +350,10 @@ class DatasetRecorder:
         if not self.running:
             return
 
-        self._resolve(frame, detections, frame_time)
-
-        self._maybe_negative(frame, detections, state)
+        if self._resolve(frame, detections, frame_time):
+            self.empty_observation = None
+            return
+        self._maybe_negative(frame, detections, frame_time, state)
 
     def _resolve(self, frame, detections, frame_time):
 
@@ -334,7 +362,7 @@ class DatasetRecorder:
             pendente = self.pending
 
         if pendente is None:
-            return
+            return False
 
         # O frame precisa ser POSTERIOR à ação, senão não pode
         # mostrar o efeito dela.
@@ -346,25 +374,45 @@ class DatasetRecorder:
 
                 self._flush_pending(UNKNOWN, espera)
 
-            return
+            return True
 
         depois = frame_time - pendente.action_time
 
-        self._flush_pending(
-            self._julgar(pendente, frame, detections),
-            depois,
-        )
+        outcome = UNKNOWN
+        if depois <= DATASET_OUTCOME_TIMEOUT:
+            teacher = getattr(detections, "teacher_detections", detections)
+            outcome = self._julgar(pendente, frame, teacher)
+        if outcome == CHANGED and pendente.target is not None:
+            if not self._model_prediction(pendente.target):
+                pendente.label_evidence = "target_changed"
+        self._flush_pending(outcome, depois)
+        return True
+
+    @staticmethod
+    def _model_prediction(detection):
+        return str(detection.get("name", "")).startswith("modelo:")
 
     def _julgar(self, pendente, frame, detections):
         """Com alvo, julga se ele saiu da tela; sem alvo (swipe/scroll/dismiss), se a TELA mudou."""
 
-        if pendente.target is not None:
+        if frame is None or frame.shape != pendente.frame.shape or detections is None:
+            return UNKNOWN
 
-            return (
-                UNCHANGED
-                if self._alvo_continua(pendente, detections)
-                else CHANGED
-            )
+        if pendente.target is not None:
+            if self._alvo_continua(pendente, detections):
+                return UNCHANGED
+            # O filtro por estado ou um erro do detector também pode ocultar
+            # o alvo. Exige uma mudança de pixels dentro da caixa tocada.
+            x, y, w, h = (int(pendente.target[k]) for k in ("x", "y", "width", "height"))
+            altura, largura = frame.shape[:2]
+            if not (0 <= x < x + w <= largura and 0 <= y < y + h <= altura):
+                return UNKNOWN
+            before = pendente.frame[y:y+h, x:x+w]
+            after = frame[y:y+h, x:x+w]
+            before = cv2.resize(before, (16, 16), interpolation=cv2.INTER_AREA)
+            after = cv2.resize(after, (16, 16), interpolation=cv2.INTER_AREA)
+            delta = cv2.absdiff(before, after).mean(axis=2)
+            return CHANGED if np.mean(delta > 2 * DATASET_SCREEN_CHANGE) >= 0.25 else UNKNOWN
 
         mudou = self._mudou(pendente.thumb, self._thumb(frame))
 
@@ -414,12 +462,22 @@ class DatasetRecorder:
 
         self._submit(pendente)
 
-    def _maybe_negative(self, frame, detections, state):
+    def _maybe_negative(self, frame, detections, frame_time, state):
 
-        if detections or frame is None:
+        teacher = getattr(detections, "teacher_detections", detections)
+        if teacher or frame is None or frame_time is None:
+            self.empty_observation = None
             return
 
-        if DATASET_NEGATIVE_INTERVAL <= 0:
+        if DATASET_NEGATIVE_INTERVAL <= 0 or not getattr(detections, "full_teacher_scan", False):
+            return
+
+        # Duas capturas distintas sem encontrar nada em TODAS as categorias.
+        # Uma lista vazia filtrada por estado não atesta que a tela esteja vazia.
+        context = (state, frame.shape)
+        previous = self.empty_observation
+        self.empty_observation = (frame_time, context)
+        if previous is None or previous[1] != context or frame_time <= previous[0]:
             return
 
         agora = time.monotonic()
@@ -452,6 +510,7 @@ class DatasetRecorder:
                 cycle_count=0,
                 outcome=None,
                 outcome_after=None,
+                label_evidence="detector_empty",
             )
         )
 
@@ -492,7 +551,7 @@ class DatasetRecorder:
             return 0
         discarded = [
             record for record in records
-            if self._record_timestamp(record) > cutoff
+            if record.get("session") == self.session and self._record_timestamp(record) > cutoff
         ]
         if not discarded:
             return 0
@@ -501,7 +560,6 @@ class DatasetRecorder:
         removed = result.get("records_removed", 0)
         self.discarded += removed
         self.saved = max(0, self.saved - removed)
-        self.disk_bytes = max(0, self.disk_bytes - result.get("bytes_freed", 0))
         logger.warning(
             t("messages.dataset_irrelevant_samples"),
             removed, result.get("images_removed", 0),
@@ -565,21 +623,13 @@ class DatasetRecorder:
         if self._discarded(sample):
             return
 
-        # A coleta pode enfileirar várias amostras antes de saved avançar.
-        if DATASET_MAX_SAMPLES and self.saved >= DATASET_MAX_SAMPLES:
+        # Resultados não confirmados são diagnóstico do runtime, não memória
+        # de treino. Guardá-los só consome espaço e contamina o próximo lote.
+        if sample.label_evidence not in {"target_changed", "detector_empty"}:
             return
 
-        if self._disk_full():
-
-            if not self.disk_warned:
-
-                logger.warning(
-                    t("messages.dataset_disk_limit"),
-                    DATASET_MAX_DISK_MB,
-                )
-
-                self.disk_warned = True
-
+        # A coleta pode enfileirar várias amostras antes de saved avançar.
+        if DATASET_MAX_SAMPLES and self.saved >= DATASET_MAX_SAMPLES:
             return
 
         # Mesma ação dando unchanged repetidamente = bot preso; para de gravar a mesma tela.
@@ -619,25 +669,20 @@ class DatasetRecorder:
         # ação/categoria impede que um único botão comum domine os exemplos e
         # deixa espaço para situações raras. A contagem só avança depois que o
         # arquivo e o índice foram gravados com sucesso.
-        label = self._sample_label(sample)
-        if (
-            DATASET_MAX_SAMPLES_PER_LABEL
-            and self.by_label.get(label, 0) >= DATASET_MAX_SAMPLES_PER_LABEL
-        ):
-            self.duplicates += 1
-            return
-
-        chave = self._perceptual_hash(frame)
-
-        dia = sample.created.strftime("%Y-%m-%d")
-
         altura_frame, largura_frame = sample.frame.shape[:2]
-
         shard = layout.shard_root(
             self.root,
             largura_frame,
             altura_frame,
         )
+        label = self._sample_label(sample)
+        with index_lock(self.root):
+            if not self._within_budget(shard, label):
+                self.duplicates += 1
+                return
+
+        chave = self._perceptual_hash(frame)
+        dia = sample.created.strftime("%Y-%m-%d")
 
         pasta = layout.images_dir(shard) / dia
 
@@ -671,41 +716,42 @@ class DatasetRecorder:
             if self._discarded(sample):
                 caminho.unlink(missing_ok=True)
                 return
+            if not self._within_budget(shard, label):
+                caminho.unlink(missing_ok=True)
+                self.duplicates += 1
+                return
             with layout.index_path(shard).open(
                 "a", encoding="utf-8",
             ) as arquivo:
                 arquivo.write(json.dumps(registro, ensure_ascii=False) + "\n")
+            self.budget.shards.pop(shard, None)
+            self.budget.refresh(shard)
 
         self.saved += 1
 
-        tamanho = caminho.stat().st_size
-        self.bytes_written += tamanho
-        self.disk_bytes += tamanho
+        self.bytes_written += caminho.stat().st_size
 
         rotulo = sample.action or "negativo"
 
         self.by_action[rotulo] = self.by_action.get(rotulo, 0) + 1
-        self.by_label[label] = self.by_label.get(label, 0) + 1
 
     @staticmethod
     def _sample_label(sample):
         if sample.action is None:
             return "negative"
         category = (sample.target or {}).get("category")
-        return f"{sample.action}:{category or 'point'}"
+        return sample.action, category
 
-
-    def _disk_full(self):
-        limite = DATASET_MAX_DISK_MB * 1_000_000
-        if not limite or self.disk_bytes < limite:
+    def _within_budget(self, shard, label):
+        inventory = self.budget.refresh(shard)
+        limit = DATASET_MAX_DISK_MB * 1_000_000
+        if limit and self.budget.size >= limit:
+            if not self.disk_warned:
+                logger.warning(t("messages.dataset_disk_limit"), DATASET_MAX_DISK_MB)
+                self.disk_warned = True
             return False
-        agora = time.monotonic()
-        if agora - self.last_disk_check >= 5.0:
-            # O treino pode ter liberado as imagens já contabilizadas nesta sessão.
-            self.disk_bytes = raw_dataset_bytes(self.root)
-            self.last_disk_check = agora
-        if self.disk_bytes < limite:
-            self.disk_warned = False
+        self.disk_warned = False
+        if DATASET_MAX_SAMPLES_PER_LABEL and inventory.counts[label] >= DATASET_MAX_SAMPLES_PER_LABEL:
             return False
         return True
 
@@ -762,6 +808,7 @@ class DatasetRecorder:
             ),
 
             "outcome": sample.outcome,
+            "label_evidence": sample.label_evidence,
             "outcome_after_ms": (
                 None if sample.outcome_after is None
                 else round(sample.outcome_after * 1000)

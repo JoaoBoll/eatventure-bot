@@ -1,12 +1,14 @@
 # IA do EatVentureAI
 
-Treino e execução do modelo de visão experimental do bot.
+Treino e execução local da visão do bot. O modo padrão é contínuo: não envia
+imagens nem usa serviços pagos.
 
 ## Requisitos
 
 - Execute os comandos na pasta principal do projeto.
 - Para treinar ou avaliar, é necessário ter amostras coletadas em `dataset/`. Veja [como coletar](../docs/dataset.md).
-- Para usar a IA, execute um treino primeiro. As versões ficam em `IA/models/<RESOLUÇÃO>/`; selecione o modelo da resolução do aparelho com `--model`.
+- Para usar o modo contínuo, basta ter os templates iniciais. Ele começa por
+  eles enquanto ainda não existe um modelo aprovado.
 - Para acompanhar ou controlar o jogo ao vivo, configure o Android, o ADB, o scrcpy e os templates conforme o [README principal](../README.pt-BR.md).
 
 ## Comandos para rodar
@@ -18,10 +20,15 @@ python -m pip install -r requirements.txt
 Instala as dependências do projeto.
 
 ```powershell
-python src/main.py --ai-collect
+python src/main.py
 ```
 
-Coleta dados usando o bot por templates. Com `AI_AUTO_TRAIN = True`, quando há pelo menos **10 mil registros novos de uma mesma resolução**, o treino independente usa todos os registros novos disponíveis daquela resolução. O modelo publicado fica em `IA/models/<RESOLUÇÃO>/`; diferentes resoluções não são combinadas. No painel web, somente bots que coletam essa resolução são pausados durante o treino e reiniciados ao final.
+Inicia a **IA contínua local**. Ela usa templates como professor, grava apenas
+ações cuja alteração foi confirmada e telas vazias confirmadas, treina quando
+há um lote novo suficiente e só ativa o candidato se passar na validação em
+telas recentes. O modelo publicado fica em `IA/models/<RESOLUÇÃO>/`; resoluções
+não são combinadas. Enquanto não houver promoção, o bot continua seguro pelos
+templates.
 
 ```powershell
 python IA/train_ai.py
@@ -66,7 +73,11 @@ automático e atualizado entre frames quando houver uma nova publicação.
 
 Cada treino gera um resumo JSON em `IA/training_reports/`, com data, duração, resultado, parâmetros, imagens usadas, categorias/classes e contagens, extração e métricas de validação por classe. O relatório inclui macro F1, recall por classe e a decisão de promoção. Não lista IDs individuais nem despeja tabelas extensas no terminal. Os metadados do modelo guardam o necessário para carregá-lo e consultar seu resumo de treino.
 
-A limpeza só ocorre depois de publicar e promover o candidato. Remove apenas registros e imagens presentes no snapshot e aproveitados; dados novos ou não aproveitados permanecem. Se a limpeza for interrompida, ela é retomada na próxima verificação da coleta ou no próximo treino.
+A limpeza só ocorre depois de publicar e promover o candidato. Remove apenas
+registros e imagens presentes no snapshot e aproveitados; dados novos ou não
+aproveitados permanecem. O cache de replay preserva no máximo a quantidade
+configurada de vetores por resolução (padrão: 12.000) e a publicação mantém só
+as gerações configuradas (padrão: ativa, anterior e candidata recente).
 
 No painel web, o treino automático verifica o dataset ao iniciar um bot com a opção ativada, mesmo sem coleta ativa, e depois a cada 10 minutos (`AI_TRAIN_CHECK_INTERVAL`); isso também processa lotes que já estavam acumulados. `AI_AUTO_TRAIN` e `AI_TRAIN_BATCH_SIZE`, em [config.py](../src/core/config.py), controlam sua ativação e o mínimo de amostras novas por resolução para iniciar o treino. Para não propagar erros do matcher, o agendador usa somente ações com resultado `changed`, a caixa que motivou essa ação e as telas negativas; `--batch-size` limita o lote apenas quando informado explicitamente. No terminal, o treino automático funciona durante a coleta, com a mesma verificação periódica. A pausa durante o treino no terminal vem ativada por padrão; use `AI_PAUSE_BOT_WHILE_TRAINING = False` para continuar jogando e coletando em paralelo. Ao encerrar a coleta, um treino automático ainda em andamento é interrompido; os dados não consumidos permanecem para a próxima execução. Os modelos e ponteiros publicados em `IA/models/` não são ignorados pelo Git.
 
@@ -76,6 +87,7 @@ No painel web, o treino automático verifica o dataset ao iniciar um bot com a o
 - Coletar aproximadamente **100 mil amostras por resolução**, totalizando **900 mil amostras** nas nove configurações iniciais, com situações e sessões variadas.
 - Validar depois **1080 × 1920** e telas internas de celulares dobráveis.
 - Avaliar um modo incremental separado para substituir a floresta por um classificador compatível com `partial_fit`. A floresta atual é reajustada com o cache, pois Random Forest não aprende novos exemplos incrementalmente.
+- Criar um treino global opcional depois de amadurecer os modelos por resolução: combinar os caches de replay, equilibrar categoria e resolução, normalizar os dados espaciais e validar separadamente cada resolução. Publicar o global somente se não regredir em nenhuma e manter os modelos específicos como fallback.
 - Aprimorar e validar a detecção experimental por cor e contorno para reduzir a dependência de templates.
 
 Resoluções planejadas, em pixels, no formato **lado menor × lado maior**:

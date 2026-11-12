@@ -1043,7 +1043,7 @@ class BotSupervisor:
                 return self.start(device["id"])
 
     def request_vision(self, device_id, enabled, mode="vision"):
-        if mode not in {"vision", "template", "clean"}:
+        if mode not in {"vision", "template", "clean", "template_discovery"}:
             raise ValueError(t("messages.invalid_preview_mode"))
         device_id = self._runtime_device_id(device_id)
         with self._operation_lock(device_id):
@@ -1195,7 +1195,7 @@ class BotSupervisor:
         return {"path": str(destination), "category": category, "width": width, "height": height}
 
     def open_vision_stream(self, device_id, mode="vision"):
-        if mode not in {"vision", "clean"}:
+        if mode not in {"vision", "clean", "template_discovery"}:
             raise ValueError(t("messages.invalid_preview_mode"))
         if not isinstance(device_id, str) or not device_id or len(device_id) > 512:
             raise KeyError(device_id)

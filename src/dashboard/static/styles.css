@@ -37,6 +37,7 @@ html[data-theme="light"] { scrollbar-color: #aab7c9 var(--surface); }
 :root[data-theme="light"] select { border-color: #c9d4e2; background: #fff; color: var(--text); }
 :root[data-theme="light"] input::placeholder { color: #7b8799; }
 :root[data-theme="light"] .button.secondary { border-color: #c4d1e2; background: #eaf0f8; color: #26354d; }
+:root[data-theme="light"] .button.secondary:hover:not(:disabled) { border-color: #3f6fae; background: #3f73ba; color: #fff; }
 :root[data-theme="light"] .button.warning { border-color: #e7c875; background: #fff3d6; color: #936000; }
 :root[data-theme="light"] .button.warning:hover:not(:disabled) { background: #ffedc2; }
 :root[data-theme="light"] .button.ghost { border-color: #cbd6e5; color: #40516a; }
@@ -75,6 +76,7 @@ html[data-theme="light"] { scrollbar-color: #aab7c9 var(--surface); }
 :root[data-theme="light"] .device-identity h3,
 :root[data-theme="light"] .device-metric dd,
 :root[data-theme="light"] .empty-state h2 { color: #1c2a3f; }
+:root[data-theme="light"] .device-resolution { color: #667994; }
 :root[data-theme="light"] .device-identity p,
 :root[data-theme="light"] .bot-state,
 :root[data-theme="light"] .kpi-label,
@@ -231,6 +233,7 @@ main { min-width: 0; flex: 1; }
 .device-card-header > .device-icon { display: grid; width: 36px; height: 44px; flex-shrink: 0; place-items: center; border: 1px solid #50617b; border-radius: 8px; background: #28364b; font-size: 20px; }
 .device-identity { min-width: 0; flex: 1; }
 .device-identity h3 { margin: 1px 0 6px; overflow: hidden; color: #f0f3f9; font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
+.device-resolution { color: #a5b4ca; font-weight: 500; }
 .device-identity p { margin: 0; overflow: hidden; color: #a5b4ca; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .card-open-hint { display: block; margin-top: 9px; color: #a8c1f5; font-size: 11px; }
 .device-card-header input { position: relative; z-index: 3; margin-top: 3px; }
@@ -352,6 +355,8 @@ dialog::backdrop { background: #05080dbf; backdrop-filter: blur(5px); }
 .vision-toolbar h3 { margin-bottom: 5px; font-size: 15px; }
 .vision-toolbar p { margin: 0; font-size: 12px; }
 .vision-toolbar > div:last-child { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.vision-source-label { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; white-space: nowrap; }
+.vision-source-label select { padding: 6px 26px 6px 8px; font-size: 12px; }
 .vision-panel > .section-description { flex-shrink: 0; margin-bottom: 16px; }
 .block-regions { display: grid; flex-shrink: 0; gap: 6px; margin: -6px 0 14px; }
 .block-region { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 7px 10px; border: 1px solid #714956; border-radius: 7px; background: #2a1820; color: #efc4cc; font: 11px/1.4 ui-monospace, "Cascadia Code", Consolas, monospace; }

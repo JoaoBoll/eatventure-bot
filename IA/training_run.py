@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import tempfile
 import time
 import uuid
@@ -56,6 +57,8 @@ def compact_record(record):
         "_shard": record.get("_shard") or ".",
         "session": str(record["session"]) if record.get("session") is not None else None,
         "phash": str(record["phash"]) if record.get("phash") is not None else None,
+        "created_at": record.get("created_at"),
+        "label_evidence": record.get("label_evidence"),
         "action": record.get("action"),
         "action_kind": record.get("action_kind"),
         "state": record.get("state"),
@@ -67,10 +70,10 @@ def compact_record(record):
     }
 
 
-def trained_sample_ids(dataset_root, cache_root=None):
+def trained_sample_ids(dataset_root, cache_root=None, **options):
     from dataset.training_files import trained_sample_ids as read_trained_ids
 
-    return read_trained_ids(dataset_root, cache_root)
+    return read_trained_ids(dataset_root, cache_root, **options)
 
 
 def summarize(records):
@@ -227,3 +230,38 @@ def activate_model(run):
         run.data["artifacts"]["pointer"],
         {"run_id": run.id, "model_path": f"models/{run.id}/model.joblib"},
     )
+
+
+def prune_generations(model_out, active_before, newest, limit):
+    """Remove somente gerações criadas para este ponteiro, preservando o rollback."""
+    from model_updates import resolve_publication
+
+    model_out = Path(model_out).resolve()
+    base = model_out.parent / "models"
+    if not base.is_dir() or base.resolve() != base:
+        return
+    active_now = resolve_publication(model_out)
+    keep = {newest, active_before, active_now.run_id}
+    if active_now.run_id:
+        active_meta = active_now.model_path.with_suffix(".meta.json")
+        keep.add(json.loads(active_meta.read_text(encoding="utf-8")).get("previous_run"))
+    # Outros ponteiros na mesma pasta podem manter versões fixadas.
+    for pointer in model_out.parent.glob("*.current.json"):
+        keep.add(json.loads(pointer.read_text(encoding="utf-8")).get("run_id"))
+    managed = []
+    for folder in base.iterdir():
+        if not re.fullmatch(r"\d{8}T\d{12}Z-[0-9a-f]{8}", folder.name) or folder.resolve() != folder:
+            continue
+        meta = folder / "model.meta.json"
+        if not meta.is_file() or meta.is_symlink():
+            continue
+        info = json.loads(meta.read_text(encoding="utf-8"))
+        if info.get("publication_target") == model_out.name and info.get("run_id") == folder.name:
+            managed.append(folder)
+    protected = sum(folder.name in keep for folder in managed)
+    others = sorted((p for p in managed if p.name not in keep), reverse=True)
+    for folder in others[max(0, limit - protected):]:
+        if {p.name for p in folder.iterdir()} <= {"model.joblib", "model.meta.json"}:
+            (folder / "model.joblib").unlink(missing_ok=True)
+            (folder / "model.meta.json").unlink()
+            folder.rmdir()

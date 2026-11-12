@@ -37,7 +37,7 @@ def parse_args(argv=None):
         description=t("terminal.main_description"),
     )
     parser.add_argument("--state-dir", type=Path, help=t("terminal.state_dir_help"))
-    parser.add_argument("--detector", choices=("templates", "ai"), default=config.DETECTOR_MODE)
+    parser.add_argument("--detector", choices=("templates", "continuous", "ai"), default=config.DETECTOR_MODE)
 
     parser.add_argument(
         "--device",
@@ -176,6 +176,24 @@ def render_ai_frame(frame, detector, detections, stats):
     return detector.draw(output, detections, stats, scale=scale)
 
 
+def render_template_discovery_frame(frame, detector, detections, categories):
+    """Renderiza a última passada do atualizador, separada da visão do bot."""
+
+    category_label = ", ".join(categories or ()) or t("messages.all_categories")
+    return render_ai_frame(
+        frame,
+        detector,
+        detections,
+        {
+            "detector_mode": "template_discovery",
+            "state": t("messages.template_discovery_state", categories=category_label),
+            "searched": getattr(detector, "last_searched", None),
+            "searchable": getattr(detector, "last_total", None),
+            "detections": len(detections),
+        },
+    )
+
+
 def run_loop(
     capture,
     vision,
@@ -205,6 +223,9 @@ def run_loop(
             resumo["vision_error"] = vision.last_error
             resumo["detector_mode"] = getattr(detector, "mode", "templates")
             resumo["model"] = getattr(detector, "model_label", None)
+            resumo["template_discovery"] = bool(
+                getattr(detector, "learn_resolution_templates", False)
+            )
             resumo["vision_failures"] = vision.consecutive_failures
             resumo["vision_last_success_age"] = (
                 max(0.0, time.monotonic() - vision.last_success_at)
@@ -380,12 +401,31 @@ def run_loop(
         }
 
         if web_vision:
-            runtime.preview.submit(
-                frame,
-                None if runtime.preview.mode() in {"template", "clean"} else partial(
-                    render_ai_frame, detector=detector, detections=detections, stats=stats,
-                ),
-            )
+            preview_mode = runtime.preview.mode()
+            if preview_mode == "template_discovery":
+                discovery = detector.template_discovery_preview()
+                # A busca de defaults é limitada para não disputar CPU com o
+                # bot. A prévia, porém, continua usando o frame atual: assim
+                # o modal permanece fluido entre duas análises consecutivas.
+                _, discovery_detections, categories = (
+                    discovery if discovery is not None else (None, (), None)
+                )
+                runtime.preview.submit(
+                    frame,
+                    partial(
+                        render_template_discovery_frame,
+                        detector=detector,
+                        detections=discovery_detections,
+                        categories=categories,
+                    ),
+                )
+            else:
+                runtime.preview.submit(
+                    frame,
+                    None if preview_mode in {"template", "clean"} else partial(
+                        render_ai_frame, detector=detector, detections=detections, stats=stats,
+                    ),
+                )
 
         if SHOW_AI_VISION:
             ai_frame = render_ai_frame(frame, detector, detections, stats)
@@ -432,6 +472,12 @@ def main(argv=None, runtime=None):
 
     capture = ScreenCapture(device_id)
 
+    # O modo contínuo é autônomo: basta iniciar o bot. Ele coleta rótulos
+    # confirmados pelos templates e agenda o treino local quando houver lote.
+    recorder = build_recorder(
+        ai_collect=True if args.ai_collect or args.detector == "continuous" else None
+    )
+
     # O aprendizado por resolução independe da coleta do dataset.
     terminal_blocks = (
         []
@@ -441,6 +487,12 @@ def main(argv=None, runtime=None):
     if args.detector == "ai":
         from vision.model_detector import ModelDetector
         detector = ModelDetector(block_regions=[*config.BLOCK_REGIONS, *terminal_blocks])
+    elif args.detector == "continuous":
+        from vision.model_detector import ContinuousDetector
+        detector = ContinuousDetector(
+            block_regions=[*config.BLOCK_REGIONS, *terminal_blocks],
+            collecting=recorder is not None,
+        )
     else:
         detector = Detector(block_regions=[*config.BLOCK_REGIONS, *terminal_blocks])
     logger.info(t("messages.detection_mode"), args.detector)
@@ -457,8 +509,6 @@ def main(argv=None, runtime=None):
         # resolução. O scanner usa diretamente os defaults já carregados.
         engine_detector = DefaultTemplateScanner(detector)
         engine_worker = EngineWorker(engine_detector)
-
-    recorder = build_recorder(ai_collect=True if args.ai_collect else None)
 
     state_machine = StateMachine(actions, recorder, detector)
 

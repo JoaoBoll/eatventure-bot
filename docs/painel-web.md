@@ -61,13 +61,13 @@ O painel só gerencia processos que ele iniciou. Ao encerrar o servidor web, sol
 
 ## Visão IA no navegador
 
-Em **Configurações → Modo de reconhecimento**, escolha **Bot por templates**
-ou **Modelo de IA (experimental)**. Salve o perfil e reinicie o bot para trocar.
-No modo de IA, selecione o modelo treinado (ou **Automático pela resolução da
-captura**), a fonte das regiões e a confiança mínima. O automático procura a
-publicação em `IA/models/<LARGURAxALTURA>/category.current.json` ou o modelo
-`category.joblib` dessa resolução. Se não existir, o status e os logs mostram
-o erro; o bot não muda silenciosamente para templates.
+Em **Configurações → Modo de reconhecimento**, o padrão é **IA contínua local
+(automática)**. Salve e reinicie o bot para trocar. Esse modo coleta somente
+rótulos confirmados por template, agenda treino local e ativa apenas modelos
+validados; sem publicação aprovada, segue usando templates. Em **Treinamento**,
+configure também o teto de vetores de replay por resolução e quantas gerações
+de modelo ficam guardadas. Assim imagens brutas são limpas após promoção e a
+memória de treino permanece limitada.
 
 **Templates localizam; IA reconhece** usa os templates para propor regiões e
 o modelo para reconhecer os itens. **Cor e contorno** usa o proposer experimental

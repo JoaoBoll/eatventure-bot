@@ -3,6 +3,7 @@
 import json
 from core.i18n import t
 import os
+import sqlite3
 import tempfile
 import time
 import uuid
@@ -253,8 +254,19 @@ def resume_cleanup(root):
     return resultados
 
 
-def trained_sample_ids(root, cache_root=None):
-    cache = (Path(cache_root).expanduser().resolve() if cache_root else Path(root) / "cache") / "category"
+def trained_sample_ids(root, cache_root=None, confirmed=False):
+    cache_root = Path(cache_root).expanduser().resolve() if cache_root else Path(root) / "cache"
+    if confirmed:
+        ids = set()
+        for path in (cache_root / "continuous").glob("*/*.sqlite3"):
+            shard = "." if path.parent.name == "_legacy" else path.parent.name
+            uri = path.resolve().as_uri() + "?mode=ro"
+            from contextlib import closing
+            with closing(sqlite3.connect(uri, uri=True, timeout=10)) as connection:
+                if connection.execute("SELECT 1 FROM sqlite_master WHERE name='processed'").fetchone():
+                    ids.update(f"{shard}/{row[0]}" for row in connection.execute("SELECT id FROM processed"))
+        return ids
+    cache = cache_root / "category"
     ids = set()
     for path in [cache / "trained.json", *cache.glob("*/trained.json")]:
         if not path.is_file():

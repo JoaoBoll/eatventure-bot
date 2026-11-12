@@ -439,7 +439,7 @@ def create_app(root=None, state_root=None, token=None, supervisor=None, require_
         if type(data.get("enabled")) is not bool:
             raise ValueError(t("messages.enabled_boolean_required"))
         mode = data.get("mode", "vision")
-        if mode not in ("vision", "template", "clean"):
+        if mode not in ("vision", "template", "clean", "template_discovery"):
             raise ValueError(t("messages.invalid_preview_mode"))
         return await run_in_threadpool(supervisor.request_vision, device_id, data["enabled"], mode)
 
@@ -471,7 +471,7 @@ def create_app(root=None, state_root=None, token=None, supervisor=None, require_
     @app.get("/api/devices/{device_id}/vision/stream")
     async def vision_stream(device_id: str, request: Request, mode: str = "vision"):
         from starlette.concurrency import run_in_threadpool
-        if mode not in ("vision", "clean"):
+        if mode not in ("vision", "clean", "template_discovery"):
             raise ValueError(t("messages.invalid_preview_mode"))
         stream = await run_in_threadpool(supervisor.open_vision_stream, device_id, mode)
         return StreamingResponse(

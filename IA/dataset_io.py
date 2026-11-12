@@ -235,6 +235,41 @@ def split_groups(registros, train_ratio=0.8, mode="phash", seed=42):
     }
 
 
+def capture_time(record):
+    from datetime import datetime
+    try:
+        value = datetime.fromisoformat(record["created_at"])
+        return value.timestamp() if value.tzinfo is not None else 0
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return 0
+
+
+def continuous_split(records, current, cutoff, ratio, seed):
+    """Hold out fresh sessions or the latest contiguous part of a single session."""
+    from training_run import record_key
+
+    fresh = [r for r in records if record_key(r) in current
+             and r.get("label_evidence") in {"target_changed", "detector_empty"}
+             and capture_time(r) > cutoff]
+    sessions = {group_key(r, "session") for r in fresh}
+    if len(sessions) > 1:
+        _, test, info = split_groups(fresh, train_ratio=1 - ratio, mode="session", seed=seed)
+        test_sessions = {group_key(r, "session") for r in test}
+        train = [r for r in records if group_key(r, "session") not in test_sessions]
+    else:
+        ordered = sorted(fresh, key=capture_time)
+        split = max(1, int(len(ordered) * (1 - ratio)))
+        test = ordered[split:]
+        start = capture_time(test[0]) if test else 0
+        # Evita contar quadros da mesma ação na fronteira entre os dois conjuntos.
+        train = [r for r in records if group_key(r, "session") not in sessions
+                 or (0 < capture_time(r) < start - 3)]
+        info = {"mode": "chronological", "gap_seconds": 3}
+    hashes = {r["phash"] for r in test if r.get("phash")}
+    train = [r for r in train if not r.get("phash") or r["phash"] not in hashes]
+    return train, test, {**info, "amostras_treino": len(train), "amostras_teste": len(test)}
+
+
 def majority_baseline(rotulos):
     """Acerto de sempre chutar a classe mais comum — referência mínima para a acurácia."""
 

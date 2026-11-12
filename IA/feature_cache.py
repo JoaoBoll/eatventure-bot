@@ -18,8 +18,11 @@ torna o cache incompatível, porque os vetores deixam de ser comparáveis.
 O treino preserva esse cache e interrompe a execução nesse caso.
 """
 
+from contextlib import contextmanager
+import hashlib
 import json
 import os
+import sqlite3
 import sys
 import tempfile
 from pathlib import Path
@@ -31,6 +34,7 @@ if _source_root not in sys.path:
     sys.path.insert(0, _source_root)
 
 from core.i18n import t
+from dataset.layout import REPLAY_ROWS
 
 META_NAME = "meta.json"
 
@@ -52,6 +56,122 @@ def signature(kind, negativos, feature_size, patch_size, patch_margin, hsv_bins,
         "hsv_bins": int(hsv_bins),
         "label_source": label_source,
     }
+
+
+class BoundedReplay:
+    """Memória persistente por resolução. Cada linha representa um recorte."""
+
+    def __init__(self, cache_root, shard, assinatura, max_rows=REPLAY_ROWS):
+        folder = "_legacy" if shard == "." else shard
+        if not folder or folder in (".", "..") or Path(folder).name != folder:
+            raise ValueError("Invalid replay shard")
+        if not 1 <= max_rows <= 100_000:
+            raise ValueError("Invalid replay capacity")
+        digest = hashlib.sha256(json.dumps(assinatura, sort_keys=True).encode()).hexdigest()[:20]
+        self.dir = Path(cache_root) / "continuous" / folder
+        self.dir.mkdir(parents=True, exist_ok=True)
+        self.path = self.dir / f"{digest}.sqlite3"
+        self.width = assinatura["feature_size"]
+        self.max_rows = max_rows
+        with self._db() as db:
+            db.execute("PRAGMA auto_vacuum=FULL")
+            db.execute("CREATE TABLE IF NOT EXISTS frames (id TEXT PRIMARY KEY, metadata TEXT NOT NULL)")
+            db.execute("CREATE TABLE IF NOT EXISTS crops (owner TEXT NOT NULL, label TEXT NOT NULL, feature BLOB NOT NULL)")
+            db.execute("CREATE INDEX IF NOT EXISTS crops_owner ON crops(owner)")
+            db.execute("CREATE TABLE IF NOT EXISTS processed (id TEXT PRIMARY KEY)")
+            self._trim(db)
+
+    @contextmanager
+    def _db(self):
+        db = sqlite3.connect(self.path, timeout=20)
+        try:
+            with db:
+                yield db
+        finally:
+            db.close()
+
+    def _trim(self, db):
+        if db.execute("SELECT COUNT(*) FROM crops").fetchone()[0] <= self.max_rows:
+            return
+        # Reserva espaço para categorias raras. Dentro de cada categoria,
+        # alterna exemplos históricos e recentes para acompanhar mudanças.
+        db.execute("""
+            DELETE FROM crops WHERE rowid IN (
+                SELECT rid FROM (
+                    SELECT rowid AS rid,
+                        row_number() OVER (PARTITION BY label ORDER BY rowid DESC) AS newest,
+                        row_number() OVER (PARTITION BY label ORDER BY rowid ASC) AS oldest
+                    FROM crops
+                ) ORDER BY min(oldest, newest), rid DESC LIMIT -1 OFFSET ?
+            )""", (self.max_rows,))
+        db.execute("DELETE FROM frames WHERE NOT EXISTS (SELECT 1 FROM crops WHERE owner=frames.id)")
+
+    def ids(self):
+        with self._db() as db:
+            return {row[0] for row in db.execute("SELECT id FROM frames")}
+
+    def metadata(self):
+        with self._db() as db:
+            return {key: json.loads(value) for key, value in db.execute("SELECT id,metadata FROM frames")}
+
+    def ensure_metadata(self, _records):
+        return self.metadata()
+
+    def append(self, X, y, ids, records):
+        if not len(X):
+            return
+        if X.shape != (len(ids), self.width) or len(y) != len(ids):
+            raise ValueError("Invalid replay feature dimensions")
+        with self._db() as db:
+            # Uma amostra reprocessada substitui seus recortes anteriores.
+            owners = {str(identifier) for identifier in ids}
+            db.executemany("DELETE FROM crops WHERE owner=?", ((owner,) for owner in owners))
+            db.executemany("INSERT OR REPLACE INTO frames VALUES (?,?)", (
+                (owner, json.dumps(records[owner], ensure_ascii=False)) for owner in owners
+            ))
+            for start in range(0, len(X), self.max_rows):
+                stop = min(start + self.max_rows, len(X))
+                db.executemany("INSERT INTO crops VALUES (?,?,?)", (
+                    (str(ids[i]), str(y[i]), np.asarray(X[i], dtype=DISK_DTYPE).tobytes())
+                    for i in range(start, stop)
+                ))
+                if stop < len(X):
+                    # Metadados podem pertencer a um bloco posterior.
+                    self._trim_crops_only(db)
+            self._trim(db)
+            db.execute("DELETE FROM frames WHERE NOT EXISTS (SELECT 1 FROM crops WHERE owner=frames.id)")
+
+    def _trim_crops_only(self, db):
+        db.execute("""
+            DELETE FROM crops WHERE rowid IN (
+                SELECT rid FROM (
+                    SELECT rowid AS rid, row_number() OVER (PARTITION BY label ORDER BY rowid DESC) AS rank
+                    FROM crops
+                ) ORDER BY rank, rid DESC LIMIT -1 OFFSET ?
+            )""", (self.max_rows,))
+
+    def load(self):
+        with self._db() as db:
+            rows = db.execute("SELECT owner,label,feature FROM crops ORDER BY rowid").fetchall()
+        if not rows:
+            return np.empty((0, self.width), dtype=np.float32), np.asarray([], dtype=str), np.asarray([], dtype=str)
+        X = np.stack([np.frombuffer(row[2], dtype=DISK_DTYPE) for row in rows]).astype(np.float32)
+        return X, np.asarray([row[1] for row in rows]), np.asarray([row[0] for row in rows])
+
+    def trained_ids(self):
+        with self._db() as db:
+            return {row[0] for row in db.execute("SELECT id FROM processed")}
+
+    def mark_trained(self, ids, live_ids):
+        # Os recibos só precisam sobreviver enquanto existir a imagem bruta.
+        live = {str(identifier) for identifier in live_ids}
+        with self._db() as db:
+            db.execute("CREATE TEMP TABLE live(id TEXT PRIMARY KEY)")
+            db.executemany("INSERT INTO live VALUES (?)", ((key,) for key in live))
+            db.execute("DELETE FROM processed WHERE id NOT IN (SELECT id FROM live)")
+            db.executemany("INSERT OR IGNORE INTO processed VALUES (?)", (
+                (key,) for key in set(ids) & live
+            ))
 
 
 class FeatureCache:

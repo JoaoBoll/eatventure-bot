@@ -15,6 +15,31 @@ from pathlib import Path
 DATA_DIRNAME = "data"
 INDEX_NAME = "samples.jsonl"
 IMAGES_DIRNAME = "images"
+REPLAY_ROWS = 12_000
+MIN_FRESH_TARGETS = 10
+
+
+def confirmed_training_sample(record):
+    """Dados antigos usam o sinal de resultado; novas coletas registram a evidência."""
+    evidence = record.get("label_evidence")
+    boxes = record.get("boxes") or []
+    if not record.get("action"):
+        return not boxes and record.get("outcome") is None and evidence in (None, "detector_empty")
+    if record.get("outcome") != "changed" or evidence not in (None, "target_changed"):
+        return False
+    return any(
+        isinstance(box, dict) and box.get("acted") is True and box.get("category")
+        and isinstance(box.get("width"), int) and box["width"] > 0
+        and isinstance(box.get("height"), int) and box["height"] > 0
+        for box in boxes
+    )
+
+
+def automatic_minimum(root, resolution, requested):
+    shard = Path(root) if resolution == "legacy" else Path(root) / DATA_DIRNAME / resolution
+    if (shard / ".collection-pressure").is_file():
+        return min(requested, 200, max(20, (requested + 9) // 10))
+    return requested
 
 
 def shard_name(width, height):

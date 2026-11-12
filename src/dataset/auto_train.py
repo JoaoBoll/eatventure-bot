@@ -11,7 +11,7 @@ from contextlib import nullcontext
 from pathlib import Path
 
 from core import log
-from dataset.layout import record_resolution
+from dataset.layout import MIN_FRESH_TARGETS, automatic_minimum, confirmed_training_sample, record_resolution
 from dataset.training_files import snapshot_records, trained_sample_ids
 
 
@@ -96,15 +96,20 @@ class AutoTrainer:
 
     def _ready_resolutions(self):
         registros, _ = snapshot_records(self.directory)
-        treinados = trained_sample_ids(self.directory)
+        treinados = trained_sample_ids(self.directory, confirmed=True)
         novos = defaultdict(set)
         totais = defaultdict(set)
+        targets = defaultdict(set)
         for record in registros:
+            if not confirmed_training_sample(record):
+                continue
             key = f"{record.get('_shard') or '.'}/{record.get('id') or record['_path'].stem}"
             resolution = record_resolution(record)
             totais[resolution].add(key)
             if key not in treinados:
                 novos[resolution].add(key)
+                if record.get("label_evidence") == "target_changed":
+                    targets[resolution].add(key)
         for resolution, records in sorted(totais.items()):
             logger.info(
                 t("messages.training_sample_summary"),
@@ -113,7 +118,8 @@ class AutoTrainer:
             )
         return sorted(
             resolution for resolution, records in novos.items()
-            if len(records) >= self.batch_size
+            if len(records) >= automatic_minimum(self.directory, resolution, self.batch_size)
+            and len(targets[resolution]) >= MIN_FRESH_TARGETS
         )
 
     def _terminate(self, process):

@@ -197,11 +197,12 @@ class StateMachine:
         self._food_fail_target = None
         self._food_fail_count = 0
 
-        # Conta do start, não do primeiro build: o primeiro
+        # Conta do start, não da primeira reforma confirmada: o primeiro
         # trecho também é informação.
         self.cycle_at = time.monotonic()
         self.cycle_last = None
         self.cycle_count = 0
+        self._renovate_origin = None
 
         # Contado em _act (único ponto por onde ação sai);
         # contar em _apply_rules incluiria tentativa barrada por
@@ -331,9 +332,6 @@ class StateMachine:
         )
         self._lag = max(0.0, now - self._frame_time)
 
-        if self._timed_out():
-            return
-
         # Detecção velha: clicar com base num frame antigo
         # acerta onde o objeto ESTAVA.
         if (
@@ -353,6 +351,9 @@ class StateMachine:
 
                 self._stale_warned = now
 
+            return
+
+        if self._timed_out(detections):
             return
 
         if self.state == FOOD:
@@ -476,12 +477,15 @@ class StateMachine:
         self.last_action = action
         self.last_action_at = self.last_action_time
 
-        # Aqui, e não em _apply_rules: este é o ponto em que a
-        # ação SAIU de verdade. Marcar antes contaria ciclo em
-        # tentativa barrada por cooldown ou worker ocupado.
-        if detection and detection["category"] in CYCLE_CATEGORIES:
-
-            self._mark_cycle(detection["category"])
+        # build/plane apenas abre a tela de reforma. O ciclo só existe
+        # depois de o botão renovate/fly ter sido pressionado.
+        if (
+            action == "renovate_click"
+            and self.state == RENOVATE
+            and self._renovate_origin is not None
+        ):
+            self._mark_cycle(self._renovate_origin)
+            self._renovate_origin = None
 
         self._count_repeat(action)
 
@@ -493,6 +497,13 @@ class StateMachine:
         if not self._last_was_swipe:
             self.last_meaningful_action_time = self.last_action_time
             self.last_meaningful_action_wall = time.time()
+
+        if (
+            next_state == RENOVATE
+            and detection is not None
+            and detection["category"] in CYCLE_CATEGORIES
+        ):
+            self._renovate_origin = detection["category"]
 
         if next_state is not None and next_state != self.state:
 
@@ -569,7 +580,7 @@ class StateMachine:
         self.cycle_at = agora
 
     def cycle_stats(self):
-        """(tempo_corrido, ultimo_ciclo, quantos) para o HUD; ultimo_ciclo é None até o primeiro build/plane."""
+        """(tempo_corrido, ultimo_ciclo, quantos) para o HUD; último ciclo só existe após a primeira reforma confirmada."""
 
         return (
             time.monotonic() - self.cycle_at,
@@ -593,14 +604,9 @@ class StateMachine:
             # que efetivamente muda de restaurante.
             "voos": self.category_counts.get("fly", 0),
 
-            # `build` e `plane` são as duas portas para RENOVATE
-            # (CYCLE_CATEGORIES). Somadas, é quantas vezes o bot
-            # entrou numa reforma; `cycle_count` conta o mesmo
-            # evento, e serve de conferência.
-            "reformas": sum(
-                self.category_counts.get(categoria, 0)
-                for categoria in CYCLE_CATEGORIES
-            ),
+            # Só sobe após o toque em renovate/fly. build/plane por si só
+            # podem ser uma detecção errada ou uma tela que não abriu.
+            "reformas": self.cycle_count,
 
             "acoes": sum(self.action_counts.values()),
         }
@@ -765,6 +771,8 @@ class StateMachine:
         # Variáveis locais do estado anterior não vazam
         # para o próximo.
         self.up_food_wait_start = None
+        if previous_state == RENOVATE and state != RENOVATE:
+            self._renovate_origin = None
 
         # Trocar de estado é progresso: as contagens zeram.
         self._last_action = None
@@ -776,7 +784,7 @@ class StateMachine:
 
             self._delay_exploration()
 
-    def _timed_out(self):
+    def _timed_out(self, detections=None):
 
         timeout = STATE_TIMEOUTS.get(self.state)
 
@@ -797,6 +805,13 @@ class StateMachine:
         if self.state == FOOD and self._food_target is not None:
             self._register_food_failure(self._food_target)
             self._food_target = None
+
+        if self.state == RENOVATE:
+            close = self._find(detections or [], "close")
+            if close is not None:
+                # Sem botão de reforma, fecha o painel antes de liberar a
+                # máquina para outros itens da tela.
+                return self._act("close", close, NORMAL)
 
         self._enter(NORMAL)
 

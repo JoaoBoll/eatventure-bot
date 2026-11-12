@@ -83,6 +83,11 @@ def agir(machine, categoria):
     machine.update([deteccao(categoria)], 0.0)
 
 
+def reformar(machine, categoria):
+    agir(machine, categoria)
+    machine.update([deteccao("renovate")], 0.0)
+
+
 def test_comeca_em_zero_contando_do_start():
     """Sem ciclo anterior o tempo corrido já vale: "8 min e não passou de restaurante" é informação."""
 
@@ -95,11 +100,15 @@ def test_comeca_em_zero_contando_do_start():
     assert 0.0 <= corrido < 1.0, corrido
 
 
-def test_build_fecha_ciclo():
+def test_build_so_fecha_ciclo_apos_renovate():
 
     machine, acoes = maquina()
 
     agir(machine, "build")
+
+    assert machine.cycle_stats()[2] == 0
+
+    machine.update([deteccao("renovate")], 0.0)
 
     corrido, ultimo, quantos = machine.cycle_stats()
 
@@ -112,12 +121,11 @@ def test_build_fecha_ciclo():
     assert "click" in acoes.executadas, acoes.executadas
 
 
-def test_plane_tambem_fecha_ciclo():
-    """São as duas portas para RENOVATE: qualquer uma conta."""
+def test_plane_so_fecha_ciclo_apos_renovate():
 
     machine, _ = maquina()
 
-    agir(machine, "plane")
+    reformar(machine, "plane")
 
     assert machine.cycle_stats()[2] == 1
 
@@ -127,7 +135,7 @@ def test_conta_acumulado():
     machine, _ = maquina()
 
     for categoria in ("build", "plane", "build"):
-        agir(machine, categoria)
+        reformar(machine, categoria)
 
     assert machine.cycle_stats()[2] == 3
 
@@ -136,11 +144,11 @@ def test_ultimo_ciclo_mede_o_intervalo():
 
     machine, _ = maquina()
 
-    agir(machine, "build")
+    reformar(machine, "build")
 
     time.sleep(0.25)
 
-    agir(machine, "build")
+    reformar(machine, "build")
 
     _, ultimo, _ = machine.cycle_stats()
 
@@ -191,7 +199,7 @@ def test_worker_ocupado_nao_conta():
     # E quando libera, conta uma vez.
     acoes.livre = True
 
-    agir(machine, "build")
+    reformar(machine, "build")
 
     assert machine.cycle_stats()[2] == 1
 

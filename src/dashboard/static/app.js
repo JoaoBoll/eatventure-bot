@@ -51,6 +51,7 @@ let templateBlockSelections = [];
 let templateBlocksLoaded = false;
 let templateBlockEdited = false;
 let visionShowDetails = true;
+let visionSource = "bot";
 let sessionLoading = false;
 let datasetSession = null;
 let datasetResolution = null;
@@ -528,8 +529,12 @@ function renderDevice(device) {
   card.append(open);
   const header = node("div", "device-card-header");
   const identity = node("div", "device-identity");
-  const title = node("h3", "", deviceName(device));
-  title.title = deviceName(device);
+  const name = deviceName(device);
+  const activeResolution = device.running ? datasetResolutionOf(device) : null;
+  const title = node("h3");
+  title.append(node("span", "device-name", name));
+  if (activeResolution) title.append(node("span", "device-resolution", ` (${activeResolution})`));
+  title.title = activeResolution ? `${name} (${activeResolution})` : name;
   const serial = node("p", "mono", device.serial || device.id);
   serial.title = device.serial || device.id;
   identity.append(title, serial, node("span", "card-open-hint", t("web.view_ai_vision")));
@@ -622,6 +627,14 @@ function updateDeviceMetrics(card, device) {
   for (const [key, , value] of metricValues(device)) setMetricValue(card.querySelector(`[data-metric="${key}"]`), value);
   const dataset = card.querySelector(".dataset-button");
   const resolution = datasetResolutionOf(device);
+  const title = card.querySelector(".device-identity h3");
+  const activeResolution = device.running ? resolution : null;
+  const resolutionLabel = title.querySelector(".device-resolution");
+  if (activeResolution && resolutionLabel) resolutionLabel.textContent = ` (${activeResolution})`;
+  else if (activeResolution) title.append(node("span", "device-resolution", ` (${activeResolution})`));
+  else resolutionLabel?.remove();
+  const name = title.querySelector(".device-name")?.textContent || deviceName(device);
+  title.title = activeResolution ? `${name} (${activeResolution})` : name;
   dataset.disabled = !resolution && !device.session_id;
   dataset.title = resolution ? t("web.view_session_datasets") : t("web.last_session_resolution_hint");
   card.querySelector(".device-runtime").textContent = runtime(device);
@@ -686,7 +699,7 @@ function normalizeProfile(profile = {}) {
     block_regions: Array.isArray(profile.block_regions) ? profile.block_regions.map((region) => [...region]) : [],
     run: {
       ai_collect: !!profile.run?.ai_collect, layout_only: !!profile.run?.layout_only,
-      save_log: !!profile.run?.save_log, detector_mode: profile.run?.detector_mode || "templates",
+      save_log: !!profile.run?.save_log, detector_mode: profile.run?.detector_mode || "continuous",
       ai_model: profile.run?.ai_model || "auto", ai_source: profile.run?.ai_source || "templates",
       ai_min_confidence: profile.run?.ai_min_confidence ?? 0.60
     }
@@ -794,6 +807,7 @@ function group(title, onReset) {
 
 function renderProfile() {
   if (!draft) return;
+  if (draft.run.detector_mode === "continuous") draft.run.ai_collect = true;
   const basics = group(t("web.identity_and_run"));
   const nameRow = node("div", "setting-row");
   const nameLabel = node("label", "", t("web.device_name"));
@@ -823,7 +837,10 @@ function renderProfile() {
     select.addEventListener("change", () => {
       draft.run[key] = select.value;
       if (key === "detector_mode") {
-        if (select.value === "ai") draft.run.layout_only = false;
+        if (select.value !== "templates") {
+          draft.run.layout_only = false;
+          if (select.value === "continuous") draft.run.ai_collect = true;
+        }
         renderProfile();
       }
       updatePending();
@@ -833,16 +850,18 @@ function renderProfile() {
     basics.content.append(row);
   };
   runSelect("detector_mode", t("web.recognition_mode"), [
-    ["templates", t("web.template_bot")], ["ai", t("web.experimental_ai_model")]
+    ["continuous", t("web.continuous_ai")], ["templates", t("web.template_bot")], ["ai", t("web.experimental_ai_model")]
   ], t("web.recognition_mode_hint"));
-  if (draft.run.detector_mode === "ai") {
+  if (draft.run.detector_mode === "ai" || draft.run.detector_mode === "continuous") {
     const models = state.models.length ? state.models.map((model) => [model.value, model.label_key ? t(model.label_key) : model.label]) : [["auto", t("web.auto_capture_model")]];
     if (!models.some(([value]) => value === draft.run.ai_model)) models.push([draft.run.ai_model, t("web.unavailable_item", { value_1: draft.run.ai_model })]);
     runSelect("ai_model", t("web.trained_model"), models, t("web.auto_model_hint"));
-    runSelect("ai_source", t("web.ai_region_source"), [
-      ["templates", t("web.template_ai_source")],
-      ["proposer", t("web.experimental_contour_source")]
-    ], t("web.contour_source_hint"));
+    if (draft.run.detector_mode === "ai") {
+      runSelect("ai_source", t("web.ai_region_source"), [
+        ["templates", t("web.template_ai_source")],
+        ["proposer", t("web.experimental_contour_source")]
+      ], t("web.contour_source_hint"));
+    }
     const row = node("div", "setting-row");
     const label = node("label", "", t("web.ai_min_confidence"));
     label.htmlFor = "run-ai-confidence";
@@ -865,7 +884,8 @@ function renderProfile() {
     const input = node("input");
     input.type = "checkbox";
     input.checked = draft.run[key];
-    input.disabled = key === "layout_only" && draft.run.detector_mode === "ai";
+    input.disabled = (key === "layout_only" && draft.run.detector_mode !== "templates")
+      || (key === "ai_collect" && draft.run.detector_mode === "continuous");
     input.addEventListener("change", () => { draft.run[key] = input.checked; updatePending(); });
     const text = node("span");
     text.append(node("strong", "", title), node("small", "", description));
@@ -1103,11 +1123,29 @@ async function resetProfile() {
 function renderVisionControls() {
   const device = detailId ? deviceById(detailId) : null;
   const mode = device?.detector_mode || metric(device || {}, "detector_mode") || "templates";
+  const runtimeDiscovery = metric(device || {}, "template_discovery");
+  const configuredDiscovery = draft?.settings?.learn_resolution_templates
+    ?? state.schema.find((field) => field.key === "learn_resolution_templates")?.default;
+  // Enquanto o bot está parado ainda não há telemetria; nesse caso o perfil
+  // efetivo é a fonte de verdade para manter a opção visível.
+  const discoveryEnabled = typeof runtimeDiscovery === "boolean"
+    ? runtimeDiscovery
+    : configuredDiscovery === true;
+  $("vision-source").querySelector('[value="template_discovery"]').hidden = !discoveryEnabled;
+  if (!discoveryEnabled && visionSource === "template_discovery") visionSource = "bot";
+  const discovery = visionSource === "template_discovery";
   $("tab-vision").textContent = t("web.view");
-  $("panel-vision").querySelector(".vision-toolbar h3").textContent = mode === "ai" ? t("web.ai_model_vision") : t("web.template_bot_vision");
-  $("vision-image").alt = mode === "ai" ? t("web.ai_detections_alt") : t("web.template_detections_alt");
+  $("vision-source").value = visionSource;
+  $("panel-vision").querySelector(".vision-toolbar h3").textContent = discovery ? t("web.template_discovery_vision") : (mode === "ai" ? t("web.ai_model_vision") : t("web.template_bot_vision"));
+  $("vision-description").textContent = discovery ? t("web.template_discovery_description") : t("web.vision_description");
+  $("vision-image").alt = discovery ? t("web.template_discovery_alt") : (mode === "ai" ? t("web.ai_detections_alt") : t("web.template_detections_alt"));
+  $("vision-details").closest("label").hidden = discovery;
   $("vision-toggle").textContent = visionWanted ? t("web.stop_vision") : visionMode === "error" ? t("web.try_again") : t("web.view_vision");
   $("vision-toggle").disabled = visionMode === "starting" || (!visionWanted && (!device?.running || document.hidden));
+}
+
+function selectedVisionMode() {
+  return visionSource === "template_discovery" ? "template_discovery" : (visionShowDetails ? "vision" : "clean");
 }
 
 function renderVision(mode, message = "") {
@@ -1459,7 +1497,7 @@ async function startVision() {
   try {
     await visionReleases.get(id);
     if (generation !== visionGeneration) return;
-    const mode = visionShowDetails ? "vision" : "clean";
+    const mode = selectedVisionMode();
     const result = await api(`/api/devices/${encodeURIComponent(id)}/vision`, { method: "POST", body: JSON.stringify({ enabled: true, mode }) });
     if (generation !== visionGeneration) {
       if (!visionWanted || visionDevice !== id) releaseVision(id);
@@ -1628,7 +1666,7 @@ async function streamVision(generation) {
   visionStream = stream;
   renewVisionTimeout(stream);
   try {
-    const mode = visionShowDetails ? "vision" : "clean";
+    const mode = selectedVisionMode();
     const response = await fetch(`/api/devices/${encodeURIComponent(visionDevice)}/vision/stream?mode=${mode}`, {
       headers: { Accept: "multipart/x-mixed-replace", "X-Eatventure-Locale": locale, ...(token ? { Authorization: `Bearer ${token}` } : {}) },
       signal: controller.signal,
@@ -1824,6 +1862,8 @@ function renderTrainingSettings() {
     $("training-batch-size").value = settings.batch_size;
     $("training-jobs").value = settings.jobs;
     $("training-trees").value = settings.trees;
+    $("training-replay-rows").value = settings.replay_rows;
+    $("training-model-generations").value = settings.model_generations;
     $("training-pause-bots").checked = settings.pause_bots;
     trainingSettingsSnapshot = snapshot;
   }
@@ -1946,6 +1986,8 @@ async function saveTrainingSettings(event) {
       interval_seconds: Number($("training-interval").value) * 60,
       min_samples: Number($("training-min-samples").value), batch_size: batch,
       jobs: Number($("training-jobs").value), trees: Number($("training-trees").value),
+      replay_rows: Number($("training-replay-rows").value),
+      model_generations: Number($("training-model-generations").value),
       pause_bots: $("training-pause-bots").checked
     }) });
     if (!authenticated) return;
@@ -2252,6 +2294,11 @@ $("language-switch").addEventListener("click", (event) => {
 $("vision-toggle").addEventListener("click", () => { if (visionWanted) stopVision(); else startVision(); });
 $("vision-details").addEventListener("change", () => {
   setVisionDetails($("vision-details").checked);
+  if (visionWanted) { stopVision(); startVision(); }
+});
+$("vision-source").addEventListener("change", () => {
+  visionSource = $("vision-source").value === "template_discovery" ? "template_discovery" : "bot";
+  renderVisionControls();
   if (visionWanted) { stopVision(); startVision(); }
 });
 $("template-select").addEventListener("click", () => startTemplateSelector().catch((error) => { closeTemplateSelector(); toast(error.message, true); }));

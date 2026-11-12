@@ -194,6 +194,18 @@ def test_timeout_do_estado_volta_para_normal():
     assert machine.state == sm.NORMAL, machine.state
 
 
+def test_timeout_de_renovate_fecha_antes_de_liberar_outros_itens():
+    machine, actions, clock = build()
+
+    machine._enter(sm.RENOVATE)
+    clock.advance(STATE_TIMEOUTS["RENOVATE"] + 0.1)
+
+    machine.update([detection("close"), detection("food")])
+
+    assert actions.actions == ["close"], actions.actions
+    assert machine.state == sm.NORMAL, machine.state
+
+
 def test_delivery_e_helper_abrem_painel_e_usam_botao_interno():
     for entrada, estado, botao in (
         ("delivery", sm.DELIVERY, "accept_delivery"),

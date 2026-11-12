@@ -208,6 +208,9 @@ class Detector:
         self._refresh_pending = False
         self._refresh_started_at = None
         self._refresh_scanner = None
+        # Última passada do atualizador, mantida apenas em memória para a
+        # prévia web. Não participa da decisão do bot nem grava imagens.
+        self._refresh_preview = None
 
         self._learn_thread = threading.Thread(
             target=self._learn_worker,
@@ -255,6 +258,7 @@ class Detector:
                 self._learn_stopping = True
                 self._refresh_frame = None
                 self._refresh_pending = False
+                self._refresh_preview = None
                 if self._learn_thread.ident is not None:
                     self._learn_queue.put_nowait(None)
 
@@ -1241,7 +1245,7 @@ class Detector:
             detection.get("_learn_sequence"),
         )
 
-    def _queue_refresh_frame(self, frame):
+    def _queue_refresh_frame(self, frame, categories=None):
         if not self.learn_resolution_templates:
             return None
 
@@ -1260,20 +1264,42 @@ class Detector:
             ):
                 return sequence
 
-            self._refresh_frame = (frame.copy(), sequence)
+            # O atualizador percorre só os templates úteis ao estado que
+            # gerou este frame; não disputa CPU com a visão procurando toda
+            # a biblioteca em telas que nunca usariam aqueles itens.
+            self._refresh_frame = (
+                frame.copy(), sequence,
+                None if categories is None else tuple(categories),
+            )
             if not self._refresh_pending:
                 self._refresh_pending = True
                 self._learn_queue.put_nowait(_REFRESH_FRAME)
 
             return sequence
 
-    def _refresh_defaults(self, frame, sequence):
+    def queue_template_discovery(self, frame, categories):
+        """Agenda descoberta apenas para a passada normal dirigida pelo estado."""
+
+        # `None` representa varredura ampla (coleta, monitoramento ou
+        # inicialização). Descoberta não deve usar isso: só o estado do bot
+        # decide quais categorias fazem sentido nesta tela.
+        if not categories:
+            return None
+        return self._queue_refresh_frame(frame, tuple(categories))
+
+    def _refresh_defaults(self, frame, sequence, categories=None):
         if self._refresh_scanner is None:
             from vision.template_updater import DefaultTemplateScanner
 
             self._refresh_scanner = DefaultTemplateScanner(self)
 
-        detections = self._refresh_scanner.detect(frame)
+        detections = self._refresh_scanner.detect(frame, categories=categories)
+        with self._learn_queue_lock:
+            self._refresh_preview = (
+                frame,
+                tuple(detection.copy() for detection in detections),
+                None if categories is None else tuple(categories),
+            )
         height, width = frame.shape[:2]
         for detection in detections:
             self._queue_learn_candidate(
@@ -1281,6 +1307,15 @@ class Detector:
                 detection["x"], detection["y"], width, height,
                 detection["confidence"], sequence,
             )
+
+    def template_discovery_preview(self):
+        """Última análise do atualizador de templates, sem disparar nova busca."""
+
+        with self._learn_queue_lock:
+            if self._refresh_preview is None:
+                return None
+            frame, detections, categories = self._refresh_preview
+            return frame, tuple(detection.copy() for detection in detections), categories
 
     def _learn_worker(self):
         """Gera e atualiza templates por resolução fora da visão principal."""
@@ -1850,7 +1885,10 @@ class Detector:
             )
 
         frame_height, frame_width = frame_gray.shape[:2]
-        learn_sequence = self._queue_refresh_frame(frame_color)
+        # A descoberta é enfileirada pelo VisionWorker depois da passada
+        # normal, que é o único ponto com o estado atual do bot. Chamadas
+        # exaustivas (coleta, monitoramento e IA) nunca a disparam.
+        learn_sequence = None
 
         chave = (frame_width, frame_height)
 
@@ -2763,7 +2801,11 @@ class Detector:
         y = 50
 
         mode = stats.get("detector_mode", "templates")
-        self._hud_text(output, t("messages.ai_mode") if mode == "ai" else t("messages.template_mode"), y, self.HUD_NEUTRAL)
+        mode_label = {
+            "ai": t("messages.ai_mode"),
+            "template_discovery": t("messages.template_discovery_mode"),
+        }.get(mode, t("messages.template_mode"))
+        self._hud_text(output, mode_label, y, self.HUD_NEUTRAL)
         y += 40
         if mode == "ai" and stats.get("model"):
             self._hud_text(output, str(stats["model"])[:70], y, self.HUD_NEUTRAL, scale=0.5)

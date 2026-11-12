@@ -164,7 +164,10 @@ class VisionWorker:
 
             return (
                 self.detections_frame,
-                list(self.detections),
+                # A lista do detector é publicada por troca de referência e
+                # não é mutada depois. Preservar o objeto mantém a procedência
+                # dos rótulos (templates x modelo) até o DatasetRecorder.
+                self.detections,
                 self.detections_time,
             )
 
@@ -284,6 +287,13 @@ class VisionWorker:
             raw_frame,
             categories,
         )
+        discovery_sequence = self.detector.queue_template_discovery(
+            raw_frame,
+            categories,
+        )
+        if discovery_sequence is not None:
+            for detection in detections:
+                detection["_learn_sequence"] = discovery_sequence
         if monitor_categories and monitor_request > self._monitor_result:
             monitored = self.detector.detect(
                 raw_frame,

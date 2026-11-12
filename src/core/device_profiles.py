@@ -20,8 +20,8 @@ _PROFILE_NAME = re.compile(r"[0-9a-f]{64}\.json\Z")
 _SOURCE_PREFIX = re.compile(r"^(\d+x\d+)_(.+)$")
 _IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 _RUN_DEFAULTS = {
-    "ai_collect": False, "layout_only": False, "save_log": False,
-    "detector_mode": "templates", "ai_model": "auto", "ai_source": "templates",
+    "ai_collect": True, "layout_only": False, "save_log": False,
+    "detector_mode": "continuous", "ai_model": "auto", "ai_source": "templates",
     "ai_min_confidence": 0.60,
 }
 
@@ -181,7 +181,7 @@ def validate_profile(device_id, data):
             if not isinstance(value, bool):
                 raise ValueError(t("messages.invalid_run_option"))
         elif key == "detector_mode":
-            if value not in ("templates", "ai"):
+            if value not in ("templates", "continuous", "ai"):
                 raise ValueError(t("messages.detector_choice_required"))
         elif key == "ai_source":
             if value not in ("templates", "proposer"):
@@ -195,8 +195,10 @@ def validate_profile(device_id, data):
         elif key == "ai_min_confidence":
             value = _number(value, t("messages.ai_min_confidence"), 0.0, 1.0)
         run[key] = value
-    if run["detector_mode"] == "ai" and run["layout_only"]:
+    if run["detector_mode"] != "templates" and run["layout_only"]:
         raise ValueError(t("messages.layout_requires_templates"))
+    if run["detector_mode"] == "continuous":
+        run["ai_collect"] = True
     return {
         "device_id": device_id,
         "name": name.strip(),

@@ -204,6 +204,7 @@ def category_dataset(
     usar_cache=True,
     metadata_records=None,
     label_source="all",
+    replay_rows=12000,
 ):
     """Junta as features novas e a memória, preservando metadados de cada frame."""
 
@@ -232,7 +233,8 @@ def category_dataset(
         por_shard[registro.get("_shard") or "."].append(registro)
 
     cache_kind_root = Path(cache_root) / "category"
-    if usar_cache and cache_kind_root.exists():
+    bounded = usar_cache and label_source == "confirmed"
+    if usar_cache and not bounded and cache_kind_root.exists() and not registros:
         if any(cache_kind_root.glob("*.npz")):
             por_shard.setdefault(".", [])
         for pasta in cache_kind_root.iterdir():
@@ -251,6 +253,34 @@ def category_dataset(
     }
     planos = []
     for shard, lote in sorted(por_shard.items()):
+        if bounded:
+            from feature_cache import BoundedReplay
+
+            cache = BoundedReplay(cache_root, shard, assinatura, max_rows=replay_rows)
+            old_X, old_y, old_ids = cache.load()
+            metadata = cache.metadata()
+            incoming = {record_id(r): compact_record(r) for r in lote}
+            # Reprocessar um frame selecionado após uma falha não duplica suas linhas.
+            keep = ~np.isin(old_ids, list(incoming))
+            reused = set(old_ids[keep].tolist())
+            if reused:
+                partes.append((old_X[keep], old_y[keep],
+                               np.asarray([f"{shard}/{i}" for i in old_ids[keep]])))
+                info["records"].update({f"{shard}/{i}": metadata[i] for i in reused})
+            info["reaproveitadas"] += len(reused)
+            X, y, owners, counts = extract_category_rows(
+                lote, negativos_por_frame, tamanhos, label_source=label_source,
+            )
+            used = set(owners.tolist())
+            cache.append(X, y, owners, records=incoming)
+            info["caches"][shard] = cache
+            info["extraidas"] += len(used)
+            info["ilegiveis"] += counts["ilegiveis"]
+            info["recortes_vazios"] += counts["recortes_vazios"]
+            info["records"].update({f"{shard}/{i}": incoming[i] for i in used})
+            if used:
+                partes.append((X, y, np.asarray([f"{shard}/{i}" for i in owners])))
+            continue
         cache = FeatureCache(cache_root, "category", shard, assinatura) if usar_cache else None
         conhecidos = set()
         metadados = {record_id(r): compact_record(r) for r in lote}
@@ -403,7 +433,7 @@ def promotion_decision(metricas, args):
 
 def _train_one_resolution(args):
     from dataset.training_files import snapshot_records, training_lock
-    from dataset.layout import record_resolution
+    from dataset.layout import MIN_FRESH_TARGETS, automatic_minimum, confirmed_training_sample, record_resolution
     from dataset_io import filter_by_outcome
     from training_run import record_key, trained_sample_ids
 
@@ -419,6 +449,9 @@ def _train_one_resolution(args):
         with training_lock(raiz):
             snapshot, aviso = snapshot_records(raiz)
             registros = filter_by_outcome(snapshot, args.outcome)
+            confirmed = args.kind == "category" and args.label_source == "confirmed"
+            if confirmed:
+                registros = [r for r in registros if confirmed_training_sample(r)]
             if args.resolution is not None:
                 registros = [
                     record for record in registros
@@ -426,14 +459,22 @@ def _train_one_resolution(args):
                 ]
             registros = list({record_key(r): r for r in registros}.values())
             if automatico:
-                treinados = trained_sample_ids(raiz, args.cache_root)
+                treinados = (trained_sample_ids(raiz, args.cache_root, confirmed=True) if confirmed
+                             else trained_sample_ids(raiz, args.cache_root))
                 registros = [r for r in registros if record_key(r) not in treinados]
                 minimo = getattr(args, "min_samples", 10000)
+                if confirmed:
+                    minimo = automatic_minimum(raiz, args.resolution, minimo)
+                    if sum(r.get("label_evidence") == "target_changed" for r in registros) < MIN_FRESH_TARGETS:
+                        print(t("messages.wait_fresh_holdout"))
+                        return 0
                 if len(registros) < minimo:
                     print(t("messages.training_waiting_samples", value_1=len(registros), minimo=minimo))
                     return 0
                 batch_size = getattr(args, "batch_size", None)
                 if batch_size is not None:
+                    if confirmed:
+                        registros.sort(key=lambda r: not bool(r.get("label_evidence")))
                     registros = registros[:batch_size]
             if args.limit:
                 registros = registros[:args.limit]
@@ -501,17 +542,19 @@ def _fit_snapshot(args, raiz, registros, snapshot, aviso, execucao):
     import numpy as np
     from dataset.training_files import cleanup_records
     from dataset_io import (
+        continuous_split, capture_time,
         ceiling_state_categories_on_holdout,
         split_groups,
         state_baseline_on_holdout,
     )
     from training_run import (
-        activate_model, compact_record, publish_model,
+        activate_model, compact_record, prune_generations, publish_model,
         record_id, record_key, summarize,
     )
 
     automatico = getattr(args, "automatic", False)
     label_source = getattr(args, "label_source", "all")
+    continuous = args.kind == "category" and label_source == "confirmed"
     compativel_limpeza = args.kind == "category" and not args.no_cache
     pedido_limpeza = getattr(args, "cleanup", None)
     if pedido_limpeza is True and not compativel_limpeza:
@@ -549,6 +592,7 @@ def _fit_snapshot(args, raiz, registros, snapshot, aviso, execucao):
             registros, args.negatives, cache_root,
             usar_cache=not args.no_cache, metadata_records=snapshot,
             label_source=label_source,
+            replay_rows=getattr(args, "replay_rows", 12000),
         )
         metadados = extra["records"]
         caches = extra["caches"]
@@ -584,15 +628,35 @@ def _fit_snapshot(args, raiz, registros, snapshot, aviso, execucao):
         raise ValueError(t("messages.insufficient_usable_samples", value_1=len(efetivas)))
 
     todos_registros = [metadados[k] for k in sorted(efetivas)]
-    treino, teste, divisao = split_groups(
-        todos_registros, train_ratio=1.0 - args.test_ratio,
-        mode=args.split, seed=args.seed,
-    )
+    incumbent = None
+    prior_id = None
+    if continuous:
+        from model_updates import resolve_publication
+        import joblib
+        publication = resolve_publication(args.model_out)
+        prior_id = publication.run_id
+        cutoff = 0
+        if prior_id or publication.model_path.exists():
+            incumbent = joblib.load(publication.model_path)
+            cutoff = getattr(incumbent, "training_cutoff_", publication.model_path.stat().st_mtime)
+        treino, teste, divisao = continuous_split(todos_registros, atuais, cutoff, args.test_ratio, args.seed)
+    else:
+        treino, teste, divisao = split_groups(
+            todos_registros, train_ratio=1.0 - args.test_ratio,
+            mode=args.split, seed=args.seed,
+        )
     ids_treino = {record_key(r) for r in treino}
     ids_teste = {record_key(r) for r in teste}
     mascara_teste = np.isin(donos, list(ids_teste))
-    X_treino, y_treino = X[~mascara_teste], y[~mascara_teste]
+    mascara_treino = np.isin(donos, list(ids_treino))
+    X_treino, y_treino = X[mascara_treino], y[mascara_treino]
     X_teste, y_teste = X[mascara_teste], y[mascara_teste]
+    if continuous and (len(ids_teste) < 2 or not any(y_teste != "background")
+                       or len(set(y_treino.tolist())) < 2):
+        execucao.data["reason"] = str(t("messages.wait_fresh_holdout"))
+        execucao.finish("waiting")
+        print(execucao.data["reason"])
+        return 0
     if not len(X_treino) or not len(X_teste):
         raise ValueError(t("messages.empty_training_split"))
     if len(set(y_treino.tolist())) < 2:
@@ -628,41 +692,48 @@ def _fit_snapshot(args, raiz, registros, snapshot, aviso, execucao):
         "validation": {**summarize(teste), "rows": int(len(X_teste))},
         "class_metrics": metricas["class_metrics"],
         "baselines": {name: float(value) for name, value in referencias.items()},
-        "scope": "held_out_groups_before_final_refit",
+        "scope": "fresh_frames" if continuous else "held_out_groups_before_final_refit",
     }
     execucao.save()
 
     print(t("messages.final_fit_summary", value_1=len(efetivas), value_2=len(X)))
-    modelo = build_classifier(args.trees, args.seed, args.jobs)
-    modelo.fit(X, y)
-    classes = dict(sorted(Counter(str(label) for label in y).items()))
-    data_summary = summarize(todos_registros)
+    if continuous:
+        modelo = avaliador
+        modelo.training_cutoff_ = max(capture_time(r) for r in todos_registros)
+    else:
+        modelo = build_classifier(args.trees, args.seed, args.jobs)
+        modelo.fit(X, y)
+    fitted_ids = ids_treino if continuous else efetivas
+    classes = dict(sorted(Counter(str(label) for label in (y_treino if continuous else y)).items()))
+    data_summary = summarize(treino if continuous else todos_registros)
     execucao.data["final_fit"] = {
         "resolutions": data_summary["resolutions"],
         "categories": data_summary["categories"],
-        "images_used": len(efetivas),
-        "new_images": len(atuais),
-        "reused_images": len(replay),
+        "images_used": len(fitted_ids),
+        "new_images": len(fitted_ids & atuais),
+        "reused_images": len(fitted_ids & replay),
         "category_count": (
             len(classes) - int("background" in classes)
             if args.kind == "category" else len(classes)
         ),
-        "rows": int(len(X)),
+        "rows": int(len(X_treino) if continuous else len(X)),
         "row_unit": "box_crop" if args.kind == "category" else "full_frame",
         "class_count": len(classes),
         "classes": classes,
-        "includes_validation": True,
+        "includes_validation": not continuous,
     }
 
     from features import HSV_BINS, PATCH_MARGIN, PATCH_SIZE, SCREEN_HEIGHT, SCREEN_WIDTH
     meta = {
         "run_id": execucao.id,
+        "publication_target": Path(args.model_out).name,
+        "previous_run": prior_id,
         "kind": args.kind,
         "labels": [str(label) for label in modelo.classes_],
         "counts": execucao.data["final_fit"]["classes"],
         "accuracy": metricas["accuracy"],
         "macro_f1": metricas["macro_f1"],
-        "accuracy_scope": "validation_before_final_refit",
+        "accuracy_scope": "fresh_frames" if continuous else "validation_before_final_refit",
         "baselines": execucao.data["evaluation"]["baselines"],
         "split": execucao.data["evaluation"]["split"],
         "outcome_filter": args.outcome,
@@ -674,17 +745,38 @@ def _fit_snapshot(args, raiz, registros, snapshot, aviso, execucao):
         "trees": args.trees, "seed": args.seed,
         "final_fit": execucao.data["final_fit"],
     }
-    execucao.data["artifacts"] = publish_model(
-        execucao, modelo, meta, args.model_out,
-    )
+    promoted, promotion_reasons = promotion_decision(metricas, args)
+    comparison = None
+    if incumbent is not None:
+        comparison = validation_metrics(incumbent, X_teste, y_teste)
+        lost_classes = set(incumbent.classes_) - set(modelo.classes_)
+        def recall(metrics, category):
+            return metrics["class_metrics"].get(category, {}).get("recall", 0.0)
+        if (lost_classes or metricas["macro_f1"] < comparison["macro_f1"]
+            or any(recall(metricas, c) < recall(comparison, c) for c in args.critical_categories)):
+            promoted = False
+            promotion_reasons.append(t("messages.incumbent_regression"))
+    locator = None
+    if continuous and promoted:
+        from region_locator import attach_locator
+        locator = attach_locator(
+            modelo, [r for r in registros if record_key(r) in ids_treino],
+            [r for r in registros if record_key(r) in ids_teste], incumbent=incumbent,
+        )
+        if getattr(incumbent, "region_locator_", None) is not None and getattr(modelo, "region_locator_", None) is None:
+            promoted = False
+            promotion_reasons.append(t("messages.locator_regression"))
+    execucao.data["artifacts"] = publish_model(execucao, modelo, meta, args.model_out)
     execucao.data["status"] = "publishing"
     execucao.save()
-    promoted, promotion_reasons = promotion_decision(metricas, args)
     execucao.data["promotion"] = {
         "accepted": promoted,
         "min_macro_f1": getattr(args, "min_macro_f1", 0.55),
         "min_critical_recall": getattr(args, "min_critical_recall", 0.40),
         "reasons": promotion_reasons,
+        "incumbent": comparison,
+        "incumbent_id": prior_id,
+        "locator": locator,
     }
     if promoted:
         activate_model(execucao)
@@ -694,8 +786,8 @@ def _fit_snapshot(args, raiz, registros, snapshot, aviso, execucao):
     execucao.finish("success")
 
     try:
-        if limpar and promoted:
-            fonte_limpeza = snapshot if not args.outcome and not args.limit else registros
+        if limpar and (promoted or (continuous and automatico)):
+            fonte_limpeza = snapshot if not continuous and not args.outcome and not args.limit else registros
             consumiveis = [r for r in fonte_limpeza if record_key(r) in efetivas]
             consumidos = {record_id(r) for r in consumiveis}
             resultado = cleanup_records(raiz, consumiveis, consumidos)
@@ -708,10 +800,13 @@ def _fit_snapshot(args, raiz, registros, snapshot, aviso, execucao):
                 "status", "partial" if resultado.get("errors") else "completed"
             )
         for shard, cache in caches.items():
-            cache.mark_trained(
-                metadata["id"] for metadata in metadados.values()
-                if metadata["_shard"] == shard
-            )
+            ids = [metadata["id"] for metadata in metadados.values() if metadata["_shard"] == shard]
+            if continuous:
+                cache.mark_trained(ids, live_ids={record_id(r) for r in snapshot if r.get("_shard") == shard})
+            else:
+                cache.mark_trained(ids)
+        if continuous:
+            prune_generations(args.model_out, prior_id, execucao.id, args.model_generations)
     except Exception as error:
         execucao.data["cleanup"] = {
             **execucao.data["cleanup"], "status": "failed",
@@ -892,7 +987,11 @@ def parse_args(argv=None):
         help=t("messages.unsafe_promotion_help"),
     )
 
+    parser.add_argument("--replay-rows", type=int, default=12000, help=t("messages.replay_rows_help"))
+    parser.add_argument("--model-generations", type=int, default=3, help=t("messages.model_generations_help"))
     args = parser.parse_args(argv)
+    if not 20 <= args.replay_rows <= 1000000 or not 3 <= args.model_generations <= 100:
+        parser.error(t("messages.invalid_retention_settings"))
     if args.resolution is not None and args.combine_resolutions:
         parser.error(t("messages.incompatible_resolution_options"))
     if not 0 <= args.min_macro_f1 <= 1 or not 0 <= args.min_critical_recall <= 1:

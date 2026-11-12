@@ -16,7 +16,10 @@ import uuid
 
 from core import config, log
 from core.i18n import locale, t
-from dataset.layout import INDEX_NAME, record_resolution, shard_roots
+from dataset.layout import (
+    INDEX_NAME, MIN_FRESH_TARGETS, REPLAY_ROWS, automatic_minimum,
+    confirmed_training_sample, record_resolution, shard_roots,
+)
 from dataset.training_files import trained_sample_ids
 
 
@@ -67,6 +70,8 @@ class TrainingManager:
             "batch_size": 0,
             "jobs": config.AI_TRAIN_JOBS,
             "trees": 200,
+            "replay_rows": REPLAY_ROWS,
+            "model_generations": 3,
             "pause_bots": config.AI_PAUSE_BOT_WHILE_TRAINING,
         }
         saved = _json(self.path)
@@ -84,7 +89,9 @@ class TrainingManager:
 
     @classmethod
     def _validate_settings(cls, data):
-        expected = {"enabled", "interval_seconds", "min_samples", "batch_size", "jobs", "trees", "pause_bots", "training_allowed", "pause_scope"}
+        if isinstance(data, dict):
+            data = {"replay_rows": REPLAY_ROWS, "model_generations": 3, **data}
+        expected = {"enabled", "interval_seconds", "min_samples", "batch_size", "jobs", "trees", "pause_bots", "training_allowed", "pause_scope", "replay_rows", "model_generations"}
         if not isinstance(data, dict) or data.keys() != expected:
             raise ValueError(t("web.training_invalid_settings"))
         if any(type(data[key]) is not bool for key in ("enabled", "pause_bots", "training_allowed")) or data["pause_scope"] not in ("resolution", "all"):
@@ -92,7 +99,8 @@ class TrainingManager:
         result = dict(data)
         for key, minimum, maximum in (
             ("interval_seconds", 60, 86400), ("min_samples", 20, 1000000),
-            ("jobs", 1, 64), ("trees", 10, 2000),
+            ("jobs", 1, 64), ("trees", 10, 2000), ("replay_rows", 20, 100000),
+            ("model_generations", 3, 100),
         ):
             result[key] = cls._integer(data[key], minimum, maximum)
         cls._integer(data["batch_size"], 0, 1000000)
@@ -141,7 +149,7 @@ class TrainingManager:
                 return self._catalog
             # Consulta somente índices e existência dos arquivos; não abre imagens nem retoma limpezas.
             try:
-                trained = trained_sample_ids(self.dataset)
+                trained = trained_sample_ids(self.dataset, confirmed=True)
             except (OSError, ValueError, TypeError) as error:
                 raise RuntimeError(t("web.training_scan_failed")) from error
             groups = {}
@@ -164,6 +172,9 @@ class TrainingManager:
                             image = (shard / record["image"]).resolve()
                             if not image.is_relative_to(self.dataset) or not image.is_file():
                                 raise ValueError()
+                            if not confirmed_training_sample(record):
+                                ignored += 1
+                                continue
                             key = f"{shard_id}/{record.get('id') or image.stem}"
                             if key in seen:
                                 continue
@@ -171,7 +182,7 @@ class TrainingManager:
                             resolution = record_resolution({**record, "_shard": shard_id})
                             group = groups.setdefault(resolution, {
                                 "resolution": resolution, "available": 0, "pending": 0,
-                                "items": 0, "pending_items": 0, "categories": Counter(),
+                                "items": 0, "pending_items": 0, "categories": Counter(), "fresh_targets": 0,
                             })
                             boxes = record.get("boxes") or []
                             if not isinstance(boxes, list):
@@ -187,6 +198,7 @@ class TrainingManager:
                             group["categories"].update(categories)
                             if key not in trained:
                                 group["pending"] += 1
+                                group["fresh_targets"] += int(record.get("label_evidence") == "target_changed")
                                 group["pending_items"] += sum(categories.values())
                         except (ValueError, OSError, TypeError, UnicodeError):
                             ignored += 1
@@ -334,7 +346,9 @@ class TrainingManager:
             if job is None:
                 try:
                     groups = self.catalog(refresh=True)["resolutions"]
-                    group = next((group for group in groups if group["pending"] >= settings["min_samples"]), None)
+                    group = next((group for group in groups
+                                  if group["pending"] >= automatic_minimum(self.dataset, group["resolution"], settings["min_samples"])
+                                  and group.get("fresh_targets", 0) >= MIN_FRESH_TARGETS), None)
                     with self._condition:
                         self._scan_error = None
                         if self._closing or self._pending is not None or group is None or not self._settings["training_allowed"] or not self._settings["enabled"]:
@@ -376,6 +390,8 @@ class TrainingManager:
             # somente alvos cuja ação funcionou, mais telas negativas.
             "--outcome", "changed", "negative",
             "--label-source", "confirmed",
+            "--replay-rows", str(settings["replay_rows"]),
+            "--model-generations", str(settings["model_generations"]),
         ]
         if job["automatic"]:
             command.extend(["--automatic", "--min-samples", str(settings["min_samples"])])
