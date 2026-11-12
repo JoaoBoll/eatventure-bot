@@ -14,6 +14,7 @@
   },
   "terminal": {
     "ai_collect_help": "Ativa a coleta de dados de IA para o dataset.",
+    "reload_help": "Reinicia automaticamente o painel quando o código mudar (desenvolvimento).",
     "choose_device": "Escolha entre 1 e {total}.",
     "device_help": "serial do dispositivo (adb devices)",
     "device_prompt": "Número da lista ou serial completo.",
@@ -940,6 +941,9 @@
     "check_for_new_templates": "Verificar novos templates (s; 0 desativa)",
     "jpeg_quality": "Qualidade JPEG da coleta",
     "dataset_size_limit": "Limite do dataset (MB; 0 ilimitado)",
+    "dataset_label_limit": "Máximo de amostras por rótulo (0 ilimitado)",
+    "max_swipes": "Swipes por lado na exploração",
+    "scroll_bottom_swipes": "Swipes ao rolar até o fim",
     "automatic_training": "Treino automático",
     "training_samples": "Amostras por treino",
     "training_processes": "Processos de treino",

@@ -58,6 +58,8 @@ SETTING_SPECS = {
     "swipe_y": _spec("SWIPE_Y", t("messages.swipe_y"), t("messages.actions"), "int", 0, 2400, 1),
     "swipe_distance": _spec("SWIPE_DISTANCE", t("messages.swipe_distance"), t("messages.actions"), "int", 1, 2400, 1),
     "swipe_duration_ms": _spec("SWIPE_DURATION_MS", t("messages.swipe_duration"), t("messages.actions"), "int", 1, 5000, 1),
+    "max_swipes": _spec("MAX_SWIPES", t("messages.max_swipes"), t("messages.actions"), "int", 1, 100, 1),
+    "scroll_bottom_swipes": _spec("SCROLL_BOTTOM_SWIPES", t("messages.scroll_bottom_swipes"), t("messages.actions"), "int", 1, 100, 1),
     "swipe_waiting_time": _spec("SWIPE_WAITING_TIME", t("messages.wait_after_swipe"), t("messages.actions"), "float", 0.0, 60.0, 0.1),
     "upgrade_item_clicks": _spec("UPGRADE_ITEM_CLICKS", t("messages.upgrade_clicks"), t("messages.actions"), "int", 1, 100, 1),
     "upgrade_food_press": _spec("UPGRADE_FOOD_PRESS", t("messages.food_upgrade_duration"), t("messages.actions"), "float", 0.1, 30.0, 0.1),

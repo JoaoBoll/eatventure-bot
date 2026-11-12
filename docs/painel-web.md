@@ -21,6 +21,16 @@ Para encerrar o painel pelo terminal, execute `python src/stop-web.py`. O script
 
 Para permitir acesso somente no próprio computador, use `nohup .venv/bin/python src/web.py --host 127.0.0.1 > /dev/null 2>&1 < /dev/null &`. A opção `--port` permite alterar a porta padrão `8765`.
 
+Enquanto estiver alterando o código do painel, inicie com `--reload`:
+
+```bash
+python src/web.py --reload
+```
+
+O servidor reinicia ao salvar arquivos do projeto e as abas abertas recarregam
+automaticamente. Como o reinício encerra os processos de bot gerenciados por
+aquele painel, use essa opção somente durante desenvolvimento.
+
 Por padrão, o painel abre diretamente, sem token. Para exigir autenticação, inicie com:
 
 ```bash

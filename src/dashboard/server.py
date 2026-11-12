@@ -225,6 +225,9 @@ def create_app(root=None, state_root=None, token=None, supervisor=None, require_
     app.state.supervisor = supervisor
     app.state.web_server = None
     app.state.auth_required = token is not None
+    # Muda a cada processo novo. O navegador usa este valor para se recarregar
+    # quando o Uvicorn reinicia após uma alteração de código.
+    app.state.revision = secrets.token_urlsafe(12)
 
     def authenticated(request):
         if token is None:
@@ -345,6 +348,10 @@ def create_app(root=None, state_root=None, token=None, supervisor=None, require_
             "server": {"name": "EatVenture Control", "profiles": "local/devices", "requires_restart": True},
             "error": localized(getattr(supervisor.devices, "last_error", None)),
         }
+
+    @app.get("/api/revision")
+    def revision():
+        return {"revision": app.state.revision}
 
     @app.get("/api/templates")
     def templates():
