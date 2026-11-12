@@ -82,9 +82,30 @@ dá 1,8x, e frame decodificado de H.264 — que é o que o recorder
 grava — dá 4,3x, porque o H.264 introduz ruído em tudo, que o
 PNG não comprime e o JPG descarta.
 
-Há um teto: `DATASET_MAX_DISK_MB` (20 GB por padrão). Ao
+Há um teto: `DATASET_MAX_DISK_MB` (6 GB por padrão). Ao
 estourar, a gravação para e avisa **uma vez** — o bot continua
 jogando.
+
+## Coleta local e retenção limitada
+
+O dataset não precisa ser um arquivo histórico de todos os frames. Por padrão,
+o coletor mantém no máximo `DATASET_MAX_SAMPLES_PER_LABEL` exemplos de cada
+par `ação:categoria` durante uma sessão (`0` desliga o teto). Isto impede que
+uma ação frequente, como `upgrade_item`, ocupe todo o disco e deixe as classes
+raras sem exemplos. Telas negativas têm o rótulo próprio `negative`.
+
+O treino automático usa somente ações cujo resultado foi `changed` e negativas.
+Para as ações, ele aproveita apenas a caixa que de fato motivou o toque; assim,
+o modelo não aprende como verdade um falso positivo do template matcher que não
+produziu efeito. Ao terminar uma promoção compatível, a limpeza automática
+remove as imagens e os registros usados, enquanto o cache de features e o
+modelo publicado permanecem locais para o próximo ciclo.
+
+Os controles ficam em **Configurações → Coleta e treino** no painel web:
+limite em MB, máximo por rótulo, tamanho do lote e pausa durante o treino.
+Use um conjunto pequeno separado de screenshots reais como regressão antes de
+confiar em uma promoção para ações críticas; aprendizado sem revisão humana
+precisa desse freio contra regressão silenciosa.
 
 ### Quais ações entram
 

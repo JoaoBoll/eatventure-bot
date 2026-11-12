@@ -143,6 +143,11 @@ class AutoTrainer:
         command.extend((
             "--model-out",
             str(ROOT / "IA" / "models" / resolution / "category.joblib"),
+            # A ação que mudou a tela é o único sinal automático confiável
+            # para promover um rótulo do matcher. Negativas continuam sendo
+            # necessárias para o modelo aprender a recusar fundos.
+            "--outcome", "changed", "negative",
+            "--label-source", "confirmed",
         ))
         process = None
         returncode = None

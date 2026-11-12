@@ -36,6 +36,7 @@ from core.config import (
     DATASET_JPEG_QUALITY,
     DATASET_MAX_SAMPLES,
     DATASET_MAX_DISK_MB,
+    DATASET_MAX_SAMPLES_PER_LABEL,
     DATASET_MAX_UNCHANGED_STREAK,
     DATASET_NEGATIVE_INTERVAL,
     DATASET_SCREEN_CHANGE,
@@ -134,6 +135,7 @@ class DatasetRecorder:
         self.dropped = 0
         self.duplicates = 0
         self.by_action = {}
+        self.by_label = {}
 
         # Última negativa, para espaçá-las no TEMPO. Começa no
         # passado para a primeira sair logo.
@@ -613,6 +615,18 @@ class DatasetRecorder:
             self.unchanged_action = None
             self.unchanged_streak = 0
 
+        # A coleta é uma memória de treino, não um log completo. Limitar por
+        # ação/categoria impede que um único botão comum domine os exemplos e
+        # deixa espaço para situações raras. A contagem só avança depois que o
+        # arquivo e o índice foram gravados com sucesso.
+        label = self._sample_label(sample)
+        if (
+            DATASET_MAX_SAMPLES_PER_LABEL
+            and self.by_label.get(label, 0) >= DATASET_MAX_SAMPLES_PER_LABEL
+        ):
+            self.duplicates += 1
+            return
+
         chave = self._perceptual_hash(frame)
 
         dia = sample.created.strftime("%Y-%m-%d")
@@ -671,6 +685,14 @@ class DatasetRecorder:
         rotulo = sample.action or "negativo"
 
         self.by_action[rotulo] = self.by_action.get(rotulo, 0) + 1
+        self.by_label[label] = self.by_label.get(label, 0) + 1
+
+    @staticmethod
+    def _sample_label(sample):
+        if sample.action is None:
+            return "negative"
+        category = (sample.target or {}).get("category")
+        return f"{sample.action}:{category or 'point'}"
 
 
     def _disk_full(self):

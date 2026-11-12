@@ -372,6 +372,10 @@ class TrainingManager:
             "--trees", str(settings["trees"]), "--locale", job["language"],
             "--model-out", str(self.root / "IA/models" / job["resolution"] / "category.joblib"),
             "--cleanup" if job["cleanup"] else "--keep-data",
+            # O painel usa a mesma política conservadora do agendador local:
+            # somente alvos cuja ação funcionou, mais telas negativas.
+            "--outcome", "changed", "negative",
+            "--label-source", "confirmed",
         ]
         if job["automatic"]:
             command.extend(["--automatic", "--min-samples", str(settings["min_samples"])])

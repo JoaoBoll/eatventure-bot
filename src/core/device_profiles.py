@@ -48,6 +48,7 @@ SETTING_SPECS = {
     "templates_watch_interval": _spec("TEMPLATES_WATCH_INTERVAL", t("messages.check_for_new_templates"), t("messages.templates"), "float", 0.0, 3600.0, 0.5),
     "dataset_jpeg_quality": _spec("DATASET_JPEG_QUALITY", t("messages.jpeg_quality"), t("messages.collection_training"), "int", 1, 100, 1),
     "dataset_max_disk_mb": _spec("DATASET_MAX_DISK_MB", t("messages.dataset_size_limit"), t("messages.collection_training"), "int", 0, 10000000, 1),
+    "dataset_max_samples_per_label": _spec("DATASET_MAX_SAMPLES_PER_LABEL", t("messages.dataset_label_limit"), t("messages.collection_training"), "int", 0, 1000000, 1),
     "ai_auto_train": _spec("AI_AUTO_TRAIN", t("messages.automatic_training"), t("messages.collection_training"), "bool"),
     "ai_train_batch_size": _spec("AI_TRAIN_BATCH_SIZE", t("messages.training_samples"), t("messages.collection_training"), "int", 1, 1000000, 1),
     "ai_train_jobs": _spec("AI_TRAIN_JOBS", t("messages.training_processes"), t("messages.collection_training"), "int", 1, 64, 1),
