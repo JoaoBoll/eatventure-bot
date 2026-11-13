@@ -397,6 +397,15 @@ function datasetResolutionOf(device) {
 
 function numeric(value) { return Number.isFinite(Number(value)) && value !== null && value !== "" ? Number(value) : null; }
 function count(value) { const valueNumber = numeric(value); return valueNumber === null ? "—" : numberFormat.format(valueNumber); }
+function duration(value) {
+  const seconds = numeric(value);
+  if (seconds === null) return "—";
+  const total = Math.floor(Math.max(0, seconds));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor(total % 3600 / 60);
+  const rest = total % 60;
+  return hours ? `${hours}h ${minutes}m` : minutes ? `${minutes}m ${rest}s` : `${rest}s`;
+}
 
 function runtime(device) {
   if (!device.running) return device.exit_code === 0 ? t("web.stopped") : device.running === false && device.exit_code != null ? t("web.exit_code", { value_1: device.exit_code }) : t("web.waiting");
@@ -583,7 +592,7 @@ function renderDevice(device) {
   dataset.dataset.role = "dataset";
   footer.append(start, restart, dataset, settings);
   card.append(header, status);
-  card.append(node("p", "bot-state"), node("p", "metrics-freshness"));
+  card.append(node("p", "bot-state"), node("p", "phase-history"), node("p", "metrics-freshness"));
   card.append(metrics, footer);
   const profile = device.profile;
   if (profile && (Object.keys(profile.settings || {}).length || Object.keys(profile.category_thresholds || {}).length || Object.keys(profile.item_thresholds || {}).length)) card.append(node("div", "profile-indicator", t("web.custom_profile")));
@@ -603,6 +612,7 @@ function metricValues(device) {
     ["treinamentos", t("web.training_runs"), trainings === null ? "—" : count(trainings)],
     ["voos", t("web.flights"), eventMetric(device, "voos")],
     ["reformas", t("web.renovations"), eventMetric(device, "reformas")],
+    ["fase_atual", t("web.current_phase"), duration(metric(device, "fase_atual"))],
     ["battery", t("web.battery"), level === null ? "—" : `${level}%${battery?.charging ? " ↯" : ""}`]
   ];
 }
@@ -642,6 +652,16 @@ function updateDeviceMetrics(card, device) {
   const stateLabel = card.querySelector(".bot-state");
   stateLabel.textContent = botState ? t("web.state_label", { value_1: displayCode("states", botState) }) : "";
   stateLabel.hidden = !botState || !device.running;
+  const phaseHistory = metric(device, "historico_fases");
+  const phaseHistoryLabel = card.querySelector(".phase-history");
+  if (Array.isArray(phaseHistory) && phaseHistory.length) {
+    phaseHistoryLabel.textContent = t("web.phase_history", {
+      values: phaseHistory.slice(-5).reverse().map((entry) => duration(entry.duration)).join(" · ")
+    });
+  } else {
+    phaseHistoryLabel.textContent = t("web.phase_history_empty");
+  }
+  phaseHistoryLabel.hidden = !phaseHistoryLabel.textContent;
   const updatedAt = numeric(metric(device, "updated_at"));
   const age = updatedAt === null ? null : Math.max(0, Math.floor(Date.now() / 1000 - updatedAt));
   const freshness = card.querySelector(".metrics-freshness");
