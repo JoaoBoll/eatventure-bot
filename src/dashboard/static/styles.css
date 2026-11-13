@@ -247,8 +247,9 @@ main { min-width: 0; flex: 1; }
 .status-badge.error { border-color: #78505a; background: #39252e; color: #f6bcc3; }
 .status-badge .mini-dot { width: 5px; height: 5px; background: currentColor; }
 .device-runtime { color: #a6b4c9; font-size: 11px; white-space: nowrap; font-variant-numeric: tabular-nums; }
-.bot-state, .metrics-freshness { margin: 0; padding: 0 18px 12px; font-size: 11px; }
+.bot-state, .phase-history, .metrics-freshness { margin: 0; padding: 0 18px 12px; font-size: 11px; }
 .bot-state { overflow: hidden; color: #b8c7de; text-overflow: ellipsis; white-space: nowrap; }
+.phase-history { color: #8fb4e9; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .metrics-freshness { color: #bcc5d3; }
 .metric-delta { color: #75dca4; }
 .device-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 19px 12px; padding: 18px; border-top: 1px solid #344158; border-bottom: 1px solid #344158; background: #111a27; }

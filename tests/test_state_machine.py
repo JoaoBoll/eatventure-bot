@@ -26,6 +26,7 @@ from core.config import (                         # noqa: E402
     STATE_ENTRY_SETTLE,
     STATE_TIMEOUTS,
     SWIPE_WAITING_TIME,
+    UPGRADE_FOOD_MAX_HOLD,
     UP_FOOD_WAIT,
 )
 from core import state_machine as sm              # noqa: E402
@@ -124,6 +125,29 @@ def test_prioridade_upgrade_vence_food():
 
     assert actions.actions == ["upgrade"], actions.actions
     assert machine.state == sm.UPGRADE, machine.state
+    assert machine.exploration_interval() == machine.exploration_delay
+
+
+def test_fase_mede_apenas_entre_voos():
+
+    machine, actions, clock = build()
+
+    machine.action_cooldown = 0.0
+    machine.action_settle = 0.0
+    machine._enter(sm.RENOVATE)
+    assert machine._act("renovate_click", detection("fly"), sm.NORMAL)
+
+    assert machine.summary()["fase_atual"] == 0
+    assert machine.summary()["historico_fases"] == []
+
+    clock.advance(37.5)
+    machine._enter(sm.RENOVATE)
+    assert machine._act("renovate_click", detection("fly"), sm.NORMAL)
+
+    phase = machine.summary()
+    assert phase["fase_ultima"] == 37.5
+    assert phase["historico_fases"][0]["duration"] == 37.5
+    assert actions.actions == ["renovate_click", "renovate_click"]
 
 
 def test_fechar_vem_antes_do_jogo():
@@ -264,6 +288,13 @@ def test_upgrade_permanece_enquanto_houver_item():
     machine.update([detection("up_upgrade")])
 
     assert actions.actions == ["upgrade_item"], actions.actions
+    assert machine.state == sm.UPGRADE, machine.state
+
+    # Enquanto houver upgrade disponível, os 5 s do estado não podem
+    # devolvê-lo a NORMAL.
+    clock.advance(STATE_TIMEOUTS[sm.UPGRADE] + 0.1)
+    machine.update([detection("up_upgrade")])
+
     assert machine.state == sm.UPGRADE, machine.state
 
     # Sem mais itens: fecha e volta.
@@ -410,7 +441,7 @@ def test_dispensa_em_food_acontece_antes_de_desistir():
     )
 
 
-def test_food_desiste_depois_da_espera():
+def test_food_mantem_press_ate_o_sinal_cinza():
 
     machine, actions, clock = build()
 
@@ -421,11 +452,30 @@ def test_food_desiste_depois_da_espera():
     assert actions.actions == ["upgrade_food"], actions.actions
     assert machine.state == sm.FOOD, machine.state
 
-    # Nenhum up_food novo apareceu.
+    # O indicador confirma que a pressão continua válida.
     clock.advance(UP_FOOD_WAIT + 0.1)
 
+    machine.update([detection("while_up_food")])
+
+    assert machine.state == sm.FOOD, machine.state
+
+    machine.update([detection("gray_max")])
+
+    assert actions.actions[-1] == "gray_max", actions.actions
+    assert machine.state == sm.NORMAL, machine.state
+
+
+def test_food_solto_no_limite_de_seguranca():
+
+    machine, actions, clock = build()
+
+    machine._enter(sm.FOOD)
+    machine.update([detection("up_food")])
+
+    clock.advance(UPGRADE_FOOD_MAX_HOLD + 0.1)
     machine.update([])
 
+    assert actions.actions[-1] == "release_food_press", actions.actions
     assert machine.state == sm.NORMAL, machine.state
 
 
@@ -545,7 +595,7 @@ def test_achar_algo_adia_a_exploracao_sem_cancelar():
 
     clock.advance(machine.exploration_delay + 0.1)
 
-    machine.update([detection("box")])
+    machine.update([detection("delivery")])
 
     # No frame em que achou, não rola.
     assert not swipes_de(actions), actions.calls
@@ -625,6 +675,8 @@ def test_achar_algo_nao_zera_o_ciclo_de_varredura():
 
     machine.update([detection("box")])
 
+    assert machine.exploration_interval() == machine.exploration_delay
+
     assert machine.swipe_count == contagem, (
         f"a contagem voltou para {machine.swipe_count} — o "
         f"ciclo zerou ao achar algo"
@@ -633,7 +685,7 @@ def test_achar_algo_nao_zera_o_ciclo_de_varredura():
     assert machine.swipe_direction == direcao
 
     # O próximo swipe CONTINUA a volta.
-    clock.advance(EXPLORATION_DELAY_AFTER_ACTION + 0.1)
+    clock.advance(machine.exploration_delay + 0.1)
 
     machine.update([])
 
@@ -664,7 +716,7 @@ def test_varredura_fecha_a_volta_e_inverte_indefinidamente():
 
         machine.update([detection("box")])
 
-        clock.advance(EXPLORATION_DELAY_AFTER_ACTION + 0.1)
+        clock.advance(machine.exploration_delay + 0.1)
 
         machine.update([])
 
@@ -778,6 +830,35 @@ def test_up_food_faz_o_mesmo_em_normal_e_em_food():
     machine.update([detection("up_food")])
 
     assert actions.actions == ["upgrade_food"], actions.actions
+
+
+def test_food_prioriza_sinal_cinza_antes_do_up_food():
+    """O classificador pode devolver ambos; cinza precisa liberar o toque."""
+
+    machine, actions, _ = build()
+
+    machine._enter(sm.FOOD)
+    machine.update([
+        detection("up_food"),
+        detection("gray_coin"),
+    ])
+
+    assert actions.actions == ["gray_coin"], actions.actions
+    assert machine.state == sm.NORMAL, machine.state
+
+
+def test_food_troca_o_filtro_apos_iniciar_a_pressao():
+
+    machine, _, _ = build()
+
+    machine._enter(sm.FOOD)
+    assert machine.wanted_categories() == ["up_food"]
+
+    machine.update([detection("up_food")])
+
+    assert machine.wanted_categories() == [
+        "gray_max", "gray_coin", "while_up_food",
+    ]
 
 
 def test_up_food_perde_para_o_close():

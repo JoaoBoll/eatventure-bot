@@ -29,11 +29,13 @@ logger = log.get("action")
 CLICK = "click"        # toque no centro da detecção
 REPEAT = "repeat"      # vários toques
 PRESS = "press"        # toque longo
+PRESS_UNTIL_GRAY = "press_until_gray"  # toque contínuo, liberado pelo estado visual
+RELEASE = "release"    # solta um toque contínuo sem acionar outro alvo
 DISMISS = "dismiss"    # tap em ponto fixo
 HOLD = "hold"          # toque mantido em ponto fixo
 SCROLL = "scroll"      # rola tela até fim
 
-SEM_DETECCAO = {DISMISS, HOLD, SCROLL}  # Ações sem detecção
+SEM_DETECCAO = {DISMISS, HOLD, SCROLL, RELEASE}  # Ações sem detecção
 
 
 # Tabela de ações: nome -> comportamento (deduplicação de handlers)
@@ -56,7 +58,8 @@ ACTION_TABLE = {
 
     "upgrade_item": REPEAT,
 
-    "upgrade_food": PRESS,
+    "upgrade_food": PRESS_UNTIL_GRAY,
+    "release_food_press": RELEASE,
 
     "gray_max": DISMISS,  # Fechar painel indesejado com tap
     "dismiss": HOLD,      # Idem mas com toque mantido
@@ -93,6 +96,7 @@ class ActionManager:
 
         # Quando a última ação terminou (settle é contado daqui, não da submissão)
         self.last_finished_at = 0.0
+        self._held_touch = None
 
     def start(self):
 
@@ -134,6 +138,7 @@ class ActionManager:
 
     def stop(self):
 
+        self._release_held_touch()
         self.running = False
 
         # Destrava o worker se estiver esperando na fila.
@@ -265,6 +270,11 @@ class ActionManager:
         if kind not in SEM_DETECCAO and detection is None:
             return False
 
+        if kind == PRESS_UNTIL_GRAY:
+            with self.busy_lock:
+                if self._held_touch is not None:
+                    return False
+
         return self._submit(
             ("action", action, kind, detection)
         )
@@ -340,6 +350,7 @@ class ActionManager:
 
         if job_type == "swipe":
 
+            self._release_held_touch()
             self._swipe(name)
 
             return
@@ -361,6 +372,18 @@ class ActionManager:
         else:
 
             x, y = 0, 0
+
+        if kind == PRESS_UNTIL_GRAY:
+
+            self._press_until_gray(name, x, y)
+
+            return
+
+        if kind == RELEASE:
+            self._release_held_touch()
+            return
+
+        self._release_held_touch()
 
         if kind == CLICK:
 
@@ -446,6 +469,30 @@ class ActionManager:
             y,
             duration=UPGRADE_FOOD_PRESS,
         )
+
+    def _press_until_gray(self, name, x, y):
+        """Mantém o dedo no upgrade; a visão continua livre para detectar cinza."""
+
+        logger.info(
+            t("messages.press_until_gray"),
+            name,
+            x,
+            y,
+        )
+
+        if not self.android.touch_down(x, y):
+            return
+
+        with self.busy_lock:
+            self._held_touch = (x, y)
+
+    def _release_held_touch(self):
+        with self.busy_lock:
+            held_touch = self._held_touch
+            self._held_touch = None
+
+        if held_touch is not None:
+            self.android.touch_up(*held_touch)
 
     def _scroll_bottom(self, name):
         """Sequência de swipes até o fim da tela. Roda na thread de ação, não bloqueia o loop principal."""

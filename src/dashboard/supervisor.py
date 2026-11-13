@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 import hashlib
 import ipaddress
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -29,7 +30,8 @@ logger = log.get("dashboard.supervisor")
 _ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _HOSTNAME = re.compile(r"(?=.{1,253}\Z)[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?\Z")
 _MAX_STATUS_BYTES = 128 * 1024
-_MAX_REPORT_BYTES = 4096
+_MAX_REPORT_BYTES = 16 * 1024
+_PHASE_HISTORY_LIMIT = 100
 MAX_LOG_LINES = 500
 MAX_LOG_BYTES = 1024 * 1024
 MAX_LOG_LINE_BYTES = 4096
@@ -400,6 +402,7 @@ class _Run:
     template_snapshots: dict = field(default_factory=dict)
     report_base: dict = field(default_factory=dict)
     dataset_base: dict = field(default_factory=dict)
+    phase_history_seen: set = field(default_factory=set)
 
 
 class BotSupervisor:
@@ -437,13 +440,16 @@ class BotSupervisor:
         report = self._reports.get(device_id)
         if report is not None:
             return report
-        report = {"voos": 0, "reformas": 0}
+        report = {"voos": 0, "reformas": 0, "historico_fases": []}
         path = self._report_path(device_id)
         try:
             if path.stat().st_size <= _MAX_REPORT_BYTES:
                 data = json.loads(path.read_text(encoding="utf-8"))
                 if isinstance(data, dict) and data.get("device_id") == device_id:
                     for key in report:
+                        if key == "historico_fases":
+                            report[key] = self._phase_history(data.get(key))
+                            continue
                         value = data.get(key, 0)
                         if type(value) is int and value >= 0:
                             report[key] = value
@@ -480,6 +486,29 @@ class BotSupervisor:
         value = metrics.get(key, 0)
         return value if type(value) is int and value >= 0 else 0
 
+    @staticmethod
+    def _phase_history(entries):
+        if not isinstance(entries, list):
+            return []
+        history = []
+        for entry in entries[-_PHASE_HISTORY_LIMIT:]:
+            if not isinstance(entry, dict):
+                continue
+            phase_id = entry.get("id")
+            duration = entry.get("duration")
+            ended_at = entry.get("ended_at")
+            if (
+                type(phase_id) is int and phase_id > 0
+                and type(duration) in (int, float) and math.isfinite(duration) and duration >= 0
+                and type(ended_at) in (int, float) and math.isfinite(ended_at) and ended_at > 0
+            ):
+                history.append({
+                    "id": phase_id,
+                    "duration": duration,
+                    "ended_at": ended_at,
+                })
+        return history
+
     def _sample_count(self, resolution):
         if not re.fullmatch(r"[1-9]\d*x[1-9]\d*", resolution):
             return 0
@@ -507,6 +536,7 @@ class BotSupervisor:
             metrics.update({
                 "voos_total": report["voos"], "voos_delta": 0,
                 "reformas_total": report["reformas"], "reformas_delta": 0,
+                "historico_fases": list(report["historico_fases"]),
             })
             return
         changed = False
@@ -518,6 +548,18 @@ class BotSupervisor:
                 changed = True
             metrics[f"{key}_total"] = report[key]
             metrics[f"{key}_delta"] = session_total
+        summary = metrics.get("summary")
+        phase_history = self._phase_history(
+            summary.get("historico_fases") if isinstance(summary, dict) else None
+        )
+        for entry in phase_history:
+            if entry["id"] in run.phase_history_seen:
+                continue
+            run.phase_history_seen.add(entry["id"])
+            report["historico_fases"].append(entry)
+            changed = True
+        del report["historico_fases"][:-_PHASE_HISTORY_LIMIT]
+        metrics["historico_fases"] = list(report["historico_fases"])
         if changed:
             self._save_report(device_id, report)
 
@@ -1173,7 +1215,7 @@ class BotSupervisor:
         folder = self.root / "src" / "vision" / "templates" / "default" / category
         with self._lock:
             folder.mkdir(parents=True, exist_ok=True)
-            file_name = normalized_name or "item"
+            file_name = normalized_name or ("item" if category == "food" else category)
             numbered = re.compile(
                 rf"^(?:\d+x\d+_)?{re.escape(file_name)}_(\d+)\.png$",
                 re.IGNORECASE,
