@@ -81,6 +81,12 @@ SCRCPY_SERVER_VERSION = None if _installed_server is not None else "4.1"
 # 0 deixa o ADB reservar uma porta livre para cada processo.
 SCRCPY_PORT = 0
 SCRCPY_DEVICE_JAR = "/data/local/tmp/eatventure-server.jar"
+# O encoder padrÃ£o do Redmi 23073RPBFG aplica uma reduÃ§Ã£o mesmo sem
+# max_size. Este encoder preserva os pixels nativos do display. Defina vazio
+# no ambiente para voltar Ã  escolha automÃ¡tica do scrcpy.
+SCRCPY_VIDEO_ENCODER = os.environ.get(
+    "SCRCPY_VIDEO_ENCODER", "c2.android.avc.encoder"
+).strip() or None
 
 
 # ==== ADB ====
@@ -150,6 +156,8 @@ SCRCPY_EXTRA_ARGS = [
     "--capture-orientation", "90",
     "--no-audio"
 ]
+if SCRCPY_VIDEO_ENCODER:
+    SCRCPY_EXTRA_ARGS.extend(("--video-encoder", SCRCPY_VIDEO_ENCODER))
 
 SELECTOR_HEIGHT_FRACTION = 0.80
 SELECTOR_WIDTH_FRACTION = 0.95

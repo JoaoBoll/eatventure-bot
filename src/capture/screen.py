@@ -25,6 +25,7 @@ from core.config import (
     SCRCPY_PATH,
     SCRCPY_SERVER_PATH,
     SCRCPY_SERVER_VERSION,
+    SCRCPY_VIDEO_ENCODER,
     ADB_PATH,
 )
 
@@ -501,6 +502,8 @@ class ScreenCapture:
             options.append("video_encoder=c2.android.avc.encoder")
         if version >= (2, 0):
             options.extend((f"scid={self.scid:08x}", "audio=false", "video_codec=h264"))
+        if SCRCPY_VIDEO_ENCODER:
+            options.append(f"video_encoder={SCRCPY_VIDEO_ENCODER}")
         raw_option = "raw_stream" if version >= (2, 1) else "raw_video_stream"
         options.append(f"{raw_option}=true")
 

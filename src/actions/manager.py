@@ -84,6 +84,7 @@ class ActionManager:
 
         # Detecção em frame coords, toque em device coords (podem diferir se stream reduzido)
         self.device_size = None
+        self.physical_size = None
         self.frame_size = None
 
         self.queue = queue.Queue(maxsize=1)
@@ -104,6 +105,7 @@ class ActionManager:
             return
 
         self.device_size = self.android.get_screen_size()
+        self.physical_size = self.android.get_physical_screen_size()
 
         if self.device_size:
 

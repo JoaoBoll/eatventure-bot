@@ -118,17 +118,19 @@ class AndroidActions:
 
         return round(level * 100.0 / scale), carregando
 
-    def get_screen_size(self):
-        """Resolução real do device ('wm size'), usada para converter coordenada de frame em toque quando o stream vem reduzido."""
+    def get_screen_size(self, *, physical=False):
+        """Resolução do Android em uso ou, opcionalmente, a física do painel."""
 
         output = self._run("shell", "wm", "size")
 
         if not output:
             return None
 
-        # Prefere "Override size" quando existe: é a
-        # resolução em uso.
-        match = None
+        # A resolução efetiva é a correta para converter toques. A física
+        # é mantida separada para telemetria: alguns aparelhos usam zoom de
+        # exibição e o stream passa a ter menos pixels lógicos.
+        physical_match = None
+        override_match = None
 
         for line in output.splitlines():
 
@@ -140,18 +142,24 @@ class AndroidActions:
             if not found:
                 continue
 
-            match = found
+            if "Physical" in line:
+                physical_match = found
+            elif "Override" in line:
+                override_match = found
 
-            if "Override" in line:
-                break
-
-        if not match:
+        match = physical_match if physical else (override_match or physical_match)
+        if match is None:
             return None
 
         return (
             int(match.group(1)),
             int(match.group(2)),
         )
+
+    def get_physical_screen_size(self):
+        """Resolução nativa do painel, sem o zoom lógico do Android."""
+
+        return self.get_screen_size(physical=True)
 
     def shell(self, *command, timeout=10.0):
         """Executa comando ADB shell sem expor a implementação interna."""

@@ -309,11 +309,15 @@ def run_loop(
 
         last_version = version
 
-        # Resolução real do frame: o VisionWorker devolve as detecções
-        # nesse espaço, e é isso que faz a conversão frame->device ser
-        # exata em qualquer resolução de device (não só 1080x2400).
+        # O frame pode vir reduzido pelo encoder/zoom do Android. A resolução
+        # exibida no painel deve ser a física do aparelho; o tamanho do frame
+        # continua sendo usado internamente para detecção e conversão de toque.
         altura_frame, largura_frame = frame.shape[:2]
-        current_resolution = f"{largura_frame}x{altura_frame}"
+        resolution_width, resolution_height = actions.physical_size or (
+            largura_frame,
+            altura_frame,
+        )
+        current_resolution = f"{resolution_width}x{resolution_height}"
 
         actions.set_frame_size(largura_frame, altura_frame)
 
