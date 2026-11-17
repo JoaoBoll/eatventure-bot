@@ -10,13 +10,20 @@ from pathlib import Path
 
 LOCALES = Path(__file__).resolve().parents[1] / "locales"
 DEFAULT_LOCALE = "pt-BR"
-SUPPORTED_LOCALES = ("pt-BR", "en-US")
+SUPPORTED_LOCALES = ("pt-BR", "en-US", "fr-FR")
 _request_locale = ContextVar("eatventure_locale", default=None)
 
 
 def normalize_locale(value):
     value = str(value or "").replace("_", "-").lower()
-    return {"en": "en-US", "en-us": "en-US", "pt": "pt-BR", "pt-br": "pt-BR"}.get(value, DEFAULT_LOCALE)
+    return {
+        "en": "en-US",
+        "en-us": "en-US",
+        "fr": "fr-FR",
+        "fr-fr": "fr-FR",
+        "pt": "pt-BR",
+        "pt-br": "pt-BR",
+    }.get(value, DEFAULT_LOCALE)
 
 
 def locale():
@@ -32,7 +39,7 @@ def locale_scope(language):
         _request_locale.reset(token)
 
 
-@lru_cache(maxsize=2)
+@lru_cache(maxsize=len(SUPPORTED_LOCALES))
 def messages(language):
     return json.loads((LOCALES / f"{normalize_locale(language)}.json").read_text(encoding="utf-8"))
 

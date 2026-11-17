@@ -44,18 +44,20 @@
     "positional_arguments": "argumentos posicionais",
     "options": "opções",
     "help": "mostra esta ajuda e sai",
-    "locale_help": "idioma das mensagens (pt-BR ou en-US)",
-    "catalog_valid": "Catálogos válidos: {count} chaves em pt-BR e en-US."
+    "locale_help": "idioma das mensagens (pt-BR, en-US ou fr-FR)",
+    "catalog_valid": "Catálogos válidos: {count} chaves em pt-BR, en-US e fr-FR."
   },
   "web": {
     "brightness": "Brilho",
     "language_pt_code": "PT",
     "language_en_code": "EN",
+    "language_fr_code": "FR",
     "connecting": "Conectando ao servidor…",
     "document_title": "EatVenture · Controle",
     "invalid_token": "Token de acesso inválido.",
     "language_en_us": "Inglês",
     "language_pt_br": "Português",
+    "language_fr_fr": "Francês",
     "logs_empty": "Nenhum log disponível. Inicie o bot para acompanhar a saída.",
     "no_changes": "Sem alterações pendentes",
     "no_log_download": "Ainda não há linhas para baixar.",

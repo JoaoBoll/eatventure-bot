@@ -32,7 +32,7 @@ class ArgumentParser(argparse.ArgumentParser):
         self._optionals.title = t("terminal.options")
         if add_help:
             self.add_argument("-h", "--help", action="help", help=t("terminal.help"))
-        self.add_argument("--locale", choices=(*SUPPORTED_LOCALES, "pt", "en"), help=t("terminal.locale_help"))
+        self.add_argument("--locale", choices=(*SUPPORTED_LOCALES, "pt", "en", "fr"), help=t("terminal.locale_help"))
 
     def parse_known_args(self, args=None, namespace=None):
         configure_locale(args)

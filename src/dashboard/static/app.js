@@ -111,9 +111,13 @@ function displayCode(surface, code) {
   return Object.hasOwn(messages[surface] || {}, code) ? t(`${surface}.${code}`) : code;
 }
 
+function normalizeLocale(value) {
+  return ["pt-BR", "en-US", "fr-FR"].includes(value) ? value : "pt-BR";
+}
+
 function readLocale() {
-  try { const value = localStorage.getItem(localeKey) || document.documentElement.lang; return value === "en-US" ? "en-US" : "pt-BR"; }
-  catch { return document.documentElement.lang || "pt-BR"; }
+  try { return normalizeLocale(localStorage.getItem(localeKey) || document.documentElement.lang); }
+  catch { return normalizeLocale(document.documentElement.lang); }
 }
 
 function renderLanguageSwitch() {
@@ -124,7 +128,7 @@ function renderLanguageSwitch() {
 
 async function setLocale(value) {
   const previous = document.documentElement.lang;
-  locale = value === "en-US" ? "en-US" : "pt-BR";
+  locale = normalizeLocale(value);
   try {
     if (!await loadMessages()) return;
   } catch {
@@ -1845,7 +1849,7 @@ function appendLogLines(lines) {
       ? new TextDecoder().decode(bytes.subarray(0, MAX_LOG_LINE_BYTES - 3), { stream: true }) + "…"
       : clipped;
     const translations = {};
-    for (const language of ["pt-BR", "en-US"]) {
+    for (const language of ["pt-BR", "en-US", "fr-FR"]) {
       if (typeof line.translations?.[language] === "string") {
         translations[language] = new TextDecoder().decode(encoder.encode(line.translations[language]).subarray(0, MAX_LOG_LINE_BYTES), { stream: true });
       }
