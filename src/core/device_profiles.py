@@ -43,6 +43,7 @@ SETTING_SPECS = {
     "vision_filter_by_state": _spec("VISION_FILTER_BY_STATE", t("messages.filter_by_game_state"), t("messages.detection"), "bool"),
     "vision_interval": _spec("VISION_INTERVAL", t("messages.detection_interval"), t("messages.detection"), "float", 0.01, 10.0, 0.01),
     "capture_max_fps": _spec("CAPTURE_MAX_FPS", t("messages.fps_limit"), t("messages.capture"), "int", 1, 120, 1),
+    "capture_software_encoder": _spec("CAPTURE_SOFTWARE_ENCODER", t("messages.software_video_encoder"), t("messages.capture"), "bool"),
     "learn_resolution_templates": _spec("LEARN_RESOLUTION_TEMPLATES", t("messages.learn_resolution_templates"), t("messages.templates"), "bool"),
     "template_refresh_interval": _spec("TEMPLATE_REFRESH_INTERVAL", t("messages.learning_interval"), t("messages.templates"), "float", 0.1, 3600.0, 0.1),
     "templates_watch_interval": _spec("TEMPLATES_WATCH_INTERVAL", t("messages.check_for_new_templates"), t("messages.templates"), "float", 0.0, 3600.0, 0.5),

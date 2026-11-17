@@ -18,6 +18,7 @@ from core.metrics import RateMeter
 from core.config import (
     CAPTURE_CONNECT_TIMEOUT,
     CAPTURE_MAX_FPS,
+    CAPTURE_SOFTWARE_ENCODER,
     CAPTURE_START_TIMEOUT,
     SCRCPY_DEVICE_JAR,
     SCRCPY_PORT,
@@ -496,6 +497,8 @@ class ScreenCapture:
 
         version = self._resolve_server_version()
         options = ["tunnel_forward=true", "control=false", "cleanup=false"]
+        if CAPTURE_SOFTWARE_ENCODER:
+            options.append("video_encoder=c2.android.avc.encoder")
         if version >= (2, 0):
             options.extend((f"scid={self.scid:08x}", "audio=false", "video_codec=h264"))
         raw_option = "raw_stream" if version >= (2, 1) else "raw_video_stream"

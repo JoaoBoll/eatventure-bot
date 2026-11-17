@@ -47,6 +47,8 @@
         <section class="kpi-grid" aria-label="{{web.operation_summary}}" data-i18n-aria-label="web.operation_summary">
           <article class="kpi"><span class="kpi-label"><span class="mini-dot green"></span><span id="kpi-running-label" data-i18n="web.running_bots">{{web.running_bots}}</span></span><strong id="kpi-running">—</strong><span id="kpi-running-detail" class="kpi-detail" data-i18n="web.waiting_data">{{web.waiting_data}}</span></article>
           <article class="kpi"><span id="kpi-connected-label" class="kpi-label" data-i18n="web.connected_devices">{{web.connected_devices}}</span><strong id="kpi-connected">—</strong><span id="kpi-connected-detail" class="kpi-detail" data-i18n="web.available_via_adb">{{web.available_via_adb}}</span></article>
+          <button class="kpi kpi-button" id="dataset-overview-open" type="button"><span class="kpi-label" data-i18n="web.data_collected">{{web.data_collected}}</span><strong id="kpi-data">—</strong><span class="kpi-detail" data-i18n="web.view_details">{{web.view_details}}</span></button>
+          <button class="kpi kpi-button" id="storage-overview-open" type="button"><span class="kpi-label" data-i18n="web.storage_used">{{web.storage_used}}</span><strong id="kpi-storage">—</strong><span class="kpi-detail" data-i18n="web.view_details">{{web.view_details}}</span></button>
         </section>
         <section class="device-section" aria-label="{{web.your_devices}}" data-i18n-aria-label="web.your_devices">
           <div class="section-toolbar"><div class="search-box"><span aria-hidden="true">⌕</span><input id="search" type="search" aria-label="{{web.search_devices}}" placeholder="{{web.search_devices_placeholder}}" data-i18n-aria-label="web.search_devices" data-i18n-placeholder="web.search_devices_placeholder"></div><select id="status-filter" aria-label="{{web.filter_status}}" data-i18n-aria-label="web.filter_status"><option value="all" data-i18n="web.all_statuses">{{web.all_statuses}}</option><option value="running" data-i18n="web.running">{{web.running}}</option><option value="ready" data-i18n="web.ready">{{web.ready}}</option><option value="offline" data-i18n="web.disconnected">{{web.disconnected}}</option></select><span id="device-count" class="muted" data-i18n="web.zero_devices">{{web.zero_devices}}</span><button id="connect-open" class="button primary compact connect-button" type="button"><span aria-hidden="true">＋</span> <span data-i18n="web.connect_android_label">{{web.connect_android_label}}</span></button></div>
@@ -58,6 +60,8 @@
       </div>
     </main>
   </div>
+
+  <dialog id="overview-dialog" class="overview-dialog" aria-labelledby="overview-title"><header class="modal-heading"><h2 id="overview-title"></h2><button id="overview-close" class="icon-button" type="button" aria-label="{{web.close_connection}}" data-i18n-aria-label="web.close_connection">×</button></header><div id="overview-content" aria-live="polite"></div></dialog>
 
   <dialog id="training-dialog" class="training-dialog" aria-labelledby="training-title">
     <header class="training-heading modal-heading">
@@ -123,7 +127,7 @@
   </dialog>
 
   <dialog id="device-dialog" class="device-dialog" aria-labelledby="detail-title">
-    <div class="drawer-heading"><div><p class="eyebrow" data-i18n="web.device_control">{{web.device_control}}</p><h2 id="detail-title" data-i18n="web.device">{{web.device}}</h2><p id="detail-serial" class="mono muted"></p></div><button id="detail-close" class="icon-button" aria-label="{{web.close_details}}" type="button" data-i18n="web.close_symbol" data-i18n-aria-label="web.close_details">{{web.close_symbol}}</button></div>
+    <div class="drawer-heading"><div><p class="eyebrow" data-i18n="web.device_control">{{web.device_control}}</p><h2 id="detail-title" data-i18n="web.device">{{web.device}}</h2></div><div class="drawer-heading-actions"><div class="brightness-control"><label for="detail-brightness" data-i18n="web.brightness">{{web.brightness}}</label><input id="detail-brightness" type="range" min="0" max="255" disabled><output id="detail-brightness-value" for="detail-brightness">—</output></div><button id="detail-close" class="icon-button" aria-label="{{web.close_details}}" type="button" data-i18n="web.close_symbol" data-i18n-aria-label="web.close_details">{{web.close_symbol}}</button></div></div>
     <div id="detail-status" class="detail-status"></div>
     <div class="tabs" role="tablist" aria-label="{{web.device_details}}" data-i18n-aria-label="web.device_details"><button id="tab-settings" class="tab active" role="tab" aria-controls="panel-settings" aria-selected="true" data-tab="settings" data-i18n="web.settings">{{web.settings}}</button><button id="tab-items" class="tab" role="tab" aria-controls="panel-items" aria-selected="false" data-tab="items" tabindex="-1" data-i18n="web.items_and_thresholds">{{web.items_and_thresholds}}</button><button id="tab-vision" class="tab" role="tab" aria-controls="panel-vision" aria-selected="false" data-tab="vision" tabindex="-1" data-i18n="web.vision_tab">{{web.vision_tab}}</button><button id="tab-logs" class="tab" role="tab" aria-controls="panel-logs" aria-selected="false" data-tab="logs" tabindex="-1" data-i18n="web.logs">{{web.logs}}</button></div>
     <div class="drawer-body">

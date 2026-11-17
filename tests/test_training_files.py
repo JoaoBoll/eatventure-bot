@@ -117,6 +117,25 @@ class TrainingFilesTests(unittest.TestCase):
         self.assertEqual(warnings["sem_imagem"], 2)
         self.assertTrue(outside_image.exists())
 
+    def test_reservation_moves_samples_to_persistent_post_training_test(self):
+        image = self.fake_image("reserved")
+        self.append_record("reserved", image)
+        records, _ = training_files.snapshot_records(self.root)
+
+        result = training_files.reserve_post_training_test(
+            self.root, "1080x2400", records, 1,
+        )
+        reserved, warnings = training_files.snapshot_post_training_test(
+            self.root, "1080x2400",
+        )
+
+        self.assertEqual(result["reserved"], 1)
+        self.assertEqual(warnings, {"invalidas": 0, "sem_imagem": 0})
+        self.assertEqual([record["id"] for record in reserved], ["reserved"])
+        self.assertEqual(self.read_records(), [])
+        self.assertFalse(image.exists())
+        self.assertTrue((self.root / "post_training_test" / "1080x2400" / "images" / "reserved.dat").exists())
+
     def test_cleanup_rejects_image_and_index_paths_outside_dataset(self):
         outside_shard = self.base / "outside"
         outside_image = self.fake_image("outside", outside_shard)

@@ -15,8 +15,10 @@ from pathlib import Path
 DATA_DIRNAME = "data"
 INDEX_NAME = "samples.jsonl"
 IMAGES_DIRNAME = "images"
-REPLAY_ROWS = 12_000
+REPLAY_ROWS = 30_000
 MIN_FRESH_TARGETS = 10
+POST_TRAINING_TEST_DIRNAME = "post_training_test"
+POST_TRAINING_TEST_SIZE = 200
 
 
 def confirmed_training_sample(record):

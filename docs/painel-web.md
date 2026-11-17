@@ -66,8 +66,8 @@ Em **Configurações → Modo de reconhecimento**, o padrão é **IA contínua l
 rótulos confirmados por template, agenda treino local e ativa apenas modelos
 validados; sem publicação aprovada, segue usando templates. Em **Treinamento**,
 configure também o teto de vetores de replay por resolução e quantas gerações
-de modelo ficam guardadas. Assim imagens brutas são limpas após promoção e a
-memória de treino permanece limitada.
+de modelo ficam guardadas. Após a promoção, imagens brutas usadas são limpas;
+o replay é limitado, enquanto o histórico de vetores cresce sem limite automático.
 
 **Templates localizam; IA reconhece** usa os templates para propor regiões e
 o modelo para reconhecer os itens. **Cor e contorno** usa o proposer experimental

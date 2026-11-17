@@ -92,7 +92,7 @@ logger = log.get("main")
 
 def start_scrcpy(device_id):
 
-    window_title = f"EatVenture ({device_id})"
+    window_title = "EatVenture"
 
     logger.info(t("terminal.starting", title=window_title))
 
@@ -114,7 +114,7 @@ def start_scrcpy(device_id):
         errors="replace",
     )
 
-    process.output_thread = log.start_process_output(process, "scrcpy")
+    process.output_thread = log.start_process_output(process, "scrcpy", (device_id,))
     return process
 
 

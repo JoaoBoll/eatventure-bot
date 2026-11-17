@@ -12,7 +12,6 @@ from core.i18n import t
 def _alive(pid):
     return process_alive(pid)
 
-
 def _claim_pid(path):
     path.parent.mkdir(parents=True, exist_ok=True)
     try:

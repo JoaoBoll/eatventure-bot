@@ -158,7 +158,7 @@ class TrainingRun:
         artifacts = self.data.get("artifacts", {})
         parameter_names = (
             "kind", "resolution", "trees", "seed", "jobs", "negatives",
-            "split", "test_ratio", "outcome",
+            "split", "test_ratio", "post_training_test_size", "outcome",
         )
         self.data = {
             key: self.data[key]
@@ -182,6 +182,7 @@ class TrainingRun:
                 "class_metrics": evaluation.get("class_metrics", {}),
                 "baselines": evaluation.get("baselines", {}),
                 "split": evaluation.get("split", {}),
+                "post_training_test": evaluation.get("post_training_test", {}),
             },
             "extraction": self.data.get("extraction", {}),
             "model": {

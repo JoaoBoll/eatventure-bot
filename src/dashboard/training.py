@@ -17,7 +17,7 @@ import uuid
 from core import config, log
 from core.i18n import locale, t
 from dataset.layout import (
-    INDEX_NAME, MIN_FRESH_TARGETS, REPLAY_ROWS, automatic_minimum,
+    INDEX_NAME, MIN_FRESH_TARGETS, POST_TRAINING_TEST_SIZE, REPLAY_ROWS, automatic_minimum,
     confirmed_training_sample, record_resolution, shard_roots,
 )
 from dataset.training_files import trained_sample_ids
@@ -61,6 +61,7 @@ class TrainingManager:
         self._logs = deque(maxlen=200)
         self._last_check = None
         self._scan_error = None
+        self._rejected_inputs = {}
         defaults = {
             "enabled": config.AI_AUTO_TRAIN,
             "training_allowed": True,
@@ -268,7 +269,7 @@ class TrainingManager:
             raise ValueError(t("web.training_invalid_request"))
         group = next((group for group in self.catalog(refresh=True)["resolutions"] if group["resolution"] == resolution), None)
         available = group["available"] if group else 0
-        if min(available, limit or available) < 20:
+        if min(available, limit or available) < 20 + POST_TRAINING_TEST_SIZE:
             raise ValueError(t("web.training_not_enough_samples"))
         with self._condition:
             if self._closing:
@@ -347,8 +348,9 @@ class TrainingManager:
                 try:
                     groups = self.catalog(refresh=True)["resolutions"]
                     group = next((group for group in groups
-                                  if group["pending"] >= automatic_minimum(self.dataset, group["resolution"], settings["min_samples"])
-                                  and group.get("fresh_targets", 0) >= MIN_FRESH_TARGETS), None)
+                                  if group["pending"] >= automatic_minimum(self.dataset, group["resolution"], settings["min_samples"]) + POST_TRAINING_TEST_SIZE
+                                  and group.get("fresh_targets", 0) >= MIN_FRESH_TARGETS
+                                  and self._rejected_inputs.get(group["resolution"]) != self._input_signature(group, settings)), None)
                     with self._condition:
                         self._scan_error = None
                         if self._closing or self._pending is not None or group is None or not self._settings["training_allowed"] or not self._settings["enabled"]:
@@ -450,9 +452,19 @@ class TrainingManager:
             with self._catalog_lock:
                 self._catalog_at = 0.0
             try:
-                self._finish_report(job)
-            except OSError:
+                rejected = self._finish_report(job)
+                if job["automatic"] and rejected:
+                    groups = self.catalog(refresh=True)["resolutions"]
+                    group = next((item for item in groups if item["resolution"] == job["resolution"]), None)
+                    if group is not None:
+                        self._rejected_inputs[job["resolution"]] = self._input_signature(group, settings)
+            except (OSError, RuntimeError):
                 logger.exception(t("web.training_report_failed"))
+
+    @staticmethod
+    def _input_signature(group, settings):
+        return (group["pending"], group.get("fresh_targets", 0), settings["trees"],
+                settings["replay_rows"], settings["batch_size"], settings["min_samples"])
 
     def _finish_report(self, job):
         for path in sorted((self.root / "IA/training_reports").glob("*.json"), reverse=True)[:30]:
@@ -462,7 +474,7 @@ class TrainingManager:
             if report.get("status") == "success":
                 with self._condition:
                     job["status"] = "success"
-                return
+                return report.get("model_activated") is False
             if report.get("status") in {"running", "publishing"} or job["status"] == "cancelled":
                 report.update(status=job["status"], finished_at_utc=job["finished_at"])
                 temporary = None

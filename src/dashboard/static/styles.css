@@ -210,6 +210,14 @@ main { min-width: 0; flex: 1; }
 .kpi-label { display: flex; min-height: 18px; align-items: center; gap: 8px; color: #bac6d8; font-size: 12px; }
 .kpi > strong { display: block; margin: 17px 0 10px; font-size: 32px; font-weight: 650; line-height: 1; letter-spacing: -.035em; font-variant-numeric: tabular-nums; }
 .kpi-detail { color: #99a8bc; font-size: 11px; }
+.kpi-button { width: 100%; color: var(--text); text-align: left; cursor: pointer; font: inherit; }
+.kpi-button:hover { border-color: var(--primary); }
+.overview-dialog { width: min(680px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); margin: auto; padding: 24px; overflow: auto; border-radius: 14px; }
+.overview-dialog .modal-heading { margin-bottom: 20px; }
+.overview-group { padding: 15px 0; border-top: 1px solid var(--border); }
+.overview-group h3 { margin-bottom: 10px; }
+.overview-row { display: flex; justify-content: space-between; gap: 20px; padding: 5px 0; font-size: 13px; }
+.overview-note { color: var(--muted); font-size: 12px; line-height: 1.5; }
 
 .device-section { overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius); background: #121923; }
 .section-toolbar { display: flex; align-items: center; gap: 12px; padding: 18px 20px; }
@@ -286,6 +294,11 @@ dialog::backdrop { background: #05080dbf; backdrop-filter: blur(5px); }
 .device-dialog[open] { display: flex; flex-direction: column; }
 .drawer-heading { display: flex; justify-content: space-between; gap: 18px; padding: 24px 28px 12px; }
 .drawer-heading > div { min-width: 0; }
+.drawer-heading-actions { display: flex; align-items: flex-start; gap: 16px; }
+.brightness-control { display: grid; grid-template-columns: minmax(70px, 130px) auto; align-items: center; gap: 4px 8px; font-size: 12px; }
+.brightness-control label { grid-column: 1 / -1; }
+.brightness-control input { width: 100%; }
+.brightness-control output { min-width: 3em; text-align: right; }
 .drawer-heading .eyebrow { margin-bottom: 8px; font-size: 10px; }
 .drawer-heading h2 { margin-bottom: 7px; font-size: 24px; overflow-wrap: anywhere; }
 .drawer-heading p:last-child { margin-bottom: 0; overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
@@ -347,8 +360,6 @@ dialog::backdrop { background: #05080dbf; backdrop-filter: blur(5px); }
 .drawer-footer-actions { display: flex; gap: 8px; }
 .drawer-footer .button { min-height: 38px; padding: 9px 13px; font-size: 12px; }
 
-.device-dialog:has(#tab-vision[aria-selected="true"]) .drawer-footer,
-.device-dialog:has(#tab-logs[aria-selected="true"]) .drawer-footer { display: none; }
 .device-dialog:has(#tab-vision[aria-selected="true"]) .drawer-body,
 .device-dialog:has(#tab-logs[aria-selected="true"]) .drawer-body { display: flex; flex-direction: column; overflow: hidden; }
 .vision-panel { display: flex; width: 100%; min-height: 0; flex: 1; flex-direction: column; }

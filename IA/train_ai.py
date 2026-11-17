@@ -18,6 +18,7 @@ for candidato in (str(ROOT), str(ROOT / "src"), str(ROOT / "IA")):
         sys.path.insert(0, candidato)
 from core.cli import ArgumentParser, configure_locale
 from core.i18n import t
+from dataset.layout import REPLAY_ROWS
 
 DEFAULT_DATASET = ROOT / "dataset"
 DEFAULT_MODEL = ROOT / "IA" / "model.joblib"
@@ -204,7 +205,7 @@ def category_dataset(
     usar_cache=True,
     metadata_records=None,
     label_source="all",
-    replay_rows=12000,
+    replay_rows=REPLAY_ROWS,
 ):
     """Junta as features novas e a memória, preservando metadados de cada frame."""
 
@@ -431,9 +432,38 @@ def promotion_decision(metricas, args):
     return not reasons, reasons
 
 
+def recall_regressions(candidate, incumbent, labels, minimum_support=5):
+    """Compara cada classe observada para não esconder perdas na média geral."""
+    regressions = {}
+    for category in sorted(set(str(label) for label in labels)):
+        previous = incumbent["class_metrics"].get(category, {})
+        current = candidate["class_metrics"].get(category, {})
+        support = int(previous.get("support", 0))
+        previous_recall = float(previous.get("recall", 0))
+        current_recall = float(current.get("recall", 0))
+        if support >= minimum_support and current_recall < previous_recall:
+            regressions[category] = {
+                "support": support,
+                "incumbent_recall": previous_recall,
+                "candidate_recall": current_recall,
+            }
+    return regressions
+
+
 def _train_one_resolution(args):
-    from dataset.training_files import snapshot_records, training_lock
-    from dataset.layout import MIN_FRESH_TARGETS, automatic_minimum, confirmed_training_sample, record_resolution
+    from dataset.training_files import (
+        exclude_cached_test_candidates,
+        reserve_post_training_test,
+        snapshot_records,
+        training_lock,
+    )
+    from dataset.layout import (
+        MIN_FRESH_TARGETS,
+        POST_TRAINING_TEST_SIZE,
+        automatic_minimum,
+        confirmed_training_sample,
+        record_resolution,
+    )
     from dataset_io import filter_by_outcome
     from training_run import record_key, trained_sample_ids
 
@@ -445,40 +475,62 @@ def _train_one_resolution(args):
         )
     raiz = Path(args.dataset_root).expanduser().resolve()
     automatico = getattr(args, "automatic", False)
+    holdout_size = getattr(args, "post_training_test_size", POST_TRAINING_TEST_SIZE)
+
+    def selecionar(snapshot, *, incluir_reserva=False):
+        registros = filter_by_outcome(snapshot, args.outcome)
+        confirmed = args.kind == "category" and args.label_source == "confirmed"
+        if confirmed:
+            registros = [r for r in registros if confirmed_training_sample(r)]
+        if args.resolution is not None:
+            registros = [
+                record for record in registros
+                if record_resolution(record) == args.resolution
+            ]
+        registros = list({record_key(r): r for r in registros}.values())
+        if automatico:
+            treinados = (trained_sample_ids(raiz, args.cache_root, confirmed=True) if confirmed
+                         else trained_sample_ids(raiz, args.cache_root))
+            registros = [r for r in registros if record_key(r) not in treinados]
+            if getattr(args, "batch_size", None) is not None:
+                if confirmed:
+                    registros.sort(key=lambda r: not bool(r.get("label_evidence")))
+                extra = holdout_size if incluir_reserva else 0
+                registros = registros[:args.batch_size + extra]
+        if args.limit:
+            extra = holdout_size if incluir_reserva else 0
+            registros = registros[:args.limit + extra]
+        return registros
+
     try:
         with training_lock(raiz):
             snapshot, aviso = snapshot_records(raiz)
-            registros = filter_by_outcome(snapshot, args.outcome)
+            registros = selecionar(snapshot, incluir_reserva=True)
             confirmed = args.kind == "category" and args.label_source == "confirmed"
-            if confirmed:
-                registros = [r for r in registros if confirmed_training_sample(r)]
-            if args.resolution is not None:
-                registros = [
-                    record for record in registros
-                    if record_resolution(record) == args.resolution
-                ]
-            registros = list({record_key(r): r for r in registros}.values())
             if automatico:
-                treinados = (trained_sample_ids(raiz, args.cache_root, confirmed=True) if confirmed
-                             else trained_sample_ids(raiz, args.cache_root))
-                registros = [r for r in registros if record_key(r) not in treinados]
                 minimo = getattr(args, "min_samples", 10000)
                 if confirmed:
                     minimo = automatic_minimum(raiz, args.resolution, minimo)
                     if sum(r.get("label_evidence") == "target_changed" for r in registros) < MIN_FRESH_TARGETS:
                         print(t("messages.wait_fresh_holdout"))
                         return 0
-                if len(registros) < minimo:
-                    print(t("messages.training_waiting_samples", value_1=len(registros), minimo=minimo))
+                required = minimo + holdout_size
+                if len(registros) < required:
+                    print(t("messages.training_waiting_samples", value_1=len(registros), minimo=required))
                     return 0
-                batch_size = getattr(args, "batch_size", None)
-                if batch_size is not None:
-                    if confirmed:
-                        registros.sort(key=lambda r: not bool(r.get("label_evidence")))
-                    registros = registros[:batch_size]
-            if args.limit:
-                registros = registros[:args.limit]
-            return _train_snapshot(args, raiz, registros, snapshot, aviso)
+            candidates = exclude_cached_test_candidates(
+                registros, args.cache_root or raiz / "cache"
+            ) if confirmed else registros
+            reservation_size = min(holdout_size, max(0, len(registros) - 20), len(candidates))
+            reservation = reserve_post_training_test(
+                raiz, args.resolution or "legacy", candidates, reservation_size,
+            )
+            snapshot, aviso = snapshot_records(raiz)
+            registros = selecionar(snapshot)
+            return _train_snapshot(
+                args, raiz, registros, snapshot, aviso,
+                post_training_test=reservation,
+            )
     except BlockingIOError:
         print(t("messages.training_already_active"))
         return 0 if automatico else 1
@@ -525,22 +577,25 @@ def _failed_training(args, error, execucao=None):
     return 130 if isinstance(error, KeyboardInterrupt) else 1
 
 
-def _train_snapshot(args, raiz, registros, snapshot, aviso):
+def _train_snapshot(args, raiz, registros, snapshot, aviso, post_training_test=None):
     from training_run import TrainingRun
 
     execucao = TrainingRun(ROOT / "IA", args)
     try:
         execucao.save()
-        return _fit_snapshot(args, raiz, registros, snapshot, aviso, execucao)
+        return _fit_snapshot(
+            args, raiz, registros, snapshot, aviso, execucao,
+            post_training_test=post_training_test,
+        )
     except (Exception, SystemExit, KeyboardInterrupt) as error:
         return _failed_training(args, error, execucao)
 
 
-def _fit_snapshot(args, raiz, registros, snapshot, aviso, execucao):
+def _fit_snapshot(args, raiz, registros, snapshot, aviso, execucao, post_training_test=None):
     check_dependencies()
 
     import numpy as np
-    from dataset.training_files import cleanup_records
+    from dataset.training_files import cleanup_records, snapshot_post_training_test
     from dataset_io import (
         continuous_split, capture_time,
         ceiling_state_categories_on_holdout,
@@ -592,7 +647,7 @@ def _fit_snapshot(args, raiz, registros, snapshot, aviso, execucao):
             registros, args.negatives, cache_root,
             usar_cache=not args.no_cache, metadata_records=snapshot,
             label_source=label_source,
-            replay_rows=getattr(args, "replay_rows", 12000),
+            replay_rows=getattr(args, "replay_rows", REPLAY_ROWS),
         )
         metadados = extra["records"]
         caches = extra["caches"]
@@ -745,17 +800,76 @@ def _fit_snapshot(args, raiz, registros, snapshot, aviso, execucao):
         "trees": args.trees, "seed": args.seed,
         "final_fit": execucao.data["final_fit"],
     }
+
+    post_test = {
+        **(post_training_test or {}),
+        "resolution": args.resolution or "legacy",
+    }
+    post_records, post_warnings = snapshot_post_training_test(
+        raiz, args.resolution or "legacy",
+    )
+    post_test["frames"] = len(post_records)
+    post_test["input_warnings"] = post_warnings
+    post_metrics = None
+    if post_records:
+        if args.kind == "category":
+            post_X, post_y, _post_owners, post_extra = category_dataset(
+                post_records, args.negatives, cache_root,
+                usar_cache=False, label_source=label_source,
+            )
+            post_test["extraction"] = {
+                key: post_extra.get(key, 0)
+                for key in ("ilegiveis", "recortes_vazios")
+            }
+        else:
+            post_X, post_y, post_extra = build_action_dataset(post_records)
+            post_test["extraction"] = {"ilegiveis": post_extra["ilegiveis"]}
+        post_metrics = validation_metrics(modelo, post_X, post_y)
+        post_test.update({
+            "rows": int(len(post_X)),
+            "accuracy": post_metrics["accuracy"],
+            "macro_f1": post_metrics["macro_f1"],
+            "class_metrics": post_metrics["class_metrics"],
+        })
+    execucao.data["evaluation"]["post_training_test"] = post_test
+    execucao.save()
+
     promoted, promotion_reasons = promotion_decision(metricas, args)
+    if post_training_test is not None and getattr(args, "post_training_test_size", 200) > 0:
+        if post_metrics is None:
+            promoted = False
+            promotion_reasons.append(t("messages.post_training_test_missing"))
+        else:
+            post_approved, post_reasons = promotion_decision(post_metrics, args)
+            if not post_approved:
+                promoted = False
+                promotion_reasons.extend(
+                    t("messages.post_training_test_rejected", reason=reason)
+                    for reason in post_reasons
+                )
     comparison = None
+    regressions = {"fresh": {}, "post_training_test": {}}
     if incumbent is not None:
         comparison = validation_metrics(incumbent, X_teste, y_teste)
         lost_classes = set(incumbent.classes_) - set(modelo.classes_)
+        regressions["fresh"] = recall_regressions(metricas, comparison, y_teste)
         def recall(metrics, category):
             return metrics["class_metrics"].get(category, {}).get("recall", 0.0)
-        if (lost_classes or metricas["macro_f1"] < comparison["macro_f1"]
+        if (lost_classes or regressions["fresh"] or metricas["macro_f1"] < comparison["macro_f1"]
             or any(recall(metricas, c) < recall(comparison, c) for c in args.critical_categories)):
             promoted = False
             promotion_reasons.append(t("messages.incumbent_regression"))
+        if post_metrics is not None:
+            incumbent_post = validation_metrics(incumbent, post_X, post_y)
+            post_test["incumbent"] = incumbent_post
+            regressions["post_training_test"] = recall_regressions(post_metrics, incumbent_post, post_y)
+            if (regressions["post_training_test"] or post_metrics["macro_f1"] < incumbent_post["macro_f1"]
+                or any(
+                    recall(post_metrics, category) < recall(incumbent_post, category)
+                    for category in args.critical_categories
+                )):
+                promoted = False
+                promotion_reasons.append(t("messages.incumbent_regression"))
     locator = None
     if continuous and promoted:
         from region_locator import attach_locator
@@ -775,6 +889,7 @@ def _fit_snapshot(args, raiz, registros, snapshot, aviso, execucao):
         "min_critical_recall": getattr(args, "min_critical_recall", 0.40),
         "reasons": promotion_reasons,
         "incumbent": comparison,
+        "recall_regressions": regressions,
         "incumbent_id": prior_id,
         "locator": locator,
     }
@@ -786,7 +901,7 @@ def _fit_snapshot(args, raiz, registros, snapshot, aviso, execucao):
     execucao.finish("success")
 
     try:
-        if limpar and (promoted or (continuous and automatico)):
+        if limpar and promoted:
             fonte_limpeza = snapshot if not continuous and not args.outcome and not args.limit else registros
             consumiveis = [r for r in fonte_limpeza if record_key(r) in efetivas]
             consumidos = {record_id(r) for r in consumiveis}
@@ -799,12 +914,15 @@ def _fit_snapshot(args, raiz, registros, snapshot, aviso, execucao):
             execucao.data["cleanup"].setdefault(
                 "status", "partial" if resultado.get("errors") else "completed"
             )
-        for shard, cache in caches.items():
-            ids = [metadata["id"] for metadata in metadados.values() if metadata["_shard"] == shard]
-            if continuous:
-                cache.mark_trained(ids, live_ids={record_id(r) for r in snapshot if r.get("_shard") == shard})
-            else:
-                cache.mark_trained(ids)
+        elif limpar:
+            execucao.data["cleanup"]["status"] = "not_promoted"
+        if promoted:
+            for shard, cache in caches.items():
+                ids = [metadata["id"] for metadata in metadados.values() if metadata["_shard"] == shard]
+                if continuous:
+                    cache.mark_trained(ids, live_ids={record_id(r) for r in snapshot if r.get("_shard") == shard})
+                else:
+                    cache.mark_trained(ids)
         if continuous:
             prune_generations(args.model_out, prior_id, execucao.id, args.model_generations)
     except Exception as error:
@@ -911,6 +1029,12 @@ def parse_args(argv=None):
         default=0.2,
         help=t("messages.test_ratio_help"),
     )
+    parser.add_argument(
+        "--post-training-test-size",
+        type=int,
+        default=200,
+        help=t("messages.post_training_test_size_help"),
+    )
 
     parser.add_argument(
         "--outcome",
@@ -987,15 +1111,17 @@ def parse_args(argv=None):
         help=t("messages.unsafe_promotion_help"),
     )
 
-    parser.add_argument("--replay-rows", type=int, default=12000, help=t("messages.replay_rows_help"))
+    parser.add_argument("--replay-rows", type=int, default=REPLAY_ROWS, help=t("messages.replay_rows_help"))
     parser.add_argument("--model-generations", type=int, default=3, help=t("messages.model_generations_help"))
     args = parser.parse_args(argv)
-    if not 20 <= args.replay_rows <= 1000000 or not 3 <= args.model_generations <= 100:
+    if not 20 <= args.replay_rows <= 100000 or not 3 <= args.model_generations <= 100:
         parser.error(t("messages.invalid_retention_settings"))
     if args.resolution is not None and args.combine_resolutions:
         parser.error(t("messages.incompatible_resolution_options"))
     if not 0 <= args.min_macro_f1 <= 1 or not 0 <= args.min_critical_recall <= 1:
         parser.error(t("messages.invalid_promotion_thresholds"))
+    if args.post_training_test_size < 0:
+        parser.error(t("messages.invalid_post_training_test_size"))
     return args
 
 

@@ -11,7 +11,13 @@ from contextlib import nullcontext
 from pathlib import Path
 
 from core import log
-from dataset.layout import MIN_FRESH_TARGETS, automatic_minimum, confirmed_training_sample, record_resolution
+from dataset.layout import (
+    MIN_FRESH_TARGETS,
+    POST_TRAINING_TEST_SIZE,
+    automatic_minimum,
+    confirmed_training_sample,
+    record_resolution,
+)
 from dataset.training_files import snapshot_records, trained_sample_ids
 
 
@@ -118,7 +124,7 @@ class AutoTrainer:
             )
         return sorted(
             resolution for resolution, records in novos.items()
-            if len(records) >= automatic_minimum(self.directory, resolution, self.batch_size)
+            if len(records) >= automatic_minimum(self.directory, resolution, self.batch_size) + POST_TRAINING_TEST_SIZE
             and len(targets[resolution]) >= MIN_FRESH_TARGETS
         )
 

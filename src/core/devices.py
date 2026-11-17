@@ -97,10 +97,7 @@ def rotular(fichas):
 
         serial, modelo, wifi, hardware = ficha
 
-        partes = [f"{serial:<22}"]
-
-        if modelo:
-            partes.append(f"{modelo:<20}")
+        partes = [modelo or t("web.device")]
 
         partes.append("wifi" if wifi else "USB ")
 
@@ -151,8 +148,7 @@ def escolher(seriais, pedido=None, perguntar=None, fichas=None):
             return pedido
 
         raise RuntimeError(
-            t("messages.device_not_connected", pedido=pedido)
-            + "\n".join(f"  {s}" for s in seriais)
+            t("messages.device_not_authorized")
         )
 
     if len(seriais) == 1:
@@ -230,6 +226,7 @@ def resolver(pedido=None):
 
     serial = escolher(seriais, pedido=pedido, perguntar=perguntar)
 
-    logger.info(t("messages.device_selected"), serial)
+    modelo = _propriedade(serial, "ro.product.model")
+    logger.info(t("messages.device_selected"), modelo or t("web.device"))
 
     return serial

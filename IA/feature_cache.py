@@ -73,12 +73,24 @@ class BoundedReplay:
         self.path = self.dir / f"{digest}.sqlite3"
         self.width = assinatura["feature_size"]
         self.max_rows = max_rows
+        self._loaded_metadata = None
         with self._db() as db:
             db.execute("PRAGMA auto_vacuum=FULL")
+            db.execute("BEGIN IMMEDIATE")
             db.execute("CREATE TABLE IF NOT EXISTS frames (id TEXT PRIMARY KEY, metadata TEXT NOT NULL)")
             db.execute("CREATE TABLE IF NOT EXISTS crops (owner TEXT NOT NULL, label TEXT NOT NULL, feature BLOB NOT NULL)")
             db.execute("CREATE INDEX IF NOT EXISTS crops_owner ON crops(owner)")
             db.execute("CREATE TABLE IF NOT EXISTS processed (id TEXT PRIMARY KEY)")
+            archive_exists = db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='archive_crops'"
+            ).fetchone()
+            db.execute("CREATE TABLE IF NOT EXISTS archive_frames (id TEXT PRIMARY KEY, metadata TEXT NOT NULL)")
+            db.execute("CREATE TABLE IF NOT EXISTS archive_crops (owner TEXT NOT NULL, label TEXT NOT NULL, feature BLOB NOT NULL)")
+            db.execute("CREATE INDEX IF NOT EXISTS archive_crops_owner ON archive_crops(owner)")
+            db.execute("CREATE INDEX IF NOT EXISTS archive_crops_label ON archive_crops(label)")
+            if not archive_exists:
+                db.execute("INSERT INTO archive_frames SELECT id, metadata FROM frames")
+                db.execute("INSERT INTO archive_crops SELECT owner, label, feature FROM crops")
             self._trim(db)
 
     @contextmanager
@@ -111,6 +123,8 @@ class BoundedReplay:
             return {row[0] for row in db.execute("SELECT id FROM frames")}
 
     def metadata(self):
+        if self._loaded_metadata is not None:
+            return dict(self._loaded_metadata)
         with self._db() as db:
             return {key: json.loads(value) for key, value in db.execute("SELECT id,metadata FROM frames")}
 
@@ -129,8 +143,23 @@ class BoundedReplay:
             db.executemany("INSERT OR REPLACE INTO frames VALUES (?,?)", (
                 (owner, json.dumps(records[owner], ensure_ascii=False)) for owner in owners
             ))
+            db.executemany("INSERT OR REPLACE INTO archive_frames VALUES (?,?)", (
+                (owner, json.dumps(records[owner], ensure_ascii=False)) for owner in owners
+            ))
             for start in range(0, len(X), self.max_rows):
                 stop = min(start + self.max_rows, len(X))
+                db.executemany("""
+                    INSERT INTO archive_crops (owner, label, feature)
+                    SELECT ?, ?, ? WHERE NOT EXISTS (
+                        SELECT 1 FROM archive_crops WHERE owner=? AND label=? AND feature=?
+                    )
+                """, (
+                    (owner, label, feature, owner, label, feature)
+                    for owner, label, feature in (
+                        (str(ids[i]), str(y[i]), np.asarray(X[i], dtype=DISK_DTYPE).tobytes())
+                        for i in range(start, stop)
+                    )
+                ))
                 db.executemany("INSERT INTO crops VALUES (?,?,?)", (
                     (str(ids[i]), str(y[i]), np.asarray(X[i], dtype=DISK_DTYPE).tobytes())
                     for i in range(start, stop)
@@ -152,7 +181,49 @@ class BoundedReplay:
 
     def load(self):
         with self._db() as db:
-            rows = db.execute("SELECT owner,label,feature FROM crops ORDER BY rowid").fetchall()
+            counts = dict(db.execute("SELECT label, COUNT(*) FROM archive_crops GROUP BY label"))
+            remaining = min(self.max_rows, sum(counts.values()))
+            quotas = {label: 0 for label in counts}
+            active = sorted(counts)
+            while remaining and active:
+                share, extra = divmod(remaining, len(active))
+                next_active = []
+                assigned = 0
+                for index, label in enumerate(active):
+                    amount = min(counts[label] - quotas[label], share + (index < extra))
+                    quotas[label] += amount
+                    assigned += amount
+                    if quotas[label] < counts[label]:
+                        next_active.append(label)
+                remaining -= assigned
+                active = next_active
+
+            rows = []
+            for label, quota in quotas.items():
+                if not quota:
+                    continue
+                total = counts[label]
+                recent = quota // 2
+                historical = quota - recent
+                old_count = total - recent
+                rows.extend(db.execute("""
+                    SELECT crop.owner, crop.label, crop.feature
+                    FROM archive_crops AS crop
+                    JOIN (
+                        SELECT rid FROM (
+                            SELECT rowid AS rid, row_number() OVER (ORDER BY rowid) AS position
+                            FROM archive_crops WHERE label = ?
+                        ) WHERE position > ? OR
+                            (position <= ? AND (position * ?) / ? > ((position - 1) * ?) / ?)
+                    ) AS chosen ON crop.rowid = chosen.rid
+                """, (label, old_count, old_count, historical, old_count, historical, old_count)))
+            db.execute("CREATE TEMP TABLE selected_owners (id TEXT PRIMARY KEY)")
+            db.executemany("INSERT OR IGNORE INTO selected_owners VALUES (?)", ((row[0],) for row in rows))
+            self._loaded_metadata = {
+                key: json.loads(value) for key, value in db.execute(
+                    "SELECT f.id, f.metadata FROM archive_frames AS f JOIN selected_owners AS s ON f.id = s.id"
+                )
+            }
         if not rows:
             return np.empty((0, self.width), dtype=np.float32), np.asarray([], dtype=str), np.asarray([], dtype=str)
         X = np.stack([np.frombuffer(row[2], dtype=DISK_DTYPE) for row in rows]).astype(np.float32)

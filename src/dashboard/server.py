@@ -24,6 +24,7 @@ from core.device_profiles import ProfileStore, settings_schema, template_key
 from core.i18n import DEFAULT_LOCALE, Text, locale, locale_scope, localized, messages, t
 from core.preview import MIN_FRAME_INTERVAL
 from dashboard.supervisor import BotSupervisor
+from dashboard.dataset_overview import overview as dataset_overview
 from dataset import layout
 from dataset.manager import DatasetManager
 
@@ -189,6 +190,8 @@ def create_app(root=None, state_root=None, token=None, supervisor=None, require_
     catalog_cache = {"at": 0.0, "value": None}
     training_cache = {"at": 0.0, "value": None}
     collected_cache = {"at": 0.0, "value": None}
+    overview_cache = {"at": 0.0, "value": None}
+    overview_lock = threading.Lock()
     datasets = DatasetManager(root / "dataset")
 
     def catalog():
@@ -386,6 +389,13 @@ def create_app(root=None, state_root=None, token=None, supervisor=None, require_
     def dataset_sessions(resolution: str | None = None, session_id: str | None = None):
         return {"sessions": datasets.sessions(dataset_resolution(resolution), session_id)}
 
+    @app.get("/api/datasets/overview")
+    def datasets_overview():
+        with overview_lock:
+            if overview_cache["value"] is None or time.monotonic() - overview_cache["at"] > 60:
+                overview_cache.update(value=dataset_overview(root), at=time.monotonic())
+            return overview_cache["value"]
+
     @app.get("/api/datasets/sessions/{session_id}")
     def dataset_session(session_id: str, offset: int = 0, limit: int = 200, resolution: str | None = None):
         if offset < 0 or not 1 <= limit <= 500:
@@ -415,6 +425,19 @@ def create_app(root=None, state_root=None, token=None, supervisor=None, require_
             )
         except KeyError as error:
             raise HTTPException(status_code=404, detail=t("messages.dataset_session_not_found")) from error
+
+    @app.get("/api/devices/{device_id}/brightness")
+    def get_brightness(device_id: str):
+        return supervisor.brightness(device_id)
+
+    @app.put("/api/devices/{device_id}/brightness")
+    async def set_brightness(device_id: str, request: Request):
+        from starlette.concurrency import run_in_threadpool
+
+        data = await body(request)
+        if "value" not in data or data["value"] is None:
+            raise ValueError(t("messages.invalid_brightness"))
+        return await run_in_threadpool(supervisor.brightness, device_id, data["value"])
 
     @app.get("/api/devices/{device_id}/profile")
     def profile(device_id: str):

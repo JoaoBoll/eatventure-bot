@@ -67,7 +67,7 @@ def parse_args(argv=None):
 
 def start_scrcpy(device_id):
 
-    window_title = f"EatVenture layouts ({device_id})"
+    window_title = "EatVenture layouts"
 
     logger.info(t("terminal.starting", title=window_title))
 

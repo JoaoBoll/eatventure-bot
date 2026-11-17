@@ -83,7 +83,7 @@ def terminal_profile(serial, state_root=None):
         if serial == device["id"] or serial in device["aliases"]
     ), None)
     if device is None:
-        raise RuntimeError(manager.last_error or t("messages.device_not_found_serial", serial=serial))
+        raise RuntimeError(t("messages.device_not_found"))
     store = ProfileStore(Path(state_root or DEFAULT_STATE_ROOT) / "devices")
     profile = migrate_legacy_blocks(store, device["id"], device["aliases"])
     return store, profile

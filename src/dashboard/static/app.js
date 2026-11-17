@@ -66,6 +66,9 @@ let trainingSubmitting = false;
 let trainingSettingsDirty = false;
 let trainingSettingsSnapshot = "";
 let trainingGeneration = 0;
+let datasetOverview = null;
+let overviewLoading = false;
+let overviewKind = "data";
 const visionReleases = new Map();
 const MAX_VISION_FRAME_BYTES = 5 * 1024 * 1024;
 const MAX_VISION_HEADER_BYTES = 8 * 1024;
@@ -199,7 +202,7 @@ function lastAdbAddress() {
     const saved = localStorage.getItem(adbAddressKey);
     if (saved) return saved;
   } catch { /* Usa o endereço disponível no estado atual. */ }
-  return state.devices.find((device) => device.connected && device.connection === "wifi" && device.serial)?.serial || "";
+  return "";
 }
 
 function node(tag, className, text) {
@@ -334,7 +337,77 @@ async function enterApp(session) {
   $("app").hidden = false;
   $("logout").hidden = !authRequired;
   await refreshState(true);
+  refreshDatasetOverview();
   await refreshDashboardRevision();
+}
+
+function storageSize(bytes) {
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = bytes || 0;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) { value /= 1024; unit++; }
+  return `${new Intl.NumberFormat(locale, { maximumFractionDigits: unit ? 1 : 0 }).format(value)} ${units[unit]}`;
+}
+
+function overviewRow(label, value) {
+  const row = node("div", "overview-row");
+  row.append(node("span", "", label), node("strong", "", value));
+  return row;
+}
+
+function renderDatasetOverview() {
+  if (!datasetOverview) return;
+  $("kpi-data").textContent = `${datasetOverview.incomplete ? "≈ " : ""}${count(datasetOverview.samples)}`;
+  $("kpi-storage").textContent = storageSize(datasetOverview.storage.total);
+  if (!$("overview-dialog").open) return;
+  const content = $("overview-content");
+  content.replaceChildren();
+  $("overview-title").textContent = t(overviewKind === "data" ? "web.data_collected" : "web.storage_used");
+  content.append(node("p", "overview-note", t(overviewKind === "data" ? "web.overview_data_note" : "web.overview_storage_note")));
+  if (datasetOverview.incomplete && overviewKind === "data") content.append(node("p", "overview-note", t("web.overview_incomplete")));
+  if (overviewKind === "storage") {
+    const group = node("div", "overview-group");
+    for (const [key, label] of [["data", "overview_data_files"], ["test", "overview_test_files"], ["cache", "overview_cache_files"], ["models", "overview_model_files"], ["other", "overview_other_files"], ["total", "overview_total"]]) {
+      group.append(overviewRow(t(`web.${label}`), storageSize(datasetOverview.storage[key])));
+    }
+    content.append(group);
+    return;
+  }
+  if (!datasetOverview.resolutions.length) content.append(node("p", "overview-note", t("web.overview_empty")));
+  for (const resolution of datasetOverview.resolutions) {
+    const group = node("section", "overview-group");
+    group.append(node("h3", "", resolution.resolution));
+    for (const [key, label] of [["samples", "overview_samples"], ["test_samples", "overview_test"], ["archive_frames", "overview_archive"]]) group.append(overviewRow(t(`web.${label}`), count(resolution[key])));
+    for (const [key, label] of [["categories", "overview_categories"], ["archive_categories", "overview_archive_categories"]]) {
+      const entries = Object.entries(resolution[key]);
+      if (!entries.length) continue;
+      group.append(node("p", "overview-note", t(`web.${label}`)));
+      entries.sort(([a], [b]) => a.localeCompare(b)).forEach(([name, total]) => group.append(overviewRow(displayCode("categories", name), count(total))));
+    }
+    content.append(group);
+  }
+}
+
+async function refreshDatasetOverview() {
+  if (!authenticated || overviewLoading) return;
+  overviewLoading = true;
+  try {
+    datasetOverview = await api("/api/datasets/overview");
+    renderDatasetOverview();
+  } catch (error) {
+    $("kpi-data").textContent = "—";
+    $("kpi-storage").textContent = "—";
+    if ($("overview-dialog").open) $("overview-content").textContent = error.message;
+  } finally { overviewLoading = false; }
+}
+
+function openDatasetOverview(kind) {
+  overviewKind = kind;
+  $("overview-title").textContent = t(kind === "data" ? "web.data_collected" : "web.storage_used");
+  $("overview-content").textContent = t("web.waiting_data");
+  $("overview-dialog").showModal();
+  renderDatasetOverview();
+  refreshDatasetOverview();
 }
 
 async function bootstrapSession() {
@@ -365,7 +438,7 @@ async function bootstrapSession() {
 }
 
 function deviceById(id) { return state.devices.find((device) => device.id === id); }
-function deviceName(device) { return device.name || device.profile?.name || device.model || device.serial || device.id; }
+function deviceName(device) { return device.name || device.profile?.name || device.model || t("web.device"); }
 function connected(device) { return device.connected === true; }
 function statusOf(device) {
   if (device.status === "stopping") return { key: "stopping", label: t("web.stopping") };
@@ -423,7 +496,7 @@ function visibleDevices() {
   const search = $("search").value.trim().toLocaleLowerCase(locale);
   const filter = $("status-filter").value;
   return state.devices.filter((device) => {
-    const text = [deviceName(device), device.model, device.serial, device.id, ...(device.aliases || [])].join(" ").toLocaleLowerCase(locale);
+    const text = [deviceName(device), device.model].join(" ").toLocaleLowerCase(locale);
     const matchesStatus = filter === "all" || (filter === "running" && device.running) || (filter === "ready" && connected(device) && !device.running) || (filter === "offline" && !connected(device) && !device.running);
     return (!search || text.includes(search)) && matchesStatus;
   });
@@ -544,9 +617,7 @@ function renderDevice(device) {
   title.append(node("span", "device-name", name));
   if (activeResolution) title.append(node("span", "device-resolution", ` (${activeResolution})`));
   title.title = activeResolution ? `${name} (${activeResolution})` : name;
-  const serial = node("p", "mono", device.serial || device.id);
-  serial.title = device.serial || device.id;
-  identity.append(title, serial, node("span", "card-open-hint", t("web.view_ai_vision")));
+  identity.append(title, node("span", "card-open-hint", t("web.view_ai_vision")));
   const checkbox = node("input");
   checkbox.type = "checkbox";
   checkbox.checked = selected.has(device.id);
@@ -763,7 +834,6 @@ async function openDetails(id, tab = "vision") {
     savedProfile = normalizeProfile(profile);
     draft = clone(savedProfile);
     $("detail-title").textContent = deviceName(deviceById(id) || { id });
-    $("detail-serial").textContent = deviceById(id)?.serial || id;
     showError("profile-error", "");
     $("item-search").value = "";
     renderProfile();
@@ -773,10 +843,29 @@ async function openDetails(id, tab = "vision") {
     detailSession = deviceById(id)?.started_at || null;
     updatePending();
     $("device-dialog").showModal();
+    loadBrightness(id);
     setTab(tab);
     renderDetailStatus();
   } catch (error) { detailId = null; if (authenticated) toast(error.message, true); }
   finally { profileLoading = false; }
+}
+
+async function loadBrightness(id) {
+  const slider = $("detail-brightness");
+  slider.disabled = true;
+  $("detail-brightness-value").textContent = "—";
+  if (!deviceById(id)?.connected) return;
+  try {
+    const result = await api(`/api/devices/${encodeURIComponent(id)}/brightness`);
+    if (detailId !== id || !$('device-dialog').open) return;
+    slider.value = result.value;
+    updateBrightnessLabel();
+    slider.disabled = false;
+  } catch (error) { if (detailId === id && authenticated) toast(error.message, true); }
+}
+
+function updateBrightnessLabel() {
+  $("detail-brightness-value").textContent = `${Math.round(Number($("detail-brightness").value) * 100 / 255)}%`;
 }
 
 async function closeDetails() {
@@ -2218,7 +2307,7 @@ async function connectAndroid(event) {
     rememberAdbAddress(result.address);
     $("connect-result").textContent = "";
     $("connect-dialog").close();
-    toast(result.message || result.output || t("web.adb_connection_requested"));
+    toast(t("web.adb_connection_requested"));
     await refreshState(true);
   } catch (error) { if (authenticated) $("connect-result").textContent = error.message; }
   finally { submit.disabled = false; $("connect-form").inert = false; }
@@ -2235,7 +2324,7 @@ async function pairAndroid() {
   try {
     const result = await api("/api/adb/pair", { method: "POST", body: JSON.stringify({ address, code }) });
     $("pair-code").value = "";
-    $("connect-result").textContent = result.message || result.output || t("web.pair_success_hint");
+    $("connect-result").textContent = t("web.pair_success_hint");
   } catch (error) { if (authenticated) $("connect-result").textContent = error.message; }
   finally { $("pair-submit").disabled = false; $("connect-form").inert = false; }
 }
@@ -2245,6 +2334,9 @@ $("session-retry").addEventListener("click", bootstrapSession);
 $("theme-toggle").addEventListener("click", () => setTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark"));
 $("logout").addEventListener("click", () => logout());
 $("refresh").addEventListener("click", () => refreshState(true));
+$("dataset-overview-open").addEventListener("click", () => openDatasetOverview("data"));
+$("storage-overview-open").addEventListener("click", () => openDatasetOverview("storage"));
+$("overview-close").addEventListener("click", () => $("overview-dialog").close());
 $("shutdown-server").addEventListener("click", async () => {
   if (!confirm(t("web.confirm_shutdown"))) return;
   stopVision({ mode: "stopped", message: t("web.dashboard_stopping") });
@@ -2265,6 +2357,19 @@ $("select-all").addEventListener("change", (event) => {
 });
 for (const action of ["start", "stop", "restart"]) $(`bulk-${action}`).addEventListener("click", () => executeAction(action, [...selected]));
 $("detail-close").addEventListener("click", closeDetails);
+$("detail-brightness").addEventListener("input", updateBrightnessLabel);
+$("detail-brightness").addEventListener("change", async (event) => {
+  const id = detailId;
+  const slider = event.currentTarget;
+  const value = Number(slider.value);
+  slider.disabled = true;
+  try {
+    await api(`/api/devices/${encodeURIComponent(id)}/brightness`, { method: "PUT", body: JSON.stringify({ value }) });
+    if (detailId === id) slider.disabled = false;
+  } catch (error) {
+    if (detailId === id && authenticated) { toast(error.message, true); loadBrightness(id); }
+  }
+});
 $("device-dialog").addEventListener("cancel", (event) => { event.preventDefault(); closeDetails(); });
 $("save-profile").addEventListener("click", saveProfile);
 $("reset-profile").addEventListener("click", resetProfile);
@@ -2410,6 +2515,7 @@ $("dataset-range-form").addEventListener("submit", (event) => {
 });
 window.addEventListener("beforeunload", (event) => { if (changeCount()) { event.preventDefault(); event.returnValue = ""; } });
 setInterval(() => { if (!document.hidden) refreshState(); }, 5000);
+setInterval(() => { if (!document.hidden) refreshDatasetOverview(); }, 60000);
 setInterval(() => { if (!document.hidden) refreshRuntime(); }, 1000);
 setInterval(() => { if (!document.hidden) pollLogs(); }, 1500);
 setInterval(() => { if (!document.hidden) refreshTraining(); }, 3000);

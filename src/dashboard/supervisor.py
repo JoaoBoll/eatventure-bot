@@ -64,7 +64,12 @@ def _adb_run(executable, args, timeout=8):
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise RuntimeError(t("messages.adb_execution_failed", exc=exc)) from exc
     if result.returncode:
-        raise RuntimeError((result.stdout or "Falha ao executar ADB.").strip()[:2000])
+        message = (result.stdout or "Falha ao executar ADB.").strip()[:2000]
+        if "-s" in args:
+            index = args.index("-s")
+            if index + 1 < len(args):
+                message = message.replace(str(args[index + 1]), "[device]")
+        raise RuntimeError(message)
     return result.stdout
 
 
@@ -473,7 +478,7 @@ class BotSupervisor:
                 )
             os.replace(temporary, path)
         except OSError:
-            logger.warning(t("messages.report_save_failed"), device_id)
+            logger.warning(t("messages.report_save_failed"), t("web.device"))
         finally:
             if temporary is not None:
                 try:
@@ -647,6 +652,27 @@ class BotSupervisor:
                 return
         self._resolve(device_id)
 
+    def brightness(self, device_id, value=None):
+        device = self._resolve(device_id)
+        if not device["connected"]:
+            raise RuntimeError(t("messages.device_not_authorized"))
+        args = ["-s", device["serial"], "shell", "settings"]
+        with self._operation_lock(device["id"]):
+            if value is not None:
+                if type(value) is not int or not 0 <= value <= 255:
+                    raise ValueError(t("messages.invalid_brightness"))
+                _adb_run(self.devices._executable(), args + ["put", "system", "screen_brightness_mode", "0"])
+                _adb_run(self.devices._executable(), args + ["put", "system", "screen_brightness", str(value)])
+                return {"value": value}
+            result = _adb_run(self.devices._executable(), args + ["get", "system", "screen_brightness"]).strip()
+            try:
+                value = int(result)
+                if not 0 <= value <= 255:
+                    raise ValueError
+            except ValueError:
+                raise RuntimeError(t("messages.brightness_unavailable")) from None
+            return {"value": value}
+
     def _ensure_auto_trainer(self):
         with self._lock:
             if self._closing:
@@ -677,13 +703,13 @@ class BotSupervisor:
                 except (KeyError, RuntimeError, OSError):
                     logger.exception(
                         t("messages.training_stop_bot_failed"),
-                        device_id, resolution,
+                        t("web.device"), resolution,
                     )
                     for stopped_id in restart_ids:
                         try:
                             self.start(stopped_id)
                         except (KeyError, RuntimeError, OSError):
-                            logger.exception(t("messages.bot_resume_failed"), stopped_id)
+                            logger.exception(t("messages.bot_resume_failed"), t("web.device"))
                     raise
             try:
                 yield
@@ -693,7 +719,7 @@ class BotSupervisor:
                         try:
                             self.start(device_id)
                         except (KeyError, RuntimeError, OSError):
-                            logger.exception(t("messages.post_training_resume_failed"), device_id)
+                            logger.exception(t("messages.post_training_resume_failed"), t("web.device"))
 
     def _metrics(self, device_id, run, allow_finished=False):
         if run is None or (not allow_finished and run.process.poll() is not None):
@@ -742,7 +768,7 @@ class BotSupervisor:
             else:
                 status = "stopped"
             device.update({
-                "name": profile.get("name") or device.get("model") or device_id,
+                "name": profile.get("name") or device.get("model") or t("web.device"),
                 "running": running,
                 "session_id": run.session_id if run else None,
                 "pid": run.process.pid if running else None,

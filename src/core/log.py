@@ -159,7 +159,7 @@ def set_console_panel(panel):
                 handler.release()
 
 
-def start_process_output(process, name):
+def start_process_output(process, name, hidden_values=()):
     pipe = process.stdout
     if pipe is None:
         return None
@@ -169,6 +169,9 @@ def start_process_output(process, name):
     def forward():
         try:
             for line in pipe:
+                for value in hidden_values:
+                    if value:
+                        line = line.replace(value, "[device]")
                 logger.info(line.rstrip("\r\n"))
         except (OSError, ValueError):
             pass
