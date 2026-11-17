@@ -29,6 +29,7 @@ class EatventureGuard:
         self._next_check = 0.0
         self._started_at = time.monotonic()
         self._pending_scan = None
+        self._pending_since = 0.0
         self._startup_validation = True
 
     def _running(self):
@@ -89,6 +90,7 @@ class EatventureGuard:
         # inicialização; reaplica o lock depois que o launcher o abriu.
         self.lock_portrait()
         self._pending_scan = None
+        self._pending_since = 0.0
         self._startup_validation = True
         self._next_check = time.monotonic() + max(
             self.startup_grace, self.idle_seconds,
@@ -126,6 +128,7 @@ class EatventureGuard:
 
     def request_scan(self, token):
         self._pending_scan = token
+        self._pending_since = time.monotonic()
         logger.info(
             t("messages.idle_engine_check"),
             self.idle_seconds,
@@ -133,6 +136,19 @@ class EatventureGuard:
 
     def cancel_scan(self):
         self._pending_scan = None
+        self._pending_since = 0.0
+
+    def cancel_scan_if_activity(self, last_action_at):
+        """Descarta uma checagem que ficou velha porque o bot voltou a agir."""
+        if self._pending_scan is None or last_action_at <= self._pending_since:
+            return False
+
+        self.cancel_scan()
+        self._next_check = max(
+            self._next_check,
+            last_action_at + self.idle_seconds,
+        )
+        return True
 
     def pending_scan(self):
         return self._pending_scan
@@ -142,6 +158,7 @@ class EatventureGuard:
         if self._pending_scan is None:
             return False
         self._pending_scan = None
+        self._pending_since = 0.0
         self._next_check = time.monotonic() + self.idle_seconds
         detection = max(
             detections,

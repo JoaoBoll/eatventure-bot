@@ -1,4 +1,5 @@
 import argparse
+import re
 import sys
 import tkinter as tk
 from pathlib import Path
@@ -14,7 +15,6 @@ sys.path.insert(0, str(ROOT / "src"))
 
 # Sem output_dir, grava em tests/capture/ — nunca em
 # tests/images/, que são os fixtures da regressão.
-from renumerar import proximo_numero, renumerar   # noqa: E402
 import selector_layout as layout                  # noqa: E402
 from capture.screen import ScreenCapture          # noqa: E402
 from core import devices, log                     # noqa: E402
@@ -39,6 +39,19 @@ DEFAULT_TEMPLATES_DIR = TEMPLATES_DIR / "default"
 # em que o recorte foi tirado — é a procedência, não o destino.
 def _prefixo_resolucao(width, height):
     return f"{width}x{height}_"
+
+
+def _next_category_number(category_dir, category):
+    numbered = re.compile(
+        rf"^(?:\d+x\d+_)?{re.escape(category)}_(\d+)\.png$",
+        re.IGNORECASE,
+    )
+    numbers = [
+        int(match.group(1))
+        for candidate in category_dir.glob("*.png")
+        if (match := numbered.fullmatch(candidate.name)) is not None
+    ]
+    return max(numbers, default=0) + 1
 
 
 class TemplateSelector:
@@ -442,48 +455,8 @@ class TemplateSelector:
                 return
 
         else:
-
-            # compacta a sequência antes de salvar: len(existing)+1 sobrescreveria
-            # em silêncio se houvesse lacuna (ex.: food com 17 arquivos indo até item_020)
-            renomeados = renumerar(
-                category_dir,
-                aplicar=True
-            )
-
-            if renomeados:
-
-                print()
-                print(
-                    f"[NUMERAÇÃO] {len(renomeados)} arquivo(s) "
-                    f"compactado(s) em {category}:"
-                )
-
-                for origem, destino in renomeados:
-
-                    print(
-                        f"  {origem.name} -> {destino.name}"
-                    )
-
-            # A numeração é única na categoria, não por prefixo: dois
-            # recortes de telas diferentes não podem virar item_001 os dois.
-            number = proximo_numero(category_dir)
-
-            output_path = (
-                category_dir
-                / f"{prefixo}item_{number:03d}.png"
-            )
-
-            while any(
-                candidato.stem.endswith(f"item_{number:03d}")
-                for candidato in category_dir.glob("*.png")
-            ):
-
-                number += 1
-
-                output_path = (
-                    category_dir
-                    / f"{prefixo}item_{number:03d}.png"
-                )
+            number = _next_category_number(category_dir, category)
+            output_path = category_dir / f"{prefixo}{category}_{number:03d}.png"
 
         success = cv2.imwrite(
             str(output_path),

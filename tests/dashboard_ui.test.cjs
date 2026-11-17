@@ -143,6 +143,7 @@ test("card ordena dados e eventos em duas linhas", () => {
       ["treinamentos", "Treinamentos", "4"],
       ["voos", "Voou", "2"],
       ["reformas", "Renovou", "1"],
+      ["fase_atual", "Fase atual", "—"],
       ["battery", "Bateria", "75%"]
     ])
   );

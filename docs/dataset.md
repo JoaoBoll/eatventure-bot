@@ -116,7 +116,7 @@ swipes de exploração.
 |---|---|
 | toque no centro da detecção | `click` (o build), `close`, `food`, `new_point`, `new_point_click`, `open_box`, `open_renovate`, `open_store_click`, `plane`, `renovate_click`, `upgrade` |
 | vários toques | `upgrade_item` |
-| toque longo | `upgrade_food` — cobre a evolução da comida inteira, em `NORMAL` e em `FOOD` |
+| toque contínuo | `upgrade_food` — inicia a evolução da comida. `while_up_food` confirma que a pressão segue válida; se não aparecer em 2 s, o toque é solto. `gray_max` ou `gray_coin` encerram o toque e dispensam o painel. `UPGRADE_FOOD_MAX_HOLD` mantém o freio absoluto de 15 s por padrão. |
 | ponto fixo | `gray_max`, `gray_coin`, `dismiss` |
 | sem alvo pontual | `scroll_bottom`, `swipe_up`, `swipe_down` |
 

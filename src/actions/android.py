@@ -231,6 +231,28 @@ class AndroidActions:
             timeout=duration + 5.0,
         ) is not None
 
+    def touch_down(self, x, y):
+        """Inicia um toque que só termina com ``touch_up``."""
+        return self._run(
+            "shell",
+            "input",
+            "motionevent",
+            "DOWN",
+            str(int(x)),
+            str(int(y)),
+        ) is not None
+
+    def touch_up(self, x, y):
+        """Termina um toque iniciado por ``touch_down``."""
+        return self._run(
+            "shell",
+            "input",
+            "motionevent",
+            "UP",
+            str(int(x)),
+            str(int(y)),
+        ) is not None
+
     def swipe(self, x1, y1, x2, y2, duration=300):
 
         return self._run(

@@ -335,6 +335,12 @@ def run_loop(
                 read_detections(vision)
             )
             if app_guard is not None and engine_worker is not None and state_machine.state == StateMachine.NORMAL:
+                # A checagem pode ter sido solicitada no frame anterior e
+                # uma ação concluída depois disso. Nesse caso ela não prova
+                # mais inatividade e jamais pode reiniciar o jogo.
+                app_guard.cancel_scan_if_activity(
+                    state_machine.last_meaningful_action_time,
+                )
                 pending_scan = app_guard.pending_scan()
                 if pending_scan is not None:
                     result = engine_worker.result(pending_scan)
@@ -347,8 +353,7 @@ def run_loop(
                 elif app_guard.needs_startup_scan():
                     app_guard.request_scan(engine_worker.request_scan())
                     guard_blocking = True
-                # Swipe só explora a tela; qualquer outra ação real zera
-                # o intervalo antes de o guardião poder reiniciar o jogo.
+                # Qualquer ação do bot, inclusive swipe, reinicia o prazo.
                 elif app_guard.needs_scan(state_machine.last_meaningful_action_time):
                     if recorder is not None:
                         recorder.discard_since(state_machine.last_meaningful_action_wall)

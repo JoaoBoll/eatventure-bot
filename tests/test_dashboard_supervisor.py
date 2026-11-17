@@ -551,6 +551,27 @@ def test_device_description_reads_live_metrics_without_discovery_or_cache(tmp_pa
     supervisor.devices.list.assert_not_called()
 
 
+def test_historico_de_fases_persiste_sem_duplicar_atualizacoes(tmp_path):
+    supervisor, run, _ = _preview_run(tmp_path)
+    metrics = {
+        "voos": 0,
+        "reformas": 0,
+        "summary": {
+            "historico_fases": [
+                {"id": 1, "duration": 37.5, "ended_at": 1000.0},
+            ],
+        },
+    }
+
+    supervisor._add_report_metrics("hardware-1", run, metrics)
+    supervisor._add_report_metrics("hardware-1", run, metrics)
+
+    assert metrics["historico_fases"] == [
+        {"id": 1, "duration": 37.5, "ended_at": 1000.0},
+    ]
+    assert supervisor._report("hardware-1")["historico_fases"] == metrics["historico_fases"]
+
+
 def test_runtime_state_refreshes_owned_runs_without_discovery(tmp_path):
     supervisor, run, paths = _preview_run(tmp_path)
     supervisor.devices.list.side_effect = AssertionError("O polling não deve consultar o ADB.")

@@ -19,12 +19,15 @@ from core.config import (
     FOOD_MAX_ATTEMPTS,
     MAX_DETECTION_AGE,
     MAX_SWIPES,
+    PHASE_HISTORY_LIMIT,
     REPEATED_ACTION_WARNING,
     STATE_ENTRY_SETTLE,
     STATE_TIMEOUTS,
     SWIPE_START_DIRECTION,
     SWIPE_WAIT_FOR_NO_ACTION,
     SWIPE_WAITING_TIME,
+    UPGRADE_FOOD_CONFIRM_GRACE,
+    UPGRADE_FOOD_MAX_HOLD,
     UP_FOOD_WAIT,
     VIEW_MOVING_ACTIONS,
 )
@@ -48,13 +51,13 @@ HELPER = "HELPER"
 # As quatro primeiras fecham o que não deveria estar aberto,
 # antes de qualquer ação de jogo.
 #
-# up_food em NORMAL faz o MESMO que em FOOD (long press de
-# UPGRADE_FOOD_PRESS s). Escolha deliberada contra dispensar o
+# up_food em NORMAL faz o MESMO que em FOOD (toque contínuo até
+# gray_max/gray_coin). Escolha deliberada contra dispensar o
 # painel: custa que, se o painel abrir sem querer, o bot gasta
-# moeda e trava o tempo do press. Consequência: "upgrade_food"
+# moeda enquanto o toque estiver ativo. Consequência: "upgrade_food"
 # não está em DISMISS_ACTIONS, então a escada de fechamento não
-# vale aqui — preso, ele repete o press indefinidamente (aviso
-# via REPEATED_ACTION_WARNING). Para voltar a dispensar, troque
+# vale aqui — o toque só é liberado pelos sinais cinza ou pelo
+# limite de segurança. Para voltar a dispensar, troque
 # por "dismiss" (coberto por
 # tests/test_pipeline.py::test_dismiss_toca_no_ponto_neutro).
 NORMAL_RULES = [
@@ -97,6 +100,10 @@ UPGRADE_RULES = [
     ("close", "close", NORMAL),
 ]
 
+# Caixa e painel de upgrade não precisam da pausa longa reservada ao
+# fluxo de food: depois do toque, a varredura pode seguir no ritmo normal.
+FAST_EXPLORATION_ACTIONS = {"open_box", "upgrade", "upgrade_item"}
+
 STATE_RULES = {
     NORMAL: NORMAL_RULES,
     RENOVATE: RENOVATE_RULES,
@@ -108,9 +115,10 @@ STATE_RULES = {
     # então são tratados em handler dedicado. As categorias
     # ficam aqui só para o filtro do detector.
     FOOD: [
-        ("up_food", "upgrade_food", None),
         ("gray_max", "gray_max", None),
-        ("gray_coin", "gray_coin", None)
+        ("gray_coin", "gray_coin", None),
+        ("while_up_food", None, None),
+        ("up_food", "upgrade_food", None),
     ],
     NEW_POINT: [
         ("up_food", "new_point_click", None),
@@ -180,6 +188,7 @@ class StateMachine:
 
         # Espera depois do long press de comida.
         self.up_food_wait_start = None
+        self.while_up_food_seen_at = None
 
         # Item de "food" atual, esperando up_food. Guardado aqui (e
         # não só na detecção local) porque _wait_or_give_up precisa
@@ -203,6 +212,13 @@ class StateMachine:
         self.cycle_last = None
         self.cycle_count = 0
         self._renovate_origin = None
+
+        # Uma fase começa quando o avião é pressionado. Só a próxima
+        # pressão no avião fecha a duração anterior.
+        self.phase_started_at = None
+        self.phase_last = None
+        self.phase_history = []
+        self._phase_sequence = 0
 
         # Contado em _act (único ponto por onde ação sai);
         # contar em _apply_rules incluiria tentativa barrada por
@@ -266,6 +282,16 @@ class StateMachine:
     def wanted_categories(self):
         """Categorias do estado atual, em ordem de prioridade — filtro do detector (~264ms → ~16ms por passada em UPGRADE)."""
 
+        if self.state == FOOD:
+            # Antes de iniciar, o único alvo é o botão que começa o upgrade.
+            # Depois do DOWN, procurar esse botão de novo pode reacertar um
+            # frame antigo e competir com o indicador de pressão contínua.
+            return (
+                ["gray_max", "gray_coin", "while_up_food"]
+                if self.up_food_wait_start is not None
+                else ["up_food"]
+            )
+
         rules = STATE_RULES.get(self.state, NORMAL_RULES)
 
         categories = []
@@ -293,6 +319,8 @@ class StateMachine:
         self.cycle_at += duration
         if self.up_food_wait_start is not None:
             self.up_food_wait_start += duration
+        if self.while_up_food_seen_at is not None:
+            self.while_up_food_seen_at += duration
         self._frame = None
         self._frame_time = None
         self._detections = []
@@ -414,7 +442,9 @@ class StateMachine:
 
             if action != "food":
 
-                self._delay_exploration()
+                self._delay_exploration(
+                    long=action not in FAST_EXPLORATION_ACTIONS
+                )
 
             self._act(
                 action,
@@ -487,6 +517,13 @@ class StateMachine:
             self._mark_cycle(self._renovate_origin)
             self._renovate_origin = None
 
+        if (
+            action == "renovate_click"
+            and detection is not None
+            and detection["category"] == "fly"
+        ):
+            self._mark_flight_phase()
+
         self._count_repeat(action)
 
         if self.detector is not None and detection is not None:
@@ -494,9 +531,10 @@ class StateMachine:
 
         self._record(action, detection)
 
-        if not self._last_was_swipe:
-            self.last_meaningful_action_time = self.last_action_time
-            self.last_meaningful_action_wall = time.time()
+        # O guardião só pode abrir/reabrir o jogo após inatividade total:
+        # swipe também é atividade e reinicia o prazo de segurança.
+        self.last_meaningful_action_time = self.last_action_time
+        self.last_meaningful_action_wall = time.time()
 
         if (
             next_state == RENOVATE
@@ -588,6 +626,27 @@ class StateMachine:
             self.cycle_count,
         )
 
+    def _mark_flight_phase(self):
+        now = time.monotonic()
+
+        if self.phase_started_at is not None:
+            duration = now - self.phase_started_at
+            self._phase_sequence += 1
+            self.phase_last = duration
+            self.phase_history.append({
+                "id": self._phase_sequence,
+                "duration": duration,
+                "ended_at": time.time(),
+            })
+            del self.phase_history[:-PHASE_HISTORY_LIMIT]
+            logger.info(
+                t("messages.phase_completed"),
+                self._phase_sequence,
+                formata_duracao(duration),
+            )
+
+        self.phase_started_at = now
+
     def summary(self):
         """O que interessa a quem olha a tela, num dict — nomes de negócio (voos, reformas), não de código."""
 
@@ -607,6 +666,16 @@ class StateMachine:
             # Só sobe após o toque em renovate/fly. build/plane por si só
             # podem ser uma detecção errada ou uma tela que não abriu.
             "reformas": self.cycle_count,
+
+            # Só existe após o primeiro fly desta sessão. O painel usa a
+            # lista para montar um histórico persistente por dispositivo.
+            "fase_atual": (
+                None
+                if self.phase_started_at is None
+                else time.monotonic() - self.phase_started_at
+            ),
+            "fase_ultima": self.phase_last,
+            "historico_fases": list(self.phase_history),
 
             "acoes": sum(self.action_counts.values()),
         }
@@ -771,6 +840,7 @@ class StateMachine:
         # Variáveis locais do estado anterior não vazam
         # para o próximo.
         self.up_food_wait_start = None
+        self.while_up_food_seen_at = None
         if previous_state == RENOVATE and state != RENOVATE:
             self._renovate_origin = None
 
@@ -782,9 +852,22 @@ class StateMachine:
 
         if state != FOOD and previous_state != FOOD:
 
-            self._delay_exploration()
+            self._delay_exploration(
+                long=state != UPGRADE and previous_state != UPGRADE
+            )
 
     def _timed_out(self, detections=None):
+
+        # Enquanto ainda houver um botão de upgrade, o painel está útil.
+        # Não importa há quanto tempo foi aberto: sair por timeout aqui
+        # deixaria upgrades visíveis sem serem pressionados.
+        if self.state == UPGRADE and self._find(detections or [], "up_upgrade") is not None:
+            return False
+
+        # Depois que o toque contínuo de comida começou, apenas os sinais
+        # cinza podem encerrá-lo. O timeout não pode soltar no meio.
+        if self.state == FOOD and self.up_food_wait_start is not None:
+            return False
 
         timeout = STATE_TIMEOUTS.get(self.state)
 
@@ -820,22 +903,8 @@ class StateMachine:
     def _food(self, detections):
         """Segura o botão de upgrade de comida e espera o próximo aparecer; sem próximo em UP_FOOD_WAIT, volta para NORMAL."""
 
-        up_food = self._find(detections, "up_food")
-
-        if up_food is not None:
-
-            if self._act("upgrade_food", up_food):
-
-                self._delay_exploration()
-
-                self.up_food_wait_start = time.monotonic()
-
-            return
-
-        # Painel esgotado: dispensa (DISMISS_POINT ou
-        # GRAY_COIN_POINT). ANTES do _wait_or_give_up, não
-        # depois: ele pode chamar _enter(NORMAL), e um _act
-        # depois disso agiria fora do estado FOOD.
+        # Os sinais cinza encerram o toque antes de qualquer nova tentativa
+        # de pressionar o botão de comida.
         for categoria, acao in (
             ("gray_max", "gray_max"),
             ("gray_coin", "gray_coin"),
@@ -850,6 +919,48 @@ class StateMachine:
                 self._act(acao, deteccao, NORMAL)
 
                 return
+
+        if self.up_food_wait_start is not None:
+            now = time.monotonic()
+            held_for = now - self.up_food_wait_start
+            if held_for >= UPGRADE_FOOD_MAX_HOLD:
+                logger.warning(
+                    t("messages.food_upgrade_max_hold"),
+                    held_for,
+                )
+                self._act("release_food_press", None, NORMAL)
+                return
+
+            if self._find(detections, "while_up_food") is not None:
+                self.while_up_food_seen_at = now
+                return
+
+            confirmation_at = (
+                self.while_up_food_seen_at
+                if self.while_up_food_seen_at is not None
+                else self.up_food_wait_start
+            )
+            missing_for = now - confirmation_at
+            if missing_for >= UPGRADE_FOOD_CONFIRM_GRACE:
+                logger.warning(
+                    t("messages.food_upgrade_confirmation_missing"),
+                    missing_for,
+                )
+                self._act("release_food_press", None, NORMAL)
+            return
+
+        up_food = self._find(detections, "up_food")
+
+        if up_food is not None:
+
+            if self._act("upgrade_food", up_food):
+
+                self._delay_exploration()
+
+                self.up_food_wait_start = time.monotonic()
+                self.while_up_food_seen_at = None
+
+            return
 
         self._wait_or_give_up()
 
@@ -988,15 +1099,15 @@ class StateMachine:
         self._food_target = None
         self._reset_food_tracking()
 
-    def _delay_exploration(self):
-        """Algo foi encontrado: ADIA o próximo swipe, sem resetar o ciclo de varredura (renomeado de `_reset_exploration` — resetar a contagem aqui fazia o bot varrer sempre o mesmo pedaço da tela, já que quase todo swipe acha algo)."""
+    def _delay_exploration(self, long=True):
+        """Adia o próximo swipe sem reiniciar o ciclo de varredura."""
 
         if not SWIPE_WAIT_FOR_NO_ACTION:
             return
 
         self.explore_anchor = time.monotonic()
 
-        self.explore_found = True
+        self.explore_found = long
 
     def exploration_interval(self):
         """Quanto esperar pelo próximo swipe: exploration_delay se nada foi achado, exploration_action_delay (maior) se sim — derivado de explore_found em vez de guardado."""

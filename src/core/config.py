@@ -283,12 +283,15 @@ CATEGORY_THRESHOLDS = {
     "box": 0.95,
     "delivery": 0.95,
     "helper": 0.95,
-    "engine": 0.90
+    "engine": 0.90,
+    "gray_coin": 0.88,
 }
 
 CATEGORY_COLOR_THRESHOLDS = {
     "delivery": 0.99,
-    "engine": 0.95
+    "engine": 0.95,
+    "close": 0.95,
+    "gray_coin": 0.90,
 }
 
 
@@ -320,7 +323,7 @@ VISION_FAILURE_LIMIT = 5
 # Guarda o último recorte aprovado; defaults já cobertos são atualizados
 # apenas na thread de aprendizado, sem busca duplicada na visão principal.
 LEARN_RESOLUTION_TEMPLATES = True
-TEMPLATE_REFRESH_INTERVAL = 5.0
+TEMPLATE_REFRESH_INTERVAL = 2.0
 
 # Recortes aprendidos entram em uso imediatamente na memória. O disco só
 # recebe checkpoints periódicos, reduzindo escrita repetida no SSD.
@@ -347,7 +350,7 @@ COARSE_SCALE_STEP = 0.05
 COARSE_MARGIN = 0.18
 
 REFINE_SLACK = 8
-MAX_MATCHES_PER_TEMPLATE = 12
+MAX_MATCHES_PER_TEMPLATE = 9
 NMS_IOU = 0.35
 
 
@@ -355,6 +358,12 @@ NMS_IOU = 0.35
 
 UPGRADE_ITEM_CLICKS = 5
 UPGRADE_FOOD_PRESS = 4.0
+# Freio para não manter o dedo preso quando o painel foi aberto por engano
+# ou os sinais cinza não foram reconhecidos.
+UPGRADE_FOOD_MAX_HOLD = 15.0
+# Depois de iniciar o toque, o indicador while_up_food precisa confirmar que
+# o botão continua ativo; sem ele, solta antes do limite máximo.
+UPGRADE_FOOD_CONFIRM_GRACE = 2.0
 
 DISMISS_POINT = (10, 2200)
 GRAY_COIN_POINT = (1070, 250)
@@ -398,6 +407,9 @@ EXPLORATION_DELAY = 5.0
 EXPLORATION_DELAY_AFTER_ACTION = 15.0
 MAX_SWIPES = 5
 SWIPE_START_DIRECTION = "down"
+
+# Fases concluídas entre dois voos mantidas na sessão e no painel.
+PHASE_HISTORY_LIMIT = 100
 
 
 # ==== FOOD ====
