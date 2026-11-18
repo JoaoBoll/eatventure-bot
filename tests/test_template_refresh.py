@@ -92,6 +92,23 @@ class TemplateRefreshTests(unittest.TestCase):
 
         self.assertTrue(self.detector._learn_queue.empty())
 
+    def test_refresh_uses_best_base_per_identity(self):
+        from unittest.mock import Mock
+
+        other = self.make_template("108x240_item_001.png")
+        scanner = Mock()
+        scanner.detect.return_value = [
+            {"_template": self.template, "x": 0, "y": 0, "confidence": 0.96},
+            {"_template": other, "x": 1, "y": 1, "confidence": 0.99},
+        ]
+        self.detector._refresh_scanner = scanner
+        with patch.object(self.detector, "_queue_learn_candidate") as queue:
+            self.detector._refresh_defaults(self.image, 3, ["box"])
+
+        scanner.detect.assert_called_once_with(self.image, categories=["box"], exhaustive=True)
+        self.assertIs(queue.call_args.args[1], other)
+        self.assertEqual(queue.call_count, 1)
+
     def test_queue_uses_global_threshold_for_category_without_override(self):
         template = self.make_template("item_001.png", category="synthetic")
         self.queue(0.8999, template)
@@ -232,7 +249,7 @@ class TemplateRefreshTests(unittest.TestCase):
         self.assertFalse(self.detector._learn_writing)
         self.assertEqual(self.detector._resolution_templates, {})
 
-    def test_foreground_omits_all_variants_of_covered_default_only(self):
+    def test_foreground_uses_only_resolution_templates(self):
         self.detector.templates = [
             self.make_template("72x160_item_001.png"),
             self.make_template("108x240_item_001.png"),
@@ -245,13 +262,8 @@ class TemplateRefreshTests(unittest.TestCase):
         templates = self.detector._templates_for(*self.key)
 
         self.assertIs(templates["box"][0], override)
-        self.assertTrue(any(item["origin"] == "default" for item in templates["box"]))
-        self.assertTrue(all(
-            item is override or self.detector._base_name(item["name"]) == "item_002.png"
-            for item in templates["box"]
-        ))
-        self.assertTrue(templates["synthetic"])
-        self.assertTrue(all(item["origin"] == "default" for item in templates["synthetic"]))
+        self.assertEqual(templates["box"], [override])
+        self.assertNotIn("synthetic", templates)
 
         defaults = self.detector._defaults_for(*self.key)["box"]
         self.assertTrue(any(
@@ -265,12 +277,11 @@ class TemplateRefreshTests(unittest.TestCase):
         self.detector._resolution_templates[self.key] = {"box": [override]}
 
         learned = self.detector._templates_for(*self.key)["box"]
-        other = self.detector._templates_for(72, 160)["box"]
+        other = self.detector._templates_for(72, 160).get("box", [])
 
-        self.assertEqual(len(learned), 1)
         self.assertIs(learned[0], override)
-        self.assertTrue(other)
-        self.assertTrue(all(item["origin"] == "default" for item in other))
+        self.assertEqual(learned, [override])
+        self.assertEqual(other, [])
 
 
 if __name__ == "__main__":

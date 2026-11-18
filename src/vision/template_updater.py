@@ -18,7 +18,6 @@ class DefaultTemplateScanner(Detector):
             coarse_margin=parent.coarse_margin,
             learn_resolution_templates=False,
         )
-        self._prefer_active_scale = True
 
     def load_templates(self):
         with self._parent._learn_lock:

@@ -161,7 +161,7 @@ class TemplateEfficiencyTests(unittest.TestCase):
             {"item_001.png", "item_002.png"},
         )
 
-    def test_background_reuses_winning_scale_and_recalibrates_after_dry_frames(self):
+    def test_background_scans_all_scales_on_each_exhaustive_pass(self):
         self.detector.templates = [self.template()]
         self.cover()
         scanner = DefaultTemplateScanner(self.detector)
@@ -186,13 +186,12 @@ class TemplateEfficiencyTests(unittest.TestCase):
             searches.reset_mock()
 
             self.assertTrue(scanner.detect(frame))
-            self.assertEqual(scanner.last_searched, 1)
-            self.assertEqual(searches.call_args.args[2]["escala"], desired_scale)
+            self.assertEqual(scanner.last_searched, len(vd.TEMPLATE_SCALE_STEPS))
 
             dry = True
             for _ in range(vd.ESCALA_LIBERA_SECAS):
                 self.assertEqual(scanner.detect(frame), [])
-                self.assertEqual(scanner.last_searched, 1)
+                self.assertEqual(scanner.last_searched, len(vd.TEMPLATE_SCALE_STEPS))
 
             dry = False
             desired_scale = 0.92
@@ -201,8 +200,7 @@ class TemplateEfficiencyTests(unittest.TestCase):
             searches.reset_mock()
 
             self.assertTrue(scanner.detect(frame))
-            self.assertEqual(scanner.last_searched, 1)
-            self.assertEqual(searches.call_args.args[2]["escala"], desired_scale)
+            self.assertEqual(scanner.last_searched, len(vd.TEMPLATE_SCALE_STEPS))
 
     def test_background_updates_all_covered_categories_even_after_a_match(self):
         self.detector.templates = [self.template(), self.template(category="food")]

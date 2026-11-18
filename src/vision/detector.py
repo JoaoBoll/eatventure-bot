@@ -995,7 +995,7 @@ class Detector:
         )
 
     def _templates_for(self, frame_width, frame_height):
-        """Templates gerados nativos da resolução, sem fallback default."""
+        """Retorna apenas os templates nativos da resolução do frame."""
 
         chave = (frame_width, frame_height)
 
@@ -1041,16 +1041,6 @@ class Detector:
 
         chave = (frame_width, frame_height)
         templates = self.templates if templates is None else templates
-        exatos = {
-            (template["category"], self._base_name(template["name"]))
-            for template in templates
-            if self._parse_resolution_dir_name(template.get("source") or "") == chave
-        }
-        templates = [
-            template for template in templates
-            if (template["category"], self._base_name(template["name"])) not in exatos
-            or self._parse_resolution_dir_name(template.get("source") or "") == chave
-        ]
         selecao = tuple((template["category"], template["name"]) for template in templates)
 
         if self._defaults_selection.get(chave) == selecao:
@@ -1305,7 +1295,7 @@ class Detector:
 
             self._refresh_scanner = DefaultTemplateScanner(self)
 
-        detections = self._refresh_scanner.detect(frame, categories=categories)
+        detections = self._refresh_scanner.detect(frame, categories=categories, exhaustive=True)
         with self._learn_queue_lock:
             self._refresh_preview = (
                 frame,
@@ -1313,9 +1303,15 @@ class Detector:
                 None if categories is None else tuple(categories),
             )
         height, width = frame.shape[:2]
-        for detection in detections:
+        learned = set()
+        for detection in sorted(detections, key=lambda item: item["confidence"], reverse=True):
+            template = detection["_template"]
+            identity = (template["category"], self._base_name(template["name"]))
+            if identity in learned:
+                continue
+            learned.add(identity)
             self._queue_learn_candidate(
-                frame, detection["_template"],
+                frame, template,
                 detection["x"], detection["y"], width, height,
                 detection["confidence"], sequence,
             )
