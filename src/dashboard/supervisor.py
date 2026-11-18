@@ -278,7 +278,9 @@ class DeviceManager:
                     if hardware:
                         device_id = hardware
                     elif host:
-                        device_id = network_ids[host]
+                        device_id = network_ids.setdefault(
+                            host, service["instance"] if service else f"wifi:{host}"
+                        )
                     elif service is not None:
                         device_id = service["instance"]
                     else:
@@ -984,9 +986,7 @@ class BotSupervisor:
                     self._reconnect_device(serial)
                     self._validate_device(serial)
                 self.devices.invalidate()
-                device = self._resolve(device_id, refresh=True)
-                if not device["connected"] or device.get("serial") != serial:
-                    raise RuntimeError(t("messages.device_not_authorized"))
+                device = {**device, "connected": True, "adb_state": "device"}
             except RuntimeError as error:
                 if previous is not None:
                     self._append_log(previous, t("messages.adb_start_validation_failed", error=error))

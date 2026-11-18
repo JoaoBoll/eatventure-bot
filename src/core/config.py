@@ -273,6 +273,7 @@ CATEGORY_MATCH_BUDGET = {
 CATEGORY_SCAN_QUOTA = {
     "food": 16,
     "new_point": 10,
+    "box": 3
 }
 
 # Por quanto tempo um template que bateu continua no início da fila da sua
