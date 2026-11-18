@@ -937,6 +937,24 @@ class BotSupervisor:
         with self._auto_training_lock:
             return self._start(device_id)
 
+    def _validate_device(self, serial):
+        state = _adb_run(self.devices._executable(), ["-s", serial, "get-state"], timeout=8).strip()
+        if state != "device":
+            raise RuntimeError(t("messages.adb_start_state_invalid", state=state or "unknown"))
+        response = _adb_run(
+            self.devices._executable(), ["-s", serial, "shell", "echo", "eatventure-ready"], timeout=8
+        ).strip()
+        if response != "eatventure-ready":
+            raise RuntimeError(t("messages.adb_start_shell_invalid", response=response or "empty"))
+
+    def _reconnect_device(self, serial):
+        executable = self.devices._executable()
+        _adb_run(executable, ["disconnect", serial], timeout=8)
+        output = _adb_run(executable, ["connect", serial], timeout=12).strip()
+        if not any(value in output.lower() for value in ("connected to", "already connected")):
+            raise RuntimeError(output or t("messages.adb_connection_unconfirmed"))
+        self.devices.invalidate()
+
     def _start(self, device_id, restart_attempt=0):
         device = self._resolve(device_id)
         device_id = device["id"]
@@ -950,8 +968,29 @@ class BotSupervisor:
                 for running_id, active in self._runs.items():
                     if running_id != device_id and active.serial in device["aliases"] and active.process.poll() is None:
                         raise RuntimeError(t("messages.duplicate_adb_connection"))
-            if not device["connected"]:
+            serial = device.get("serial")
+            if not serial:
                 raise RuntimeError(t("messages.device_not_authorized"))
+            network_address = DeviceManager._network_host(serial) is not None
+            try:
+                if network_address and previous is not None:
+                    self._append_log(previous, t("messages.adb_start_reconnecting"))
+                    self._reconnect_device(serial)
+                try:
+                    self._validate_device(serial)
+                except RuntimeError:
+                    if not network_address or previous is not None:
+                        raise
+                    self._reconnect_device(serial)
+                    self._validate_device(serial)
+                self.devices.invalidate()
+                device = self._resolve(device_id, refresh=True)
+                if not device["connected"] or device.get("serial") != serial:
+                    raise RuntimeError(t("messages.device_not_authorized"))
+            except RuntimeError as error:
+                if previous is not None:
+                    self._append_log(previous, t("messages.adb_start_validation_failed", error=error))
+                raise
             profile = migrate_legacy_blocks(self.store, device_id, device.get("aliases", []))
             profile_path = Path(self.store.path_for(device_id))
             if not profile_path.is_file():

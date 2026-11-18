@@ -1041,6 +1041,16 @@ class Detector:
 
         chave = (frame_width, frame_height)
         templates = self.templates if templates is None else templates
+        exatos = {
+            (template["category"], self._base_name(template["name"]))
+            for template in templates
+            if self._parse_resolution_dir_name(template.get("source") or "") == chave
+        }
+        templates = [
+            template for template in templates
+            if (template["category"], self._base_name(template["name"])) not in exatos
+            or self._parse_resolution_dir_name(template.get("source") or "") == chave
+        ]
         selecao = tuple((template["category"], template["name"]) for template in templates)
 
         if self._defaults_selection.get(chave) == selecao:
