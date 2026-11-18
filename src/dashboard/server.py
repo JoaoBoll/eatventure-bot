@@ -455,6 +455,10 @@ def create_app(root=None, state_root=None, token=None, supervisor=None, require_
         known(device_id)
         return store.reset(device_id)
 
+    @app.delete("/api/devices/{device_id}")
+    def delete_device(device_id: str):
+        return supervisor.delete_device(device_id)
+
     @app.post("/api/devices/{device_id}/vision")
     async def request_vision(device_id: str, request: Request):
         from starlette.concurrency import run_in_threadpool

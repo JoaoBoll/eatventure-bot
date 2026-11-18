@@ -265,7 +265,7 @@ main { min-width: 0; flex: 1; }
 .device-metric dd { margin: 0; color: #edf3ff; font-size: 20px; font-weight: 600; line-height: 1.2; font-variant-numeric: tabular-nums; }
 .device-metric dd.accent { color: #b8ceff; }
 .device-card dl { margin: 0; }
-.device-card-footer { position: relative; z-index: 3; display: flex; align-items: center; gap: 8px; margin-top: auto; padding: 14px 16px; }
+.device-card-footer { position: relative; z-index: 3; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: auto; padding: 14px 16px; }
 .device-card-footer .start-button { flex: 1; }
 .device-card-footer .button { min-height: 36px; padding: 7px 12px; font-size: 12px; }
 .device-card-footer .start-button.danger-text { border-color: #bd4451; background: #bd4451; color: #fff; }

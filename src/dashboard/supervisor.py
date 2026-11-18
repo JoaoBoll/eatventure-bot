@@ -939,6 +939,28 @@ class BotSupervisor:
         with self._auto_training_lock:
             return self._start(device_id)
 
+    def delete_device(self, device_id):
+        with self._auto_training_lock:
+            device = self._resolve(device_id)
+            device_id = device["id"]
+            with self._operation_lock(device_id):
+                with self._lock:
+                    run = self._runs.get(device_id)
+                    if run is not None and run.process.poll() is None:
+                        raise RuntimeError(t("messages.delete_running_device"))
+                    if run is not None:
+                        run.stop_requested = True
+                        run.recovery_cancel.set()
+                serial = device.get("serial")
+                if serial and DeviceManager._network_host(serial) is not None:
+                    _adb_run(self.devices._executable(), ["disconnect", serial], timeout=8)
+                self.store.reset(device_id)
+                with self._lock:
+                    self._runs.pop(device_id, None)
+                    self._device_cache.pop(device_id, None)
+                self.devices.invalidate()
+                return {"deleted": True}
+
     def _validate_device(self, serial):
         state = _adb_run(self.devices._executable(), ["-s", serial, "get-state"], timeout=8).strip()
         if state != "device":

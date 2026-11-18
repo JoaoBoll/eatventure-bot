@@ -656,6 +656,10 @@ function renderDevice(device) {
   const settings = button("⚙", "button ghost settings-button", () => openDetails(device.id, "settings"), t("web.device_settings_hint"));
   settings.setAttribute("aria-label", t("web.configure_device", { value_1: deviceName(device) }));
   settings.dataset.role = "settings";
+  const remove = button("✕", "button ghost danger-text", () => deleteDevice(device.id), t("web.delete_device"));
+  remove.setAttribute("aria-label", t("web.delete_device_named", { value_1: deviceName(device) }));
+  remove.dataset.role = "delete";
+  remove.disabled = busy || device.running;
   const resolution = datasetResolutionOf(device);
   const dataset = button(t("web.data_button"), "button ghost dataset-button", () => {
     const current = deviceById(device.id) || device;
@@ -665,7 +669,7 @@ function renderDevice(device) {
   dataset.disabled = !resolution && !device.session_id;
   if (!resolution) dataset.title = t("web.last_session_resolution_hint");
   dataset.dataset.role = "dataset";
-  footer.append(start, restart, dataset, settings);
+  footer.append(start, restart, dataset, settings, remove);
   card.append(header, status);
   card.append(node("p", "bot-state"), node("p", "phase-history"), node("p", "metrics-freshness"));
   card.append(metrics, footer);
@@ -755,6 +759,21 @@ function updateSelection() {
   $("bulk-start").disabled = !eligible.some((device) => connected(device) && !device.running);
   $("bulk-restart").disabled = !eligible.some((device) => connected(device) && device.running);
   $("bulk-stop").disabled = !eligible.some((device) => device.running);
+}
+
+async function deleteDevice(id) {
+  const device = deviceById(id);
+  if (!device || device.running || busyDevices.has(id)) return;
+  if (!confirm(t("web.confirm_delete_device", { value_1: deviceName(device) }))) return;
+  busyDevices.add(id);
+  renderDevices();
+  try {
+    await api(`/api/devices/${encodeURIComponent(id)}`, { method: "DELETE" });
+    selected.delete(id);
+    toast(t("web.device_deleted"));
+    await refreshState(true);
+  } catch (error) { if (authenticated) toast(error.message, true); }
+  finally { busyDevices.delete(id); renderDevices(); }
 }
 
 async function executeAction(action, ids) {
