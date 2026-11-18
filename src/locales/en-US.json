@@ -746,6 +746,8 @@
     "bot_recovered": "Bot recovered: attempt {restart_attempt}/{value_2}.",
     "bot_stop_failed": "Could not stop the bot process.",
     "dashboard_stop_requested": "Shutdown requested by the dashboard.",
+    "adb_connection_lost": "ADB connection unavailable: {detail}",
+    "adb_connection_restored": "ADB connection restored.",
     "bot_stopped": "Bot stopped (code {value_1}).",
     "vision_requires_running_bot": "Start the bot to open AI vision.",
     "vision_toggle_failed": "Could not change AI vision.",

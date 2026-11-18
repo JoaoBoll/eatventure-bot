@@ -620,6 +620,13 @@ class BotSupervisor:
                     "connection": "wifi" if _wifi(run.serial) else "usb",
                     "adb_state": "disconnected", "aliases": [run.serial], "connected": False,
                 })
+                previous = self._device_cache.get(device_id)
+                current = catalog[device_id]
+                if previous and previous.get("connected") and not current.get("connected"):
+                    detail = localized(self.devices.last_error) or current.get("adb_state", "disconnected")
+                    self._append_log(run, t("messages.adb_connection_lost", detail=detail))
+                elif previous and not previous.get("connected") and current.get("connected"):
+                    self._append_log(run, t("messages.adb_connection_restored"))
             self._device_cache = {key: dict(device) for key, device in catalog.items()}
         return catalog
 

@@ -29,6 +29,7 @@ from core.config import (
     DETECTOR_DEBUG_INTERVAL,
     DETECTOR_DEBUG_MISSES,
     ESCALA_LIBERA_SECAS,
+    ESCALA_ATIVA_TTL,
     ESCALA_UNICA_POR_TEMPLATE,
     LEARN_RESOLUTION_TEMPLATES,
     TEMPLATE_REFRESH_INTERVAL,
@@ -163,6 +164,7 @@ class Detector:
         # (resolução, categoria) -> {nome_base: instante do último match}.
         # Ordena a fila da categoria: quem bateu há pouco vem primeiro.
         self._quentes = {}
+        self._limpar_prioridades = threading.Event()
 
         # Ordem já montada por (resolução, categoria) e a versão do conjunto
         # quente que a gerou — reordenar 86 templates a cada frame custaria
@@ -1661,7 +1663,7 @@ class Detector:
 
         escala, _, quando, vistos = entrada
 
-        if agora - quando > QUENTES_TTL:
+        if agora - quando > ESCALA_ATIVA_TTL:
 
             # Parou de bater há tempo demais para ainda ser a escala
             # certa (zoom mudou): volta a sondar em vez de ficar cego.
@@ -1766,6 +1768,9 @@ class Detector:
 
         quentes[nome] = agora
 
+    def reset_prioridades(self):
+        self._limpar_prioridades.set()
+
     def _particao_quente(self, chave_categoria, lista, teto, agora):
         """(quentes, frios) da categoria. O prefixo quente é limitado a
         teto-2 nomes: sem essa folga, alguns falsos-positivos estáveis nas
@@ -1781,7 +1786,7 @@ class Detector:
             cacheada is not None
             and cacheada[0] == self._quentes_versao
             and cacheada[1] is lista
-            and agora - cacheada[2] <= QUENTES_TTL
+            and agora <= cacheada[5]
         ):
             return cacheada[3], cacheada[4]
 
@@ -1821,6 +1826,7 @@ class Detector:
             agora,
             na_frente,
             frios,
+            min((quentes[nome] + QUENTES_TTL for nome in recentes), default=agora + QUENTES_TTL),
         )
 
         return na_frente, frios
@@ -1855,6 +1861,11 @@ class Detector:
 
     def detect(self, frame, categories=None, exhaustive=False):
         """Detecções aprovadas, ordenadas por confiança (maior primeiro). `categories` filtra a busca (permite a StateMachine procurar 2 templates em vez de 43)."""
+
+        if self._limpar_prioridades.is_set():
+            self._limpar_prioridades.clear()
+            self._quentes.clear()
+            self._ordem_cache.clear()
 
         self._maybe_reload_templates()
 

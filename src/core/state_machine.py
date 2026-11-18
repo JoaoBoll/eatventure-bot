@@ -524,6 +524,14 @@ class StateMachine:
         ):
             self._mark_flight_phase()
 
+        if (
+            action == "renovate_click"
+            and detection is not None
+            and detection["category"] in ("fly", "renovate")
+            and self.detector is not None
+        ):
+            self.detector.reset_prioridades()
+
         self._count_repeat(action)
 
         if self.detector is not None and detection is not None:

@@ -273,6 +273,8 @@ class ScreenCapture:
 
         try:
             self._receive(pendente)
+        except Exception:
+            logger.exception("Falha inesperada na captura")
         finally:
             # Acorda quem espera mesmo se a conversão do frame falhar.
             with self.condition:
@@ -316,10 +318,11 @@ class ScreenCapture:
 
             if not data:
 
-                logger.warning(
-                    t("messages.remote_stream_closed"),
-                    self.PORT,
-                )
+                if self.running:
+                    logger.warning(
+                        t("messages.remote_stream_closed"),
+                        self.PORT,
+                    )
 
                 break
 
@@ -521,9 +524,28 @@ class ScreenCapture:
 
         self.server_process = subprocess.Popen(
             command,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
         )
+        threading.Thread(
+            target=self._log_server_output,
+            args=(self.server_process.stdout,),
+            name="scrcpy-log",
+            daemon=True,
+        ).start()
+
+    @staticmethod
+    def _log_server_output(stream):
+        if stream is None:
+            return
+        try:
+            for line in stream:
+                logger.info("scrcpy-server: %s", line.rstrip())
+        finally:
+            stream.close()
 
     def stop(self):
         logger.info(t("messages.capture_stopping"))

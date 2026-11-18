@@ -255,30 +255,32 @@ ESCALA_LIBERA_SECAS = 6
 
 # Teto de detecções aprovadas por categoria numa passada: a StateMachine age
 # em UMA detecção por frame (_apply_rules), então varrer os 86 templates de
-# food depois de já ter 6 pratos na mão não muda nenhuma decisão. Só corta
+# food depois de já ter alguns pratos na mão não muda nenhuma decisão. Só corta
 # DEPOIS de achar — passada parcial nunca vira "tela vazia", que dispararia
 # _explore_screen. Sobra margem para _is_ignored_food descartar alguns.
 # Categoria fora do dict é varrida inteira.
 CATEGORY_MATCH_BUDGET = {
-    "food": 6,
-    "new_point": 3,
+    "food": 4,
+    "new_point": 2,
+    "box": 3,
 }
 
 # Quantos templates da categoria a passada olha antes de parar, e SÓ se já
 # achou alguma coisa. Sem isto, o teto acima não protege o caso em que os
 # primeiros templates da fila não batem: a passada percorreria os 86 de food
-# mesmo tendo 6 pratos na tela. Nada encontrado = varredura completa, sempre
+# mesmo tendo pratos na tela. Nada encontrado = varredura completa, sempre
 # (é o caso em que cortar cegaria o bot).
 CATEGORY_SCAN_QUOTA = {
-    "food": 20,
-    "new_point": 12,
+    "food": 16,
+    "new_point": 10,
 }
 
 # Por quanto tempo um template que bateu continua no início da fila da sua
 # categoria. Um restaurante tem ~6-10 pratos possíveis entre os 86 templates
 # de food; procurar os que apareceram há pouco antes dos outros faz o teto
 # acima ser atingido nos primeiros templates, não no quinquagésimo.
-QUENTES_TTL = 30.0
+QUENTES_TTL = 120.0
+ESCALA_ATIVA_TTL = 30.0
 
 CATEGORY_THRESHOLDS = {
     "build": 0.95,

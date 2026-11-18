@@ -818,8 +818,7 @@ function changeCount() {
 function updatePending() {
   const changes = changeCount();
   $("pending-count").textContent = changes ? t(changes === 1 ? "web.pending_one" : "web.pending_other", { count: count(changes) }) : t("web.no_changes");
-  const invalid = [...$("profile-fields").querySelectorAll("input,select"), ...$("item-fields").querySelectorAll("input")].some((input) => !input.disabled && !input.checkValidity());
-  $("save-profile").disabled = !changes || invalid || saving;
+  $("save-profile").disabled = !changes || saving;
   $("reset-profile").disabled = !draft || saving;
   $("detail-close").disabled = saving;
   $("profile-fields").inert = saving;
@@ -981,7 +980,7 @@ function renderProfile() {
     const input = thresholdInput(draft.run.ai_min_confidence, t("web.ai_min_confidence"));
     input.id = "run-ai-confidence";
     input.addEventListener("input", () => {
-      if (input.checkValidity()) draft.run.ai_min_confidence = Number(input.value);
+      draft.run.ai_min_confidence = input.checkValidity() ? Number(input.value) : input.value;
       updatePending();
     });
     row.append(label, input, node("p", "setting-hint", t("web.rare_categories_hint")));
@@ -1081,7 +1080,7 @@ function settingField(field) {
     else { delete draft.settings[field.key]; input.value = field.default ?? ""; }
     updatePending();
   });
-  input.addEventListener("input", () => { if (input.checkValidity()) draft.settings[field.key] = read(); updatePending(); });
+  input.addEventListener("input", () => { draft.settings[field.key] = input.checkValidity() ? read() : input.value; updatePending(); });
   const inputRow = node("div", "setting-input-row");
   const defaultValue = isBoolean ? field.default ? t("web.enabled") : t("web.disabled") : String(field.default ?? "—");
   inputRow.append(input, node("span", "default-chip", t("web.default_value", { value_1: defaultValue })));
@@ -1096,7 +1095,7 @@ function thresholdInput(value, label) {
   input.type = "number";
   input.min = 0;
   input.max = 1;
-  input.step = 0.01;
+  input.step = "any";
   input.required = true;
   input.value = value;
   input.setAttribute("aria-label", label);
@@ -1140,7 +1139,7 @@ function renderItems() {
       updatePending();
     });
     input.addEventListener("input", () => {
-      if (input.checkValidity()) draft.category_thresholds[category.name] = Number(input.value);
+      draft.category_thresholds[category.name] = input.checkValidity() ? Number(input.value) : input.value;
       refreshInherited();
       updatePending();
     });
@@ -1178,7 +1177,7 @@ function renderItems() {
         sync();
         updatePending();
       });
-      itemInput.addEventListener("input", () => { if (itemInput.checkValidity()) draft.item_thresholds[item.key] = Number(itemInput.value); updatePending(); });
+      itemInput.addEventListener("input", () => { draft.item_thresholds[item.key] = itemInput.checkValidity() ? Number(itemInput.value) : itemInput.value; updatePending(); });
       const resetItem = button("↶", "reset-icon", () => { delete draft.item_thresholds[item.key]; itemOverride.checked = false; sync(); updatePending(); }, t("web.reset_item_threshold"));
       resetItem.setAttribute("aria-label", t("web.reset_item", { value_1: item.name }));
       row.append(itemLabel, identity, itemInput, resetItem);

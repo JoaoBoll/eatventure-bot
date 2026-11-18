@@ -705,6 +705,8 @@
     "bot_recovered": "Bot rétabli à la tentative {restart_attempt}/{value_2}.",
     "bot_stop_failed": "Impossible d'arrêter le processus du bot.",
     "dashboard_stop_requested": "Arrêt demandé depuis le tableau de bord.",
+    "adb_connection_lost": "Connexion ADB indisponible : {detail}",
+    "adb_connection_restored": "Connexion ADB rétablie.",
     "bot_stopped": "Bot arrêté (code {value_1}).",
     "vision_requires_running_bot": "Démarrez le bot pour afficher la vision de l'IA.",
     "vision_toggle_failed": "Impossible de modifier l'affichage de la vision de l'IA.",

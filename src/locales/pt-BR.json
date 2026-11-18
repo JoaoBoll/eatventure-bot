@@ -746,6 +746,8 @@
     "bot_recovered": "Bot recuperado: tentativa {restart_attempt}/{value_2}.",
     "bot_stop_failed": "Não foi possível encerrar o processo do bot.",
     "dashboard_stop_requested": "Encerramento solicitado pelo painel.",
+    "adb_connection_lost": "Conexão ADB indisponível: {detail}",
+    "adb_connection_restored": "Conexão ADB restabelecida.",
     "bot_stopped": "Bot encerrado (código {value_1}).",
     "vision_requires_running_bot": "Inicie o bot para abrir a visão IA.",
     "vision_toggle_failed": "Não foi possível alterar a visualização IA.",
