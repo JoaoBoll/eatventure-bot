@@ -2712,13 +2712,7 @@ class Detector:
             return ""
 
         if origem == "override":
-
-            # Específico da resolução: mostra a resolução no lugar do tipo.
-            # O template é sempre da resolução do frame; o nome só confirma.
-            if source is None and self._last_frame_size is not None:
-                source = "x".join(str(n) for n in self._last_frame_size)
-
-            return source or t("messages.resolution_label")
+            return ""
 
         # No default a resolução é procedência: diz em qual tela o recorte
         # foi tirado, não em qual ele casou.
