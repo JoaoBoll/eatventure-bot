@@ -68,6 +68,11 @@ class WebPreviewTests(unittest.TestCase):
         self.monotonic.return_value = 10.26
         self.assertFalse(self.preview.requested())
 
+    def test_request_exposes_the_selected_preview_locale(self):
+        self.request(locale="fr-FR")
+        self.assertTrue(self.preview.requested())
+        self.assertEqual(self.preview.language(), "fr-FR")
+
     def test_invalid_stale_or_excessive_leases_are_rejected(self):
         requests = [
             {"session_id": "other", "expires_at": 1008},

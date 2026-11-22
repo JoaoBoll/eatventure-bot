@@ -1,7 +1,7 @@
 """Prévia web sob demanda, com autorização temporária por sessão."""
 
 import json
-from core.i18n import t
+from core.i18n import locale_scope, normalize_locale, t
 import logging
 import math
 import os
@@ -55,6 +55,7 @@ class FramePreview:
         self._owned_image = None
         self._active = False
         self._mode = "vision"
+        self._locale = "pt-BR"
         self._condition = threading.Condition(threading.RLock())
         self._write_lock = threading.RLock()
         self._publish_lock = threading.Lock()
@@ -81,6 +82,7 @@ class FramePreview:
                             and math.isfinite(expires_at) and 0 < expires_at - now <= 15):
                         self._expires_at = expires_at
                         self._mode = request.get("mode") if request.get("mode") in {"vision", "template", "clean"} else "vision"
+                        self._locale = normalize_locale(request.get("locale"))
                 except (OSError, ValueError, TypeError, UnicodeError):
                     pass
             active = now < self._expires_at <= now + 15
@@ -97,6 +99,10 @@ class FramePreview:
     def mode(self):
         with self._condition:
             return self._mode
+
+    def language(self):
+        with self._condition:
+            return self._locale
 
     def due(self):
         if not self.requested():
@@ -155,7 +161,8 @@ class FramePreview:
                     frame, render = pending
                     try:
                         if render is not None:
-                            frame = render(frame)
+                            with locale_scope(self.language()):
+                                frame = render(frame)
                         if frame is not None:
                             self.publish(frame)
                     except Exception as error:
@@ -204,6 +211,7 @@ class FramePreview:
                 "pid": os.getpid(),
                 "updated_at": time.time(),
                 "mode": self.mode(),
+                "locale": self.language(),
             }
             with self._write_lock:
                 with self._condition:

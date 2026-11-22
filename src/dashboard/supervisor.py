@@ -20,7 +20,7 @@ import time
 import uuid
 
 from core import config, log
-from core.i18n import SUPPORTED_LOCALES, Text, localized, t
+from core.i18n import SUPPORTED_LOCALES, Text, locale, localized, normalize_locale, t
 from core.block_regions import migrate_legacy_blocks
 from core.preview import FramePreview, preview_paths
 
@@ -1057,7 +1057,12 @@ class BotSupervisor:
                         run.template_snapshots.clear()
                     return {"enabled": False}
             path = preview_paths(run.status_file)["request"]
-            request = {"session_id": run.session_id, "expires_at": time.time() + 8 if enabled else 0, "mode": mode}
+            request = {
+                "session_id": run.session_id,
+                "expires_at": time.time() + 8 if enabled else 0,
+                "mode": mode,
+                "locale": normalize_locale(locale()),
+            }
             temporary = None
             try:
                 path.parent.mkdir(parents=True, exist_ok=True)
