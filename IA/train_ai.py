@@ -27,6 +27,8 @@ DEFAULT_MODEL = ROOT / "IA" / "model.joblib"
 # em core/state_machine.py). `fly` tem poucas caixas e a maior forma do
 # dataset (414x141 vs 95x94 da mediana), então some fácil num --limit ou
 # --outcome apertado sem que a acurácia agregada avise.
+DEFAULT_CRITICAL_CATEGORIES = ("renovate", "fly")
+CRITICAL_HOLDOUT_GROUPS = 5
 
 
 
@@ -121,12 +123,13 @@ def extract_category_rows(
 
     import cv2
     import numpy as np
-    from dataset_io import box_labels, sample_negative_boxes
+    from dataset_io import box_labels, confirmed_box_labels, sample_negative_boxes
     from features import FEATURE_SIZE, box_features
 
     linhas = []
     rotulos = []
     donos = []
+    rotular = confirmed_box_labels if label_source == "confirmed" else box_labels
 
     ilegiveis = 0
     vazios = 0
@@ -145,17 +148,7 @@ def extract_category_rows(
             progress(indice, total, fase)
             continue
 
-        caixas = box_labels(registro)
-        if label_source == "confirmed":
-            # A coleta nasce do matcher de templates. Só o alvo que sumiu após
-            # o clique tem um sinal adicional de que aquela caixa era útil;
-            # as demais detecções ainda podem ser falsos positivos do matcher.
-            caixas = [
-                (caixa, categoria, agiu)
-                for caixa, categoria, agiu in caixas
-                if registro.get("outcome") == "changed" and agiu
-            ]
-        for caixa, categoria, _agiu in caixas:
+        for caixa, categoria, _agiu in rotular(registro):
             vetor = box_features(imagem, caixa)
             if vetor is None:
                 vazios += 1
@@ -411,7 +404,7 @@ def promotion_decision(metricas, args):
 
     min_macro_f1 = getattr(args, "min_macro_f1", 0.55)
     min_critical_recall = getattr(args, "min_critical_recall", 0.40)
-    critical_categories = getattr(args, "critical_categories", ["renovate", "fly"])
+    critical_categories = getattr(args, "critical_categories", DEFAULT_CRITICAL_CATEGORIES)
     reasons = []
     if metricas["macro_f1"] < min_macro_f1:
         reasons.append(
@@ -419,7 +412,7 @@ def promotion_decision(metricas, args):
         )
     classes = metricas["class_metrics"]
     critical_present = [
-        category for category in critical_categories if category in classes
+        category for category in critical_categories if classes.get(category, {}).get("support", 0) > 0
     ]
     low_recall = [
         category for category in critical_present
@@ -450,10 +443,115 @@ def recall_regressions(candidate, incumbent, labels, minimum_support=5):
     return regressions
 
 
+def post_test_group(record):
+    from training_run import record_key
+
+    return record.get("phash") or record.get("image_sha256") or record_key(record)
+
+
+def prioritize_critical_batch(records, critical_categories):
+    from dataset_io import confirmed_box_labels
+
+    critical = set(critical_categories)
+    seen = defaultdict(set)
+    priority = []
+    remaining = []
+    for record in records:
+        group = post_test_group(record)
+        categories = {
+            category for _, category, _ in confirmed_box_labels(record)
+            if category in critical and len(seen[category]) < CRITICAL_HOLDOUT_GROUPS
+            and group not in seen[category]
+        }
+        if categories:
+            priority.append(record)
+            for category in categories:
+                seen[category].add(group)
+        else:
+            remaining.append(record)
+    return priority + remaining
+
+
+def select_critical_holdout(records, candidates, reserved, size, critical_categories):
+    from dataset_io import confirmed_box_labels
+    from training_run import record_id, record_key
+
+    critical = set(critical_categories)
+    groups = Counter()
+    training = set()
+    labels = {}
+    reserved_ids = {record_id(record) for record in reserved}
+    for record in records:
+        group = post_test_group(record)
+        groups[group] += 1
+        categories = {category for _, category, _ in confirmed_box_labels(record)} & critical
+        labels[record_key(record)] = categories
+        if record_id(record) not in reserved_ids:
+            training.update((category, group) for category in categories)
+
+    covered = defaultdict(set)
+    sessions = defaultdict(set)
+    reserved_groups = set()
+    for record in reserved:
+        group = post_test_group(record)
+        reserved_groups.add(group)
+        for _, category, _ in confirmed_box_labels(record):
+            covered[category].add(group)
+            if record.get("session"):
+                sessions[category].add(record["session"])
+
+    remaining = Counter(category for category, _ in training)
+    selected = []
+    ordinary = []
+    by_category = defaultdict(list)
+    ordered = sorted(candidates, key=lambda record: hashlib.sha256(record_key(record).encode()).digest())
+    for record in ordered:
+        group = post_test_group(record)
+        if record_id(record) in reserved_ids:
+            # A reserva pode ter publicado seu índice antes de atualizar a origem.
+            selected.append(record)
+            if len(selected) == size:
+                return selected
+            continue
+        categories = labels[record_key(record)]
+        if not categories:
+            ordinary.append(record)
+        elif group not in reserved_groups and groups[group] == 1:
+            for category in categories:
+                by_category[category].append(record)
+    ordinary.sort(key=lambda record: (
+        groups[post_test_group(record)] != 1 or post_test_group(record) in reserved_groups
+    ))
+
+    # Reserva poucos casos críticos de sessões diferentes e deixa pelo
+    # menos dois exemplos visualmente distintos de cada classe para ajuste.
+    for category in sorted(critical, key=lambda category: (remaining[category], category)):
+        if len(selected) >= size or len(covered[category]) >= CRITICAL_HOLDOUT_GROUPS:
+            continue
+        ranked = sorted(by_category[category], key=lambda record: (
+            not record.get("session") or record["session"] in sessions[category]
+        ))
+        for record in ranked:
+            group = post_test_group(record)
+            categories = labels[record_key(record)]
+            if group in reserved_groups or any(remaining[label] < 3 for label in categories):
+                continue
+            selected.append(record)
+            reserved_groups.add(group)
+            for label in categories:
+                remaining[label] -= 1
+                covered[label].add(group)
+                if record.get("session"):
+                    sessions[label].add(record["session"])
+            break
+    return selected + ordinary[:size - len(selected)]
+
+
 def _train_one_resolution(args):
     from dataset.training_files import (
         exclude_cached_test_candidates,
         reserve_post_training_test,
+        snapshot_post_training_test,
         snapshot_records,
         training_lock,
     )
@@ -476,6 +574,7 @@ def _train_one_resolution(args):
     raiz = Path(args.dataset_root).expanduser().resolve()
     automatico = getattr(args, "automatic", False)
     holdout_size = getattr(args, "post_training_test_size", POST_TRAINING_TEST_SIZE)
+    critical_categories = getattr(args, "critical_categories", DEFAULT_CRITICAL_CATEGORIES)
 
     def selecionar(snapshot, *, incluir_reserva=False):
         registros = filter_by_outcome(snapshot, args.outcome)
@@ -495,6 +594,8 @@ def _train_one_resolution(args):
             if getattr(args, "batch_size", None) is not None:
                 if confirmed:
                     registros.sort(key=lambda r: not bool(r.get("label_evidence")))
+                    if critical_categories:
+                        registros = prioritize_critical_batch(registros, critical_categories)
                 extra = holdout_size if incluir_reserva else 0
                 registros = registros[:args.batch_size + extra]
         if args.limit:
@@ -522,6 +623,11 @@ def _train_one_resolution(args):
                 registros, args.cache_root or raiz / "cache"
             ) if confirmed else registros
             reservation_size = min(holdout_size, max(0, len(registros) - 20), len(candidates))
+            if confirmed and reservation_size:
+                reserved, _ = snapshot_post_training_test(raiz, args.resolution or "legacy")
+                candidates = select_critical_holdout(
+                    registros, candidates, reserved, reservation_size, critical_categories,
+                )
             reservation = reserve_post_training_test(
                 raiz, args.resolution or "legacy", candidates, reservation_size,
             )
@@ -609,6 +715,7 @@ def _fit_snapshot(args, raiz, registros, snapshot, aviso, execucao, post_trainin
 
     automatico = getattr(args, "automatic", False)
     label_source = getattr(args, "label_source", "all")
+    critical_categories = getattr(args, "critical_categories", DEFAULT_CRITICAL_CATEGORIES)
     continuous = args.kind == "category" and label_source == "confirmed"
     compativel_limpeza = args.kind == "category" and not args.no_cache
     pedido_limpeza = getattr(args, "cleanup", None)
@@ -808,6 +915,11 @@ def _fit_snapshot(args, raiz, registros, snapshot, aviso, execucao, post_trainin
     post_records, post_warnings = snapshot_post_training_test(
         raiz, args.resolution or "legacy",
     )
+    if continuous:
+        fitted_groups = {post_test_group(metadados[key]) for key in fitted_ids}
+        independent_records = [record for record in post_records if post_test_group(record) not in fitted_groups]
+        post_test["overlapping_frames"] = len(post_records) - len(independent_records)
+        post_records = independent_records
     post_test["frames"] = len(post_records)
     post_test["input_warnings"] = post_warnings
     post_metrics = None
@@ -856,7 +968,7 @@ def _fit_snapshot(args, raiz, registros, snapshot, aviso, execucao, post_trainin
         def recall(metrics, category):
             return metrics["class_metrics"].get(category, {}).get("recall", 0.0)
         if (lost_classes or regressions["fresh"] or metricas["macro_f1"] < comparison["macro_f1"]
-            or any(recall(metricas, c) < recall(comparison, c) for c in args.critical_categories)):
+            or any(recall(metricas, c) < recall(comparison, c) for c in critical_categories)):
             promoted = False
             promotion_reasons.append(t("messages.incumbent_regression"))
         if post_metrics is not None:
@@ -866,7 +978,7 @@ def _fit_snapshot(args, raiz, registros, snapshot, aviso, execucao, post_trainin
             if (regressions["post_training_test"] or post_metrics["macro_f1"] < incumbent_post["macro_f1"]
                 or any(
                     recall(post_metrics, category) < recall(incumbent_post, category)
-                    for category in args.critical_categories
+                    for category in critical_categories
                 )):
                 promoted = False
                 promotion_reasons.append(t("messages.incumbent_regression"))
@@ -893,6 +1005,16 @@ def _fit_snapshot(args, raiz, registros, snapshot, aviso, execucao, post_trainin
         "incumbent_id": prior_id,
         "locator": locator,
     }
+    if continuous:
+        post_classes = post_metrics["class_metrics"] if post_metrics is not None else {}
+        execucao.data["promotion"]["critical_support"] = {
+            category: {
+                "training_rows": classes.get(category, 0),
+                "fresh_rows": int(metricas["class_metrics"].get(category, {}).get("support", 0)),
+                "post_training_rows": int(post_classes.get(category, {}).get("support", 0)),
+            }
+            for category in critical_categories
+        }
     if promoted:
         activate_model(execucao)
     else:
@@ -1101,7 +1223,7 @@ def parse_args(argv=None):
     parser.add_argument(
         "--critical-categories",
         nargs="*",
-        default=["renovate", "fly"],
+        default=list(DEFAULT_CRITICAL_CATEGORIES),
         metavar="CATEGORIA",
         help=t("messages.critical_categories_help"),
     )

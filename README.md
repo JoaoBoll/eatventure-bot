@@ -4,6 +4,7 @@
 
 - [English](README.md)
 - [Português do Brasil](README.pt-BR.md)
+- [Français (configuration requise)](docs/requirements.fr-FR.md)
 
 Would you like to add or update a translation? See
 [CONTRIBUTING.md](CONTRIBUTING.md).
@@ -33,9 +34,25 @@ detector failures or an unexpected capture shutdown trigger recovery as well.
 
 ## Requirements
 
-- Python 3.12 or later.
-- [scrcpy](https://github.com/Genymobile/scrcpy) and ADB installed.
-- Android with USB or Wireless debugging enabled.
+- 64-bit Windows 11, Windows 10 22H2, or Linux (for example, Ubuntu 24.04 LTS or later). For a new installation, prefer Windows 11 or Linux. Regular support for Windows 10 ended on October 14, 2025. [Windows 10 lifecycle](https://support.microsoft.com/en-us/windows/deployment/updates-lifecycle/windows-10-support-has-ended-on-october-14-2025)
+- 64-bit Python 3.12 with `pip` and `venv`. Install the dependencies from [requirements.txt](requirements.txt) and, for the dashboard, also install those from [requirements-web.txt](requirements-web.txt).
+- To play or collect data, use an Android device that can run EatVenture, with authorized USB or wireless debugging, ADB, and [scrcpy](https://github.com/Genymobile/scrcpy) 1.23 or later. You can train on saved captures with the phone disconnected.
+
+### Hardware for the operating system and EatVentureAI
+
+These estimates include the operating system and assume **one phone**, capture at up to **1080 × 2400**, about **10,000 images**, **30,000 replay crops per resolution**, and **200 trees**. Training runs on the CPU. Integrated graphics are sufficient for regular use.
+
+| Environment | Bot and dashboard without active training | Bot, dashboard, and training on the same machine |
+| --- | --- | --- |
+| Windows 10 or 11 | 4 cores, 8 GB of RAM | 6 cores, 16 GB of RAM |
+| Linux with a desktop environment | 4 cores, 8 GB of RAM | 6 cores, 16 GB of RAM |
+| Headless Linux | 2 cores, 4 GB of RAM | 4 cores, 8 GB of RAM with the bot paused during training and a low job count. For more headroom, use 16 GB. |
+
+For Windows or Linux with a desktop environment, the recommended configuration for this scenario is **6 cores, 16 GB of RAM, and a 256 GB SSD**. Consider **32 GB of RAM** if you run multiple bots, train without pausing the bot, or increase the replay limit to around 100,000 crops. Performance depends on the CPU, resolution, batch size, and job count.
+
+Start with the bot set to pause during training. In the dashboard, use 1 to 2 jobs on a machine with 8 GB of RAM or 2 to 4 jobs with 16 GB. Adjust based on CPU and memory usage.
+
+Leave **30 GB of free SSD space after installing the operating system and the application** for captures, caches, models, and logs. For reference, 10,000 images averaging 300 to 600 KB take up 3 to 6 GB. Feature vectors for 30,000 crops take up about 187 MB on disk in `float16`, before indexes and metadata. The feature archive and test set grow as you collect more captures and add resolutions. Allow space to back up those files.
 
 ## Setup
 

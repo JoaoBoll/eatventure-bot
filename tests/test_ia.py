@@ -7,8 +7,10 @@ divergindo, split com vazamento, ou mapeamento de coordenada errado.
 
 import json
 import shutil
+import sqlite3
 import sys
 import tempfile
+from contextlib import closing
 from pathlib import Path
 
 import numpy as np
@@ -25,6 +27,29 @@ for candidato in (
 
 import features as feat                            # noqa: E402
 import dataset_io as dio                           # noqa: E402
+from feature_cache import BoundedReplay            # noqa: E402
+
+
+def test_replay_mantem_recortes_raros_e_limita_grupos_repetidos(tmp_path):
+    assinatura = {"feature_size": 1}
+    cache = BoundedReplay(tmp_path, "1080x2400", assinatura, max_rows=5)
+    ids = [f"f{i}" for i in range(10)] + ["fly-1", "fly-2"]
+    labels = ["food"] * 10 + ["fly"] * 2
+    hashes = ["a"] * 5 + ["b", "c", "d", "e", "f"] + ["fly"] * 2
+    records = {owner: {"id": owner, "phash": phash} for owner, phash in zip(ids, hashes)}
+    cache.append(np.arange(len(ids), dtype=np.float32).reshape(-1, 1), labels, ids, records)
+
+    _, y, owners = cache.load()
+    assert set(owners[y == "fly"]) == {"fly-1", "fly-2"}
+    assert len(owners) == 5
+    assert len({records[owner]["phash"] for owner in owners[y == "food"]}) == 3
+
+    with closing(sqlite3.connect(cache.path)) as connection, connection:
+        assert connection.execute("SELECT count(*) FROM archive_crops").fetchone() == (len(ids),)
+        connection.execute("DROP TABLE replay_groups")
+    # Um banco criado antes do índice deve voltar a oferecer os mesmos recortes.
+    recovered = BoundedReplay(tmp_path, "1080x2400", assinatura, max_rows=5)
+    assert set(recovered.load()[2]) == set(owners)
 
 
 def frame_com_alvo(alvo=(300, 1500, 96, 88), cor=(40, 200, 255)):

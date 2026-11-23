@@ -1,11 +1,11 @@
-"""Cache de features: cada amostra é extraída uma vez na vida.
+"""Caches de features para o treino manual e o contínuo.
 
 O treino gastava o tempo re-decodificando os JPGs a cada execução para
 recalcular sempre os mesmos FEATURE_SIZE floats por caixa. Aqui o vetor e o
 rótulo ficam guardados, então uma execução nova só extrai o que é novo — e,
 com o cache formado, a imagem original não é mais necessária para treinar.
 
-Os chunks são append-only de propósito: nada é reescrito, então dado novo
+No cache manual, os chunks são append-only: dado novo
 custa só o próprio tamanho e a execução não fica mais lenta conforme o
 dataset cresce.
 
@@ -37,6 +37,7 @@ from core.i18n import t
 from dataset.layout import REPLAY_ROWS
 
 META_NAME = "meta.json"
+RARE_CROP_LIMIT = 32
 
 # float16 em disco: metade do tamanho, e as features são pixels k/255 e
 # histogramas normalizados — ficam dentro da precisão do float16. Em memória
@@ -91,6 +92,22 @@ class BoundedReplay:
             if not archive_exists:
                 db.execute("INSERT INTO archive_frames SELECT id, metadata FROM frames")
                 db.execute("INSERT INTO archive_crops SELECT owner, label, feature FROM crops")
+            groups_exist = db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='replay_groups'"
+            ).fetchone()
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS replay_groups (
+                    id INTEGER PRIMARY KEY,
+                    label TEXT NOT NULL,
+                    visual_key TEXT NOT NULL,
+                    owner TEXT NOT NULL,
+                    UNIQUE(label, visual_key),
+                    UNIQUE(label, owner)
+                )
+            """)
+            db.execute("CREATE INDEX IF NOT EXISTS replay_groups_order ON replay_groups(label, id, owner)")
+            if not groups_exist:
+                self._index_replay_groups(db, after=0)
             self._trim(db)
 
     @contextmanager
@@ -101,6 +118,23 @@ class BoundedReplay:
                 yield db
         finally:
             db.close()
+
+    def _index_replay_groups(self, db, after):
+        # A primeira aparição do grupo fixa sua posição no histórico.
+        db.execute("""
+            INSERT OR IGNORE INTO replay_groups (label, visual_key, owner)
+            SELECT c.label,
+                CASE WHEN nullif(json_extract(f.metadata, '$.phash'), '') IS NULL
+                    THEN json_array('frame', c.owner)
+                    ELSE json_array('hash', json_extract(f.metadata, '$.phash'),
+                                            json_extract(f.metadata, '$.state'))
+                END,
+                c.owner
+            FROM archive_crops AS c
+            JOIN archive_frames AS f ON f.id = c.owner
+            WHERE c.rowid > ?
+            ORDER BY c.rowid
+        """, (after,))
 
     def _trim(self, db):
         if db.execute("SELECT COUNT(*) FROM crops").fetchone()[0] <= self.max_rows:
@@ -140,6 +174,7 @@ class BoundedReplay:
             # Uma amostra reprocessada substitui seus recortes anteriores.
             owners = {str(identifier) for identifier in ids}
             db.executemany("DELETE FROM crops WHERE owner=?", ((owner,) for owner in owners))
+            archive_end = db.execute("SELECT coalesce(max(rowid), 0) FROM archive_crops").fetchone()[0]
             db.executemany("INSERT OR REPLACE INTO frames VALUES (?,?)", (
                 (owner, json.dumps(records[owner], ensure_ascii=False)) for owner in owners
             ))
@@ -169,6 +204,8 @@ class BoundedReplay:
                     self._trim_crops_only(db)
             self._trim(db)
             db.execute("DELETE FROM frames WHERE NOT EXISTS (SELECT 1 FROM crops WHERE owner=frames.id)")
+            self._index_replay_groups(db, after=archive_end)
+        self._loaded_metadata = None
 
     def _trim_crops_only(self, db):
         db.execute("""
@@ -181,10 +218,26 @@ class BoundedReplay:
 
     def load(self):
         with self._db() as db:
-            counts = dict(db.execute("SELECT label, COUNT(*) FROM archive_crops GROUP BY label"))
-            remaining = min(self.max_rows, sum(counts.values()))
+            db.execute("BEGIN")
+            counts = dict(db.execute("SELECT label, COUNT(*) FROM replay_groups GROUP BY label"))
+            # O hash da tela inteira pode esconder diferenças no próprio botão.
+            rare_limit = min(RARE_CROP_LIMIT, max(1, self.max_rows // max(1, len(counts))))
+            rare_labels = set()
+            for label, groups in counts.items():
+                if groups > rare_limit:
+                    continue
+                actual = db.execute("""
+                    SELECT count(*) FROM (
+                        SELECT 1 FROM archive_crops WHERE label = ? LIMIT ?
+                    )
+                """, (label, rare_limit + 1)).fetchone()[0]
+                if actual <= rare_limit:
+                    rare_labels.add(label)
+                    counts[label] = actual
+            capacity = min(self.max_rows, sum(counts.values()))
+            remaining = capacity
             quotas = {label: 0 for label in counts}
-            active = sorted(counts)
+            active = sorted(counts, key=lambda label: (counts[label], label))
             while remaining and active:
                 share, extra = divmod(remaining, len(active))
                 next_active = []
@@ -198,36 +251,55 @@ class BoundedReplay:
                 remaining -= assigned
                 active = next_active
 
-            rows = []
+            X = np.empty((capacity, self.width), dtype=np.float32)
+            labels = []
+            owners = []
             for label, quota in quotas.items():
                 if not quota:
                     continue
-                total = counts[label]
-                recent = quota // 2
-                historical = quota - recent
-                old_count = total - recent
-                rows.extend(db.execute("""
-                    SELECT crop.owner, crop.label, crop.feature
-                    FROM archive_crops AS crop
-                    JOIN (
-                        SELECT rid FROM (
-                            SELECT rowid AS rid, row_number() OVER (ORDER BY rowid) AS position
-                            FROM archive_crops WHERE label = ?
-                        ) WHERE position > ? OR
-                            (position <= ? AND (position * ?) / ? > ((position - 1) * ?) / ?)
-                    ) AS chosen ON crop.rowid = chosen.rid
-                """, (label, old_count, old_count, historical, old_count, historical, old_count)))
+                if label in rare_labels:
+                    rows = db.execute("""
+                        SELECT owner, feature FROM archive_crops
+                        WHERE label = ? ORDER BY rowid LIMIT ?
+                    """, (label, quota))
+                else:
+                    rows = self._sample_replay_groups(db, label, counts[label], quota)
+                for owner, feature in rows:
+                    X[len(owners)] = np.frombuffer(feature, dtype=DISK_DTYPE)
+                    owners.append(owner)
+                    labels.append(label)
             db.execute("CREATE TEMP TABLE selected_owners (id TEXT PRIMARY KEY)")
-            db.executemany("INSERT OR IGNORE INTO selected_owners VALUES (?)", ((row[0],) for row in rows))
+            db.executemany("INSERT INTO selected_owners VALUES (?)", ((owner,) for owner in set(owners)))
             self._loaded_metadata = {
                 key: json.loads(value) for key, value in db.execute(
-                    "SELECT f.id, f.metadata FROM archive_frames AS f JOIN selected_owners AS s ON f.id = s.id"
+                    "SELECT f.id, f.metadata FROM selected_owners AS s CROSS JOIN archive_frames AS f ON f.id = s.id"
                 )
             }
-        if not rows:
-            return np.empty((0, self.width), dtype=np.float32), np.asarray([], dtype=str), np.asarray([], dtype=str)
-        X = np.stack([np.frombuffer(row[2], dtype=DISK_DTYPE) for row in rows]).astype(np.float32)
-        return X, np.asarray([row[1] for row in rows]), np.asarray([row[0] for row in rows])
+        return X[:len(owners)], np.asarray(labels, dtype=str), np.asarray(owners, dtype=str)
+
+    def _sample_replay_groups(self, db, label, total, quota):
+        recent = quota // 2
+        old_count = total - recent
+        return db.execute("""
+            WITH chosen AS (
+                SELECT owner FROM (
+                    SELECT owner, row_number() OVER (ORDER BY id) AS position
+                    FROM replay_groups WHERE label = :label
+                )
+                WHERE position > :old_count OR
+                    (position * :historical + :midpoint) / :old_count >
+                    ((position - 1) * :historical + :midpoint) / :old_count
+            )
+            SELECT chosen.owner, crop.feature
+            FROM chosen
+            JOIN archive_crops AS crop ON crop.rowid = (
+                SELECT min(rowid) FROM archive_crops
+                WHERE owner = chosen.owner AND label = :label
+            )
+        """, {
+            "label": label, "old_count": old_count,
+            "historical": quota - recent, "midpoint": old_count // 2,
+        })
 
     def trained_ids(self):
         with self._db() as db:

@@ -4,6 +4,7 @@
 
 - [English](README.md)
 - [Português do Brasil](README.pt-BR.md)
+- [Français (configuration requise)](docs/requirements.fr-FR.md)
 
 Quer adicionar ou atualizar uma tradução? Consulte o
 [CONTRIBUTING.md](CONTRIBUTING.md).
@@ -17,9 +18,25 @@ continua disponível para quem quiser utilizá-lo.
 
 ## Requisitos
 
-- Python 3.12 ou superior.
-- [scrcpy](https://github.com/Genymobile/scrcpy) e ADB instalados.
-- Android com depuração USB ou sem fio ativada.
+- Windows 11, Windows 10 22H2 ou Linux de 64 bits (por exemplo, Ubuntu 24.04 LTS ou mais recente). Para uma instalação nova, prefira Windows 11 ou Linux. O suporte regular do Windows 10 terminou em 14 de outubro de 2025. [Ciclo de vida do Windows 10](https://support.microsoft.com/en-us/windows/deployment/updates-lifecycle/windows-10-support-has-ended-on-october-14-2025)
+- Python 3.12 de 64 bits com `pip` e `venv`. Instale as dependências de [requirements.txt](requirements.txt) e, para usar o painel, também as de [requirements-web.txt](requirements-web.txt).
+- Para jogar ou coletar, use um aparelho Android que rode o Eatventure, com depuração USB ou sem fio autorizada, ADB e [scrcpy](https://github.com/Genymobile/scrcpy) 1.23 ou superior. O treino com capturas já salvas funciona com o celular desconectado.
+
+### Hardware para o sistema e o EatVentureAI
+
+As estimativas abaixo incluem o sistema operacional e consideram **um celular**, captura de até **1080 × 2400**, cerca de **10 mil imagens**, replay de **30 mil recortes por resolução** e **200 árvores**. O treino usa CPU. Vídeo integrado atende ao uso normal.
+
+| Ambiente | Bot e painel, sem treino ativo | Bot, painel e treino na mesma máquina |
+| --- | --- | --- |
+| Windows 10 ou 11 | 4 núcleos, 8 GB de RAM | 6 núcleos, 16 GB de RAM |
+| Linux com interface gráfica | 4 núcleos, 8 GB de RAM | 6 núcleos, 16 GB de RAM |
+| Linux sem interface gráfica | 2 núcleos, 4 GB de RAM | 4 núcleos, 8 GB de RAM com pausa do bot e poucos jobs. 16 GB para mais folga. |
+
+Em Windows ou Linux com interface, **6 núcleos, 16 GB de RAM e SSD de 256 GB** são a configuração recomendada para esse cenário. Considere **32 GB de RAM** se for manter vários bots ativos, treinar sem pausa ou aumentar o replay para perto de 100 mil recortes. O desempenho depende da CPU, da resolução, do lote e da quantidade de jobs.
+
+Para começar, mantenha a pausa do bot durante o treino. No painel, use 1 a 2 jobs numa máquina de 8 GB ou 2 a 4 jobs numa de 16 GB e ajuste conforme o uso de CPU e RAM.
+
+Deixe **30 GB livres no SSD depois de instalar o sistema e o aplicativo** para as capturas, o cache, os modelos e os logs. Como referência, 10 mil imagens de 300 a 600 KB ocupam de 3 a 6 GB. Os vetores de 30 mil recortes ocupam cerca de 187 MB em `float16` no disco, antes dos índices e metadados. O arquivo histórico de features e a reserva de teste crescem com as coletas e resoluções. Mantenha espaço também para o backup desses dados.
 
 ## Preparação
 

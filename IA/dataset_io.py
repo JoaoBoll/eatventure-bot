@@ -153,6 +153,13 @@ def box_labels(registro):
     return saida
 
 
+def confirmed_box_labels(record):
+    # O alvo que mudou após o clique tem evidência além do matcher de templates.
+    if record.get("outcome") == "changed":
+        return [label for label in box_labels(record) if label[2]]
+    return []
+
+
 def filter_by_outcome(registros, outcomes):
     """Mantém só amostras com `outcome` em `outcomes` (None mantém tudo). Treinar só
     em `changed` evita herdar erros do template matcher. Negativas (outcome None)

@@ -75,18 +75,21 @@ Cada treino gera um resumo JSON em `IA/training_reports/`, com data, duração, 
 
 A limpeza só ocorre depois de publicar e promover o candidato. Remove apenas
 registros e imagens presentes no snapshot e aproveitados; dados novos ou não
-aproveitados permanecem. O cache de replay preserva no máximo a quantidade
-configurada de vetores por resolução (padrão: 30.000) e a publicação mantém só
-as gerações configuradas (padrão: ativa, anterior e candidata recente).
+aproveitados permanecem. A publicação mantém as gerações configuradas (padrão:
+ativa, anterior e candidata recente).
 
 No painel web, o treino automático verifica o dataset ao iniciar um bot com a opção ativada, mesmo sem coleta ativa, e depois a cada 10 minutos (`AI_TRAIN_CHECK_INTERVAL`); isso também processa lotes que já estavam acumulados. `AI_AUTO_TRAIN` e `AI_TRAIN_BATCH_SIZE`, em [config.py](../src/core/config.py), controlam sua ativação e o mínimo de amostras novas por resolução para iniciar o treino. Para não propagar erros do matcher, o agendador usa somente ações com resultado `changed`, a caixa que motivou essa ação e as telas negativas; `--batch-size` limita o lote apenas quando informado explicitamente. No terminal, o treino automático funciona durante a coleta, com a mesma verificação periódica. A pausa durante o treino no terminal vem ativada por padrão; use `AI_PAUSE_BOT_WHILE_TRAINING = False` para continuar jogando e coletando em paralelo. Ao encerrar a coleta, um treino automático ainda em andamento é interrompido; os dados não consumidos permanecem para a próxima execução. Os modelos e ponteiros publicados em `IA/models/` não são ignorados pelo Git.
 
 ## Teste pós-treino
 
-Antes de cada treino, 200 imagens elegíveis são movidas para
+Antes de cada treino, até 200 imagens elegíveis são movidas para
 `dataset/post_training_test/<RESOLUÇÃO>/`. Esse conjunto não entra no replay,
 na limpeza ou no ajuste do modelo: todo candidato é avaliado nele antes de ser
-ativado. Use `--post-training-test-size N` para ajustar a reserva; `0` a
+ativado. No treino contínuo, a reserva prioriza classes críticas como `fly`
+quando há exemplos distintos suficientes para deixar pelo menos dois no lote
+de treino. A avaliação exclui telas com o mesmo hash perceptual de uma tela
+usada no ajuste e informa quantos recortes de cada classe crítica estavam
+disponíveis. Use `--post-training-test-size N` para ajustar a reserva; `0` a
 desativa em um treino manual.
 
 ## Memória de treino
@@ -100,10 +103,13 @@ antes dessa atualização não podem ser recuperados dessa forma.
 
 O treino frequente usa o lote novo e uma seleção limitada do histórico, cujo
 padrão é 30.000 recortes por resolução. A seleção distribui a capacidade entre
-categorias e combina exemplos recentes com exemplos ao longo do histórico. O
-painel permite ajustar o limite até 100.000; configurações já salvas mantêm seu
-valor anterior. A seleção não garante diversidade de contextos. Um futuro
-treino global precisará combinar as resoluções e validá-las separadamente.
+categorias e combina grupos recentes e históricos. Nas classes comuns,
+o replay usa um representante por hash perceptual da tela e estado. Classes
+com poucos recortes preservam os exemplos individuais, inclusive quando o hash
+da tela é igual. O índice de grupos é criado a partir do histórico existente
+e atualizado a cada lote. Quando há limite explícito no lote automático,
+exemplos confirmados de classes críticas têm prioridade. O painel permite
+ajustar o limite do replay até 100.000.
 
 O candidato é comparado ao modelo ativo nos dados recentes e na reserva de
 teste. Além das métricas gerais e classes críticas, uma queda de recall em

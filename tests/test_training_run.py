@@ -103,6 +103,36 @@ class AutomaticThresholdTests(unittest.TestCase):
         train_snapshot.assert_not_called()
 
 
+class CriticalHoldoutTests(unittest.TestCase):
+    def fly(self, index, session):
+        record = sample(index, Path("unused-dataset"))
+        record["boxes"][0].update(category="fly", acted=True)
+        record["session"] = session
+        return record
+
+    def test_preserves_the_only_two_fly_groups_for_training(self):
+        first = self.fly(1, "old")
+        second = self.fly(2, "new")
+        duplicate = {**self.fly(3, "new"), "phash": second["phash"]}
+        ordinary = sample(4, Path("unused-dataset"))
+        records = [first, second, duplicate, ordinary]
+
+        selected = train_ai.select_critical_holdout(records, records, [], 4, ["fly"])
+
+        self.assertEqual(selected, [ordinary])
+
+    def test_prefers_a_fly_group_from_a_new_session_when_enough_remain(self):
+        first = self.fly(1, "old")
+        second = self.fly(2, "old")
+        third = self.fly(3, "new")
+        records = [first, second, third]
+        reserved = [self.fly(4, "old")]
+
+        selected = train_ai.select_critical_holdout(records, records, reserved, 2, ["fly"])
+
+        self.assertEqual(selected, [third])
+
+
 class TrainingReportTests(unittest.TestCase):
     def test_each_run_preserves_previous_reports(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -57,6 +57,7 @@ def compact_record(record):
         "_shard": record.get("_shard") or ".",
         "session": str(record["session"]) if record.get("session") is not None else None,
         "phash": str(record["phash"]) if record.get("phash") is not None else None,
+        "image_sha256": record.get("image_sha256"),
         "created_at": record.get("created_at"),
         "label_evidence": record.get("label_evidence"),
         "action": record.get("action"),
