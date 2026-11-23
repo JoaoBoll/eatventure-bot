@@ -5,6 +5,8 @@ import platform
 from pathlib import Path
 import shutil
 
+from core.device_profiles import FOOD_UPGRADE_HOLD_LIMIT, apply_environment_profile
+
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
@@ -371,13 +373,8 @@ NMS_IOU = 0.35
 # ==== ACTIONS ====
 
 UPGRADE_ITEM_CLICKS = 5
-UPGRADE_FOOD_PRESS = 4.0
-# Freio para não manter o dedo preso quando o painel foi aberto por engano
-# ou os sinais cinza não foram reconhecidos.
-UPGRADE_FOOD_MAX_HOLD = 30.0
-# Depois de iniciar o toque, o indicador while_up_food precisa confirmar que
-# o botão continua ativo; sem ele, solta antes do limite máximo.
-UPGRADE_FOOD_CONFIRM_GRACE = 2.0
+# Limite sem um frame novo que confirme while_up_food.
+UPGRADE_FOOD_MAX_HOLD = FOOD_UPGRADE_HOLD_LIMIT
 
 DISMISS_POINT = (10, 2200)
 GRAY_COIN_POINT = (1070, 250)
@@ -455,6 +452,4 @@ STATE_TIMEOUTS = {
 
 
 # Overrides do painel são locais ao processo, antes dos imports consumidores.
-from core.device_profiles import apply_environment_profile as _apply_environment_profile
-
-_apply_environment_profile(globals())
+apply_environment_profile(globals())

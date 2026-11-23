@@ -105,6 +105,11 @@ class DeviceProfilesTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.store.load("phone-a")
 
+    def test_legacy_food_hold_is_capped_at_four_seconds(self):
+        profile = validate_profile("phone", {"settings": {"upgrade_food_press": 30.0}})
+
+        self.assertEqual(profile["settings"]["upgrade_food_press"], 4.0)
+
     def test_oversized_file_is_rejected(self):
         path = self.store.path_for("phone")
         path.parent.mkdir()

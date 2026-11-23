@@ -5,7 +5,7 @@ from core.i18n import t
 import threading
 import time
 
-from actions.android import AndroidActions
+from actions.android import AndroidActions, MOTION_EVENT_TIMEOUT
 from core import log
 from core.config import (
     ACTION_POINTS,
@@ -19,7 +19,6 @@ from core.config import (
     SWIPE_DURATION_MS,
     SWIPE_X,
     SWIPE_Y,
-    UPGRADE_FOOD_PRESS,
     UPGRADE_FOOD_MAX_HOLD,
     UPGRADE_ITEM_CLICKS,
 )
@@ -29,7 +28,6 @@ logger = log.get("action")
 
 CLICK = "click"        # toque no centro da detecção
 REPEAT = "repeat"      # vários toques
-PRESS = "press"        # toque longo
 PRESS_UNTIL_GRAY = "press_until_gray"  # toque contínuo, liberado pelo estado visual
 RELEASE = "release"    # solta um toque contínuo sem acionar outro alvo
 DISMISS = "dismiss"    # tap em ponto fixo
@@ -59,7 +57,7 @@ ACTION_TABLE = {
 
     "upgrade_item": REPEAT,
 
-    "upgrade_food": PRESS,
+    "upgrade_food": PRESS_UNTIL_GRAY,
     "release_food_press": RELEASE,
 
     "gray_max": DISMISS,  # Fechar painel indesejado com tap
@@ -99,7 +97,9 @@ class ActionManager:
         # Quando a última ação terminou (settle é contado daqui, não da submissão)
         self.last_finished_at = 0.0
         self._held_touch = None
-        self._held_touch_started_at = None
+        self.last_food_touch_at = 0.0
+        self._food_touch_confirmed_at = 0.0
+        self._held_touch_release_pending = False
 
     def start(self):
 
@@ -142,7 +142,6 @@ class ActionManager:
 
     def stop(self):
 
-        self._release_held_touch()
         self.running = False
 
         # Destrava o worker se estiver esperando na fila.
@@ -155,7 +154,7 @@ class ActionManager:
         if self.thread:
 
             self.thread.join(
-                timeout=UPGRADE_FOOD_PRESS + 3.0
+                timeout=2 * MOTION_EVENT_TIMEOUT + 1.0
             )
 
             self.thread = None
@@ -255,7 +254,19 @@ class ActionManager:
     def is_busy(self):
 
         with self.busy_lock:
-            return self.busy
+            return self.busy or self._held_touch_release_pending
+
+    def confirm_food_press(self, frame_time):
+        with self.busy_lock:
+            confirmed_at = max(self.last_food_touch_at, self._food_touch_confirmed_at)
+            if (
+                self._held_touch is None or self._held_touch_release_pending
+                or frame_time <= confirmed_at
+                or time.monotonic() - confirmed_at >= UPGRADE_FOOD_MAX_HOLD
+            ):
+                return False
+            self._food_touch_confirmed_at = frame_time
+            return True
 
     def execute(self, action, detection):
         """Enfileira uma ação (não bloqueia). False se já há ação em andamento."""
@@ -312,7 +323,12 @@ class ActionManager:
         return True
 
     def _run(self):
+        try:
+            self._run_actions()
+        finally:
+            self._release_held_touch()
 
+    def _run_actions(self):
         while self.running:
 
             try:
@@ -327,7 +343,7 @@ class ActionManager:
                 logger.exception(t("messages.action_error"), "release_food_press", error)
                 continue
 
-            if job is None:
+            if job is None or not self.running:
                 break
 
             try:
@@ -359,8 +375,8 @@ class ActionManager:
 
         if job_type == "swipe":
 
-            self._release_held_touch()
-            self._swipe(name)
+            if self._release_held_touch():
+                self._swipe(name)
 
             return
 
@@ -392,7 +408,8 @@ class ActionManager:
             self._release_held_touch()
             return
 
-        self._release_held_touch()
+        if not self._release_held_touch():
+            return
 
         if kind == CLICK:
 
@@ -401,10 +418,6 @@ class ActionManager:
         elif kind == REPEAT:
 
             self._repeat(name, x, y)
-
-        elif kind == PRESS:
-
-            self._press(name, x, y)
 
         elif kind == DISMISS:
 
@@ -447,7 +460,7 @@ class ActionManager:
         self.android.tap_many(x, y, UPGRADE_ITEM_CLICKS)
 
     def _hold(self, name, x, y):
-        """Toque mantido curto em ponto fixo (diferente de _press, que segura no centro da detecção)."""
+        """Toque mantido curto em ponto fixo."""
 
         logger.info(
             t("messages.hold"),
@@ -463,22 +476,6 @@ class ActionManager:
             duration=DISMISS_HOLD_DURATION,
         )
 
-    def _press(self, name, x, y):
-
-        logger.info(
-            t("messages.press"),
-            name,
-            x,
-            y,
-            UPGRADE_FOOD_PRESS,
-        )
-
-        self.android.press(
-            x,
-            y,
-            duration=UPGRADE_FOOD_PRESS,
-        )
-
     def _press_until_gray(self, name, x, y):
         """Mantém o dedo no upgrade; a visão continua livre para detectar cinza."""
 
@@ -491,11 +488,15 @@ class ActionManager:
 
         with self.busy_lock:
             self._held_touch = (x, y)
-            self._held_touch_started_at = time.monotonic()
+            self.last_food_touch_at = time.monotonic()
+            self._food_touch_confirmed_at = 0.0
 
         # Um comando que falha pode já ter enviado DOWN ao aparelho.
         try:
-            if not self.android.touch_down(x, y):
+            if self.android.touch_down(x, y):
+                with self.busy_lock:
+                    self.last_food_touch_at = time.monotonic()
+            else:
                 self._release_held_touch()
         except Exception:
             self._release_held_touch()
@@ -503,22 +504,34 @@ class ActionManager:
 
     def _release_expired_touch(self):
         with self.busy_lock:
-            started_at = self._held_touch_started_at
-        if started_at is None:
-            return
-        elapsed = time.monotonic() - started_at
-        if elapsed >= UPGRADE_FOOD_MAX_HOLD:
-            logger.warning(t("messages.food_upgrade_max_hold"), elapsed)
-            self._release_held_touch()
+            if self._held_touch is None:
+                return
+            release_pending = self._held_touch_release_pending
+            confirmed_at = max(self.last_food_touch_at, self._food_touch_confirmed_at)
+            elapsed = time.monotonic() - confirmed_at
+            if not release_pending and elapsed < UPGRADE_FOOD_MAX_HOLD:
+                return
+            self._held_touch_release_pending = True
+
+        if not release_pending:
+            logger.warning(t("messages.food_upgrade_confirmation_missing"), elapsed)
+        self._release_held_touch()
 
     def _release_held_touch(self):
         with self.busy_lock:
             held_touch = self._held_touch
-            self._held_touch = None
-            self._held_touch_started_at = None
+            if held_touch is None:
+                return True
+            self._held_touch_release_pending = True
 
-        if held_touch is not None:
-            self.android.touch_up(*held_touch)
+        if not self.android.touch_up(*held_touch):
+            return False
+
+        with self.busy_lock:
+            self._held_touch = None
+            self._held_touch_release_pending = False
+            self.last_finished_at = time.monotonic()
+        return True
 
     def _scroll_bottom(self, name):
         """Sequência de swipes até o fim da tela. Roda na thread de ação, não bloqueia o loop principal."""

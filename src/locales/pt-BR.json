@@ -1031,7 +1031,7 @@
     "swipe_duration": "Swipe: duração (ms)",
     "wait_after_swipe": "Espera após deslizar (s)",
     "upgrade_clicks": "Cliques por melhoria",
-    "food_upgrade_duration": "Duração ao melhorar comida (s)",
+    "food_upgrade_duration": "Tempo sem confirmação para soltar o upgrade de comida (s)",
     "exploration_delay": "Espera para explorar (s)",
     "exploration_action_delay": "Espera para explorar após ação (s)",
     "detection": "Detecção",

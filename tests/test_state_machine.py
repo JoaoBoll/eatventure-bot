@@ -52,6 +52,7 @@ class FakeActions:
     def __init__(self):
 
         self.calls = []
+        self.food_confirmations = []
         self.busy = False
 
     def execute(self, action, detection):
@@ -74,6 +75,10 @@ class FakeActions:
     def is_busy(self):
 
         return self.busy
+
+    def confirm_food_press(self, frame_time):
+        self.food_confirmations.append(frame_time)
+        return True
 
     # Conveniência para os testes
     @property
@@ -441,23 +446,34 @@ def test_dispensa_em_food_acontece_antes_de_desistir():
     )
 
 
-def test_food_mantem_press_ate_o_sinal_cinza():
+def test_food_renova_o_toque_ate_o_sinal_cinza():
 
     machine, actions, clock = build()
 
     machine._enter(sm.FOOD)
 
     machine.update([detection("up_food")])
+    started_at = clock.now
 
     assert actions.actions == ["upgrade_food"], actions.actions
     assert machine.state == sm.FOOD, machine.state
 
-    # O indicador confirma que a pressão continua válida.
-    clock.advance(UP_FOOD_WAIT + 0.1)
+    clock.advance(max(machine.action_cooldown, machine.action_settle) + 0.1)
 
     machine.update([detection("while_up_food")])
+    first_confirmation = clock.now
 
+    clock.advance(UPGRADE_FOOD_MAX_HOLD - (clock.now - started_at) - 0.1)
+    machine.update([detection("while_up_food")])
+    assert machine.while_up_food_seen_at == clock.now
+    assert actions.food_confirmations == [first_confirmation, clock.now]
+
+    clock.advance(0.2)
+    machine.update([])
+
+    assert clock.now - started_at > UPGRADE_FOOD_MAX_HOLD
     assert machine.state == sm.FOOD, machine.state
+    assert actions.actions == ["upgrade_food"]
 
     machine.update([detection("gray_max")])
 
@@ -465,18 +481,77 @@ def test_food_mantem_press_ate_o_sinal_cinza():
     assert machine.state == sm.NORMAL, machine.state
 
 
-def test_food_solto_no_limite_de_seguranca():
+def test_food_solto_apos_quatro_segundos_sem_nova_confirmacao():
 
     machine, actions, clock = build()
 
     machine._enter(sm.FOOD)
+    clock.advance(1.0)
     machine.update([detection("up_food")])
+    clock.advance(max(machine.action_cooldown, machine.action_settle) + 0.1)
+    machine.update([detection("while_up_food")])
+    confirmed_at = clock.now
 
-    clock.advance(UPGRADE_FOOD_MAX_HOLD + 0.1)
-    machine.update([])
+    clock.advance(0.2)
+    machine.update([detection("while_up_food")], frame_time=confirmed_at)
+    assert actions.food_confirmations == [confirmed_at]
+    assert machine.while_up_food_seen_at == confirmed_at
+
+    clock.advance(UPGRADE_FOOD_MAX_HOLD - (clock.now - confirmed_at) - 0.1)
+    machine.check_food_timeout()
+    assert machine.state == sm.FOOD
+
+    clock.advance(0.2)
+    machine.update([detection("while_up_food")], frame_time=confirmed_at)
 
     assert actions.actions[-1] == "release_food_press", actions.actions
-    assert machine.state == sm.NORMAL, machine.state
+    assert machine.state == sm.FOOD, machine.state
+    assert machine.wanted_categories() == ["gray_max", "gray_coin", "up_food"]
+
+    clock.advance(max(machine.action_cooldown, machine.action_settle) + 0.1)
+    machine.update([detection("up_food")])
+    assert actions.actions == ["upgrade_food", "release_food_press", "upgrade_food"]
+
+
+def test_food_so_repete_com_up_food_em_frame_novo_apos_soltar():
+    machine, actions, clock = build()
+    machine.update([detection("up_food")])
+
+    clock.advance(UPGRADE_FOOD_MAX_HOLD - 0.1)
+    last_frame = clock.now
+    machine.update([detection("up_food")], frame_time=last_frame)
+    assert actions.actions == ["upgrade_food"]
+
+    clock.advance(0.2)
+    machine.check_food_timeout()
+
+    assert actions.actions == ["upgrade_food", "release_food_press"]
+    assert machine.state == sm.FOOD
+    assert machine.wanted_categories() == ["gray_max", "gray_coin", "up_food"]
+
+    clock.advance(max(machine.action_cooldown, machine.action_settle) + 0.1)
+    machine.update([detection("up_food")], frame_time=last_frame)
+    assert actions.actions == ["upgrade_food", "release_food_press"]
+
+    machine.update([detection("up_food")])
+    assert actions.actions == ["upgrade_food", "release_food_press", "upgrade_food"]
+    assert machine.wanted_categories() == ["gray_max", "gray_coin", "while_up_food"]
+
+
+def test_food_frame_anterior_ao_toque_nao_confirma_while_up_food():
+    machine, actions, clock = build()
+    old_frame = clock.now - 0.1
+    machine.update([detection("up_food")])
+
+    clock.advance(max(machine.action_cooldown, machine.action_settle) + 0.1)
+    machine.update([detection("while_up_food")], frame_time=old_frame)
+    assert machine.while_up_food_seen_at is None
+
+    clock.advance(UPGRADE_FOOD_MAX_HOLD)
+    machine.update([detection("while_up_food")], frame_time=old_frame)
+
+    assert actions.actions == ["upgrade_food", "release_food_press"]
+    assert machine.state == sm.FOOD
 
 
 def test_food_sem_up_food_nao_adia_a_exploracao():
@@ -495,7 +570,7 @@ def test_food_sem_up_food_nao_adia_a_exploracao():
     assert not machine.explore_found
 
     clock.advance(STATE_TIMEOUTS["FOOD"] + 0.1)
-    machine.update([])
+    machine.check_food_timeout()
 
     assert machine.state == sm.NORMAL, machine.state
 
@@ -796,22 +871,13 @@ def test_estado_nao_vaza_variavel():
 
 
 def test_up_food_em_normal_evolui_a_comida():
-    """
-    up_food em NORMAL faz o long press de evolução, igual a FOOD. ESCOLHA
-    DELIBERADA: não é o que parece "seguro" — GASTA MOEDA a cada painel
-    aberto sem querer e trava o bot por UPGRADE_FOOD_PRESS segundos. A
-    alternativa (dispensar em ponto neutro) é trocar para "dismiss" em
-    NORMAL_RULES — ação já implementada e testada.
-    """
-
     machine, actions, _ = build()
 
     machine.update([detection("up_food")])
 
     assert actions.actions == ["upgrade_food"], actions.actions
 
-    # A regra não declara próximo estado: segue em NORMAL.
-    assert machine.state == sm.NORMAL, machine.state
+    assert machine.state == sm.FOOD, machine.state
 
 
 def test_up_food_faz_o_mesmo_em_normal_e_em_food():
@@ -852,7 +918,7 @@ def test_food_troca_o_filtro_apos_iniciar_a_pressao():
     machine, _, _ = build()
 
     machine._enter(sm.FOOD)
-    assert machine.wanted_categories() == ["up_food"]
+    assert machine.wanted_categories() == ["gray_max", "gray_coin", "up_food"]
 
     machine.update([detection("up_food")])
 
@@ -917,10 +983,10 @@ def test_acao_repetida_gera_aviso():
 
     try:
 
-        # O painel nunca fecha: up_food continua na tela.
+        # O painel nunca muda após a ação.
         for _ in range(REPEATED_ACTION_WARNING):
 
-            machine.update([detection("up_food")])
+            machine.update([detection("open_store")])
 
             clock.advance(ACTION_COOLDOWN + 0.01)
 
@@ -936,14 +1002,14 @@ def test_acao_repetida_gera_aviso():
 
     assert avisos, "nenhum aviso de ação repetida"
 
-    assert "upgrade_food" in avisos[0], avisos
+    assert "open_store_click" in avisos[0], avisos
 
 
 def test_contagem_de_repeticao_zera_ao_progredir():
 
     machine, actions, clock = build()
 
-    machine.update([detection("up_food")])
+    machine.update([detection("open_store")])
 
     assert machine._repeat_count == 1
 
@@ -1010,30 +1076,28 @@ def test_nunca_usa_back():
     assert "back" not in actions.actions, actions.actions
 
 
-def test_up_food_em_normal_nao_escala_para_rolagem():
-    """
-    A escada de fechamento vale só para DISMISS_ACTIONS, e "upgrade_food"
-    não é uma delas — up_food preso em NORMAL repete o press para sempre
-    em vez de rolar. O aviso de ação repetida (test_acao_repetida_gera_aviso)
-    é o que sobra para avisar.
-    """
-
+def test_food_preso_solto_sem_frame_e_usa_recuperacao():
     machine, actions, clock = build()
 
-    for _ in range(DISMISS_ATTEMPTS_BEFORE_SCROLL + 3):
-
+    for attempt in range(FOOD_MAX_ATTEMPTS):
         machine.update([detection("up_food")])
+        clock.advance(UPGRADE_FOOD_MAX_HOLD + 0.1)
+        machine.check_food_timeout()
+        if attempt < FOOD_MAX_ATTEMPTS - 1:
+            assert machine.state == sm.FOOD
+        clock.advance(max(machine.action_cooldown, machine.action_settle) + 0.1)
 
-        clock.advance(ACTION_COOLDOWN + 0.01)
+    assert machine.state == sm.NORMAL
 
-    assert "scroll_bottom" not in actions.actions, actions.actions
+    for _ in range(DISMISS_ATTEMPTS_BEFORE_SCROLL + 1):
+        machine.update([detection("up_food")])
+        clock.advance(max(machine.action_cooldown, machine.action_settle) + 0.1)
 
-    assert set(actions.actions) == {"upgrade_food"}, (
-        actions.actions
+    assert actions.actions == (
+        ["upgrade_food", "release_food_press"] * FOOD_MAX_ATTEMPTS
+        + ["dismiss"] * DISMISS_ATTEMPTS_BEFORE_SCROLL
+        + ["scroll_bottom"]
     )
-
-    # A escada nem começou a contar.
-    assert machine._dismiss_attempts == 0
 
 
 def test_nao_age_duas_vezes_sobre_a_mesma_tela():

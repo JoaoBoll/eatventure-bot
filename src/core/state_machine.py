@@ -50,8 +50,7 @@ HELPER = "HELPER"
 # As quatro primeiras fecham o que não deveria estar aberto,
 # antes de qualquer ação de jogo.
 #
-# up_food em NORMAL inicia o mesmo press limitado de FOOD e entra no
-# estado que verifica o resultado antes de tentar outro upgrade.
+# up_food em NORMAL entra em FOOD para monitorar o toque contínuo.
 NORMAL_RULES = [
     ("open_store", "open_store_click", None),
     ("close", "close", None),
@@ -178,14 +177,16 @@ class StateMachine:
         # log com uma linha por quadro.
         self._waited_warned = 0.0
 
-        # Espera depois do long press de comida.
+        # Cada toque espera a primeira confirmação de while_up_food.
         self.up_food_wait_start = None
         self.while_up_food_seen_at = None
+        self._food_press_attempts = 0
 
         # Item de "food" atual, esperando up_food. Guardado aqui (e
         # não só na detecção local) porque _wait_or_give_up precisa
         # dele para saber QUAL item ignorar ao desistir.
         self._food_target = None
+        self._food_recovering = False
 
         # Itens de "food" que esgotaram UP_FOOD_WAIT em
         # FOOD_MAX_ATTEMPTS tentativas seguidas — ignorados até o
@@ -276,7 +277,8 @@ class StateMachine:
         """Categorias do estado atual, em ordem de prioridade — filtro do detector (~264ms → ~16ms por passada em UPGRADE)."""
 
         if self.state == FOOD:
-            return ["gray_max", "gray_coin", "up_food"]
+            button = "while_up_food" if self.up_food_wait_start is not None else "up_food"
+            return ["gray_max", "gray_coin", button]
 
         rules = STATE_RULES.get(self.state, NORMAL_RULES)
 
@@ -316,6 +318,43 @@ class StateMachine:
         self.last_meaningful_action_time = time.monotonic()
         self.last_meaningful_action_wall = time.time()
 
+    def interrupt_food_press(self):
+        if self.state != FOOD or self.up_food_wait_start is None:
+            return True
+        return self._act("release_food_press", None, NORMAL)
+
+    def _food_confirmation_time(self):
+        if self.while_up_food_seen_at is not None:
+            return self.while_up_food_seen_at
+        return max(self.up_food_wait_start, getattr(self.action_manager, "last_food_touch_at", 0.0))
+
+    def check_food_timeout(self):
+        if self.state != FOOD:
+            return
+        if self.up_food_wait_start is None:
+            self._timed_out()
+            return
+
+        now = time.monotonic()
+        elapsed = now - self._food_confirmation_time()
+        if elapsed < UPGRADE_FOOD_MAX_HOLD:
+            return
+
+        target = self._food_target
+        retry = self._food_press_attempts < FOOD_MAX_ATTEMPTS
+        if not self._act("release_food_press", None, None if retry else NORMAL):
+            return
+
+        logger.warning(t("messages.food_upgrade_confirmation_missing"), elapsed)
+        if retry:
+            self.up_food_wait_start = None
+            self.while_up_food_seen_at = None
+            self.state_entered = self.last_action_time
+        else:
+            self._food_recovering = True
+            if target is not None:
+                self._register_food_failure(target)
+
     def update(
         self,
         detections,
@@ -346,19 +385,6 @@ class StateMachine:
         )
         self._lag = max(0.0, now - self._frame_time)
 
-        # Soltar o dedo não depende de uma detecção recente.
-        if (
-            self.state == FOOD
-            and self.up_food_wait_start is not None
-            and now - self.state_entered >= UPGRADE_FOOD_MAX_HOLD
-        ):
-            logger.warning(
-                t("messages.food_upgrade_max_hold"),
-                now - self.state_entered,
-            )
-            self._act("release_food_press", None, NORMAL)
-            return
-
         # Detecção velha: clicar com base num frame antigo
         # acerta onde o objeto ESTAVA.
         if (
@@ -366,6 +392,7 @@ class StateMachine:
             and self._lag > MAX_DETECTION_AGE
         ):
 
+            self.check_food_timeout()
             now = time.monotonic()
 
             if now - self._stale_warned > 5.0:
@@ -393,6 +420,12 @@ class StateMachine:
 
         else:
 
+            if (
+                self._food_recovering and self.state == NORMAL and detections
+                and self._can_act() and self._find(detections, "up_food") is None
+            ):
+                self._food_recovering = False
+
             acted = self._apply_rules(
                 detections,
                 STATE_RULES.get(self.state, NORMAL_RULES),
@@ -418,6 +451,9 @@ class StateMachine:
 
             if detection is None:
                 continue
+
+            if action == "upgrade_food" and self._food_recovering:
+                action, next_state = "dismiss", None
 
             # Em DEBUG, mostra qual prioridade venceu e o que
             # estava na tela junto. É o que responde "por que
@@ -458,7 +494,7 @@ class StateMachine:
     def _act(self, action, detection, next_state=None):
         """Único lugar do projeto que dispara ação e troca estado."""
 
-        if not self._can_act():
+        if action != "release_food_press" and not self._can_act():
             return False
 
         dismiss_before = (self._dismiss_attempts, self._dismiss_rounds)
@@ -557,10 +593,9 @@ class StateMachine:
         if action == "upgrade_food":
             self.up_food_wait_start = self.last_action_time
             self.while_up_food_seen_at = None
+            self._food_press_attempts += 1
 
-        # Depois do _enter (que não toca em _food_target): guarda
-        # QUAL item entrou em FOOD, para _wait_or_give_up saber o
-        # que ignorar se ele desistir.
+        # Guarda o item para a recuperação caso o upgrade trave.
         if action == "food":
             self._food_target = detection
 
@@ -749,7 +784,7 @@ class StateMachine:
         )
 
     def frame_floor(self):
-        """Instante de CAPTURA mínimo para um frame autorizar ação. Definição única, compartilhada com o VisionWorker (evita divergir e agir sobre tela velha); conta do FIM da ação, não da submissão, pois ações assíncronas variam de duração (swipe 500ms, long press de comida 4s); piso final é o maior entre a espera de entrada no estado e a de settle pós-ação."""
+        """Instante mínimo de captura do frame, compartilhado com o VisionWorker."""
 
         # Espera de entrada independe da última ação: uma tela
         # que abriu com animação não fica pronta só porque o
@@ -854,6 +889,9 @@ class StateMachine:
         # para o próximo.
         self.up_food_wait_start = None
         self.while_up_food_seen_at = None
+        self._food_press_attempts = 0
+        if previous_state == FOOD:
+            self._food_target = None
         if previous_state == RENOVATE and state != RENOVATE:
             self._renovate_origin = None
 
@@ -877,7 +915,7 @@ class StateMachine:
         if self.state == UPGRADE and self._find(detections or [], "up_upgrade") is not None:
             return False
 
-        # O fluxo FOOD tem seu próprio limite de 30 s em update().
+        # Um toque ativo tem os prazos próprios de check_food_timeout().
         if self.state == FOOD and self.up_food_wait_start is not None:
             return False
 
@@ -913,10 +951,9 @@ class StateMachine:
         return True
 
     def _food(self, detections):
-        """Segura o botão de upgrade de comida e espera o próximo aparecer; sem próximo em UP_FOOD_WAIT, volta para NORMAL."""
-
-        # Só avalia o resultado após o press terminar e chegar um frame novo.
+        # O primeiro frame que confirma o toque precisa vir depois do DOWN.
         if not self._can_act():
+            self.check_food_timeout()
             return
 
         # Os sinais cinza encerram o toque antes de qualquer nova tentativa
@@ -935,6 +972,18 @@ class StateMachine:
                 self._act(acao, deteccao, NORMAL)
 
                 return
+
+        if self.up_food_wait_start is not None:
+            confirmed_at = self._food_confirmation_time()
+            if (
+                self._frame_time > confirmed_at
+                and self._find(detections, "while_up_food") is not None
+                and time.monotonic() - confirmed_at < UPGRADE_FOOD_MAX_HOLD
+                and self.action_manager.confirm_food_press(self._frame_time)
+            ):
+                self.while_up_food_seen_at = self._frame_time
+            self.check_food_timeout()
+            return
 
         up_food = self._find(detections, "up_food")
 
@@ -1020,6 +1069,7 @@ class StateMachine:
         """Esquece itens ignorados e a contagem de tentativas — chamado a cada swipe real, que muda o que está na tela."""
 
         self._ignored_food = []
+        self._food_recovering = False
 
         self._food_fail_target = None
         self._food_fail_count = 0

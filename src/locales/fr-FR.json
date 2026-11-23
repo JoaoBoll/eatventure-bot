@@ -1031,7 +1031,7 @@
     "swipe_duration": "Balayage : durée (ms)",
     "wait_after_swipe": "Délai après un balayage (s)",
     "upgrade_clicks": "Clics par amélioration",
-    "food_upgrade_duration": "Durée d'amélioration de la nourriture (s)",
+    "food_upgrade_duration": "Délai sans confirmation avant de relâcher l’amélioration (s)",
     "exploration_delay": "Délai avant l'exploration (s)",
     "exploration_action_delay": "Délai avant l'exploration après une action (s)",
     "detection": "Détection",

@@ -8,6 +8,7 @@ from core import log, config
 
 logger = log.get("android")
 ADB = config.ADB_PATH
+MOTION_EVENT_TIMEOUT = 3.0
 
 
 class AndroidActions:
@@ -248,6 +249,7 @@ class AndroidActions:
             "DOWN",
             str(int(x)),
             str(int(y)),
+            timeout=MOTION_EVENT_TIMEOUT,
         ) is not None
 
     def touch_up(self, x, y):
@@ -259,6 +261,7 @@ class AndroidActions:
             "UP",
             str(int(x)),
             str(int(y)),
+            timeout=MOTION_EVENT_TIMEOUT,
         ) is not None
 
     def swipe(self, x1, y1, x2, y2, duration=300):

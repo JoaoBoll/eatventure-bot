@@ -83,16 +83,22 @@ class ModelDetector(Detector):
         height, width = frame.shape[:2]
         self._last_frame_size = (width, height)
         model = self._model_for(width, height)
+        allowed = set(categories) if categories is not None else None
         if self._source is None:
             # O primeiro acerto por template pode ser rejeitado pelo modelo;
             # não interrompe a busca antes de classificar as outras regiões.
             boxes = super().detect(frame, categories, exhaustive=True)
+            indicators = [box for box in boxes if box["category"] == "while_up_food"]
         else:
             boxes = self._source.boxes(frame)
+            indicators = (
+                super().detect(frame, ["while_up_food"])
+                if allowed is None or "while_up_food" in allowed else []
+            )
             self.last_searched = self.last_total = len(boxes)
         detections = detect_with_model(model, frame, boxes, config.AI_MIN_CONFIDENCE)
-        allowed = set(categories) if categories is not None else None
-        filtered = []
+        # O indicador confirma um toque em andamento e pode faltar nas classes do modelo.
+        filtered = list(indicators)
         for detection in detections:
             category = detection["category"]
             if allowed is not None and category not in allowed:

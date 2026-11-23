@@ -15,6 +15,7 @@ from core.block_regions import validate_regions
 MAX_PROFILE_BYTES = 256 * 1024
 MAX_CATEGORY_THRESHOLDS = 128
 MAX_ITEM_THRESHOLDS = 2000
+FOOD_UPGRADE_HOLD_LIMIT = 4.0
 _CATEGORY = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
 _PROFILE_NAME = re.compile(r"[0-9a-f]{64}\.json\Z")
 _SOURCE_PREFIX = re.compile(r"^(\d+x\d+)_(.+)$")
@@ -64,7 +65,7 @@ SETTING_SPECS = {
     "scroll_bottom_swipes": _spec("SCROLL_BOTTOM_SWIPES", t("messages.scroll_bottom_swipes"), t("messages.actions"), "int", 1, 100, 1),
     "swipe_waiting_time": _spec("SWIPE_WAITING_TIME", t("messages.wait_after_swipe"), t("messages.actions"), "float", 0.0, 60.0, 0.1),
     "upgrade_item_clicks": _spec("UPGRADE_ITEM_CLICKS", t("messages.upgrade_clicks"), t("messages.actions"), "int", 1, 100, 1),
-    "upgrade_food_press": _spec("UPGRADE_FOOD_PRESS", t("messages.food_upgrade_duration"), t("messages.actions"), "float", 0.1, 30.0, 0.1),
+    "upgrade_food_press": _spec("UPGRADE_FOOD_MAX_HOLD", t("messages.food_upgrade_duration"), t("messages.actions"), "float", 0.1, FOOD_UPGRADE_HOLD_LIMIT, 0.1),
     "exploration_delay": _spec("EXPLORATION_DELAY", t("messages.exploration_delay"), t("messages.actions"), "float", 0.0, 300.0, 0.5),
     "exploration_delay_after_action": _spec("EXPLORATION_DELAY_AFTER_ACTION", t("messages.exploration_action_delay"), t("messages.actions"), "float", 0.0, 300.0, 0.5),
 }
@@ -156,7 +157,10 @@ def validate_profile(device_id, data):
                 raise ValueError(t("messages.boolean_required", value_1=spec['label']))
             settings[key] = value
         else:
-            settings[key] = _number(value, spec["label"], spec["min"], spec["max"], integer=spec["type"] == "int")
+            # Perfis antigos podem ter um limite maior salvo.
+            maximum = 30.0 if key == "upgrade_food_press" else spec["max"]
+            number = _number(value, spec["label"], spec["min"], maximum, integer=spec["type"] == "int")
+            settings[key] = min(number, spec["max"])
 
     categories = {}
     for key, value in _mapping(data.get("category_thresholds", {}), t("messages.category_thresholds"), MAX_CATEGORY_THRESHOLDS).items():

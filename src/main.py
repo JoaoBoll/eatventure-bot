@@ -293,7 +293,11 @@ def run_loop(
                     t("messages.template_selection_pause") if template_paused else t("messages.automatic_training_pause"),
                 )
             recorder = state_machine.recorder
-            if training_paused and not actions.is_busy() and (recorder is None or recorder.prepare_for_training()):
+            food_release_requested = state_machine.interrupt_food_press()
+            if (
+                training_paused and food_release_requested and not actions.is_busy()
+                and (recorder is None or recorder.prepare_for_training())
+            ):
                 auto_trainer.acknowledge_pause()
         elif pause_started is not None:
             resume_floor = time.monotonic()
@@ -302,6 +306,8 @@ def run_loop(
             logger.info(t("messages.training_finished"))
 
         if frame is None or version == last_version:
+            if not paused:
+                state_machine.check_food_timeout()
             update_panel()
             if SHOW_AI_VISION and cv2.waitKey(1) & 0xFF == 27:
                 break
@@ -378,6 +384,8 @@ def run_loop(
                 detect_frame,
                 detect_time,
             )
+        elif not paused:
+            state_machine.check_food_timeout()
 
         update_panel()
 
@@ -595,7 +603,10 @@ def main(argv=None, runtime=None):
 
         logger.info(t("messages.bot_stopping"))
 
-        # Antes do resto: fecha a amostra pendente e termina a fila local.
+        # Solta um toque ativo antes de aguardar as outras filas.
+        actions.stop()
+
+        # Fecha a amostra pendente e termina a fila local.
         if recorder:
 
             recorder.stop()
@@ -611,8 +622,6 @@ def main(argv=None, runtime=None):
 
         if engine_detector is not None:
             engine_detector.stop()
-
-        actions.stop()
 
         capture.stop()
 

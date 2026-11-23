@@ -8,6 +8,8 @@ andamento" e conversão de coordenada de frame para toque.
 import sys
 import time
 from pathlib import Path
+from threading import Event
+from unittest.mock import Mock, patch
 
 import cv2
 
@@ -346,10 +348,20 @@ def test_frame_reduzido_converte_coordenada():
 
 
 def test_acao_longa_nao_bloqueia_o_loop():
-    """O long press de comida dura 4 s; antes congelava o loop principal inteiro."""
+    """O DOWN é assíncrono e o encerramento envia UP depois dele."""
 
     _, _, actions, _ = build()
 
+    entrou_no_down = Event()
+    concluir_down = Event()
+    enviar_down = actions.android.touch_down
+
+    def down_pendente(x, y):
+        entrou_no_down.set()
+        assert concluir_down.wait(timeout=2)
+        return enviar_down(x, y)
+
+    actions.android.touch_down = down_pendente
     actions.start()
 
     try:
@@ -372,19 +384,59 @@ def test_acao_longa_nao_bloqueia_o_loop():
 
         assert actions.execute("upgrade_food", detection)
 
-        # A chamada tem que voltar na hora, não em 4 s.
         elapsed = time.monotonic() - started
 
         assert elapsed < 0.5, elapsed
 
-        # E enquanto ela roda, nada mais entra na fila.
+        assert entrou_no_down.wait(timeout=2)
         assert actions.is_busy()
 
         assert not actions.execute("close", detection)
 
     finally:
-
+        concluir_down.set()
         actions.stop()
+
+    assert [
+        command[3] for command in actions.android.commands if command[:3] == ("shell", "input", "motionevent")
+    ] == ["DOWN", "UP"]
+
+
+def test_reenvia_up_quando_a_primeira_tentativa_falha():
+    actions = ActionManager()
+    actions.android = Mock()
+    actions.android.touch_up.side_effect = [False, True]
+    actions._press_until_gray("upgrade_food", 20, 30)
+
+    assert not actions._release_held_touch()
+    assert actions.is_busy()
+
+    actions._release_expired_touch()
+
+    assert actions.android.touch_up.call_count == 2
+    assert not actions.is_busy()
+
+
+def test_worker_renova_o_prazo_com_confirmacoes_de_frames_novos():
+    from core.config import UPGRADE_FOOD_MAX_HOLD
+
+    actions = ActionManager()
+    actions.android = Mock()
+    now = 100.0
+    with patch("actions.manager.time.monotonic", side_effect=lambda: now):
+        actions._press_until_gray("upgrade_food", 20, 30)
+        for _ in range(3):
+            now += UPGRADE_FOOD_MAX_HOLD * 0.75
+            assert actions.confirm_food_press(now)
+            assert not actions.confirm_food_press(now)
+            actions._release_expired_touch()
+            actions.android.touch_up.assert_not_called()
+
+        now += UPGRADE_FOOD_MAX_HOLD + 0.1
+        assert not actions.confirm_food_press(now)
+        actions._release_expired_touch()
+
+    actions.android.touch_up.assert_called_once_with(20, 30)
 
 
 def test_categoria_desconhecida_nao_derruba():
@@ -1058,17 +1110,7 @@ def test_dismiss_converte_para_device_menor():
 
 
 def test_hold_do_dismiss_e_curto():
-    """Se usasse a duração do upgrade de comida (4s), o bot congelaria a cada painel aberto sem querer."""
-
-    from core.config import (
-        DISMISS_HOLD_DURATION,
-        UPGRADE_FOOD_PRESS,
-    )
-
-    assert DISMISS_HOLD_DURATION < UPGRADE_FOOD_PRESS, (
-        DISMISS_HOLD_DURATION,
-        UPGRADE_FOOD_PRESS,
-    )
+    from core.config import DISMISS_HOLD_DURATION
 
     # Acima de um tap falho, e abaixo do limite de long press
     # do Android (~500 ms), para não disparar gesto de segurar.
