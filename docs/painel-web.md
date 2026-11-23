@@ -12,14 +12,15 @@ Na raiz do projeto, com o ambiente virtual ativado e as dependências do bot ins
 
 ```bash
 python -m pip install -r requirements-web.txt
-nohup .venv/bin/python src/web.py > /dev/null 2>&1 < /dev/null &
 ```
 
-O comando libera o terminal e não salva saída em arquivo. Por padrão, o painel escuta em todas as interfaces (`0.0.0.0`). No próprio computador, abra `http://localhost:8765`; em outro computador ou celular na mesma rede, abra `http://IP_DO_SERVIDOR:8765`, substituindo `IP_DO_SERVIDOR` pelo IP do computador que executa o painel.
+Inicie o painel com `python3 src/start-web.py` no Linux ou `py src/start-web.py` no Windows. Com o ambiente virtual ativado, também pode usar `python src/start-web.py` nos dois sistemas. O inicializador usa o `.venv` do projeto quando disponível, libera o terminal e grava a saída em `logs/web.log`. No Linux, o painel continua rodando após encerrar a sessão SSH.
+
+Por padrão, o painel escuta em todas as interfaces (`0.0.0.0`). No próprio computador, abra `http://localhost:8765`. Em outro computador ou celular na mesma rede, abra `http://IP_DO_SERVIDOR:8765`, substituindo `IP_DO_SERVIDOR` pelo IP do computador que executa o painel.
 
 Para encerrar o painel pelo terminal, execute `python src/stop-web.py`. O script lê o PID salvo em `local/web.pid`, confirma pela linha de comando que ele pertence a `web.py` e envia o encerramento gracioso antes de forçar a parada se necessário. Se não conseguir validar o processo, ele não envia nenhum sinal.
 
-Para permitir acesso somente no próprio computador, use `nohup .venv/bin/python src/web.py --host 127.0.0.1 > /dev/null 2>&1 < /dev/null &`. A opção `--port` permite alterar a porta padrão `8765`.
+Para permitir acesso somente no próprio computador, use `python src/start-web.py --host 127.0.0.1`. A opção `--port` permite alterar a porta padrão `8765`.
 
 Enquanto estiver alterando o código do painel, inicie com `--reload`:
 
@@ -34,7 +35,7 @@ aquele painel, use essa opção somente durante desenvolvimento.
 Por padrão, o painel abre diretamente, sem token. Para exigir autenticação, inicie com:
 
 ```bash
-nohup .venv/bin/python src/web.py --require-token > /dev/null 2>&1 < /dev/null &
+python src/start-web.py --require-token
 ```
 
 Nesse modo, o primeiro início cria um token de acesso. Leia-o em outro terminal:

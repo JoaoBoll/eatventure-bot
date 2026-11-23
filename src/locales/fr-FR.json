@@ -28,6 +28,8 @@
     "panel_not_running": "Le tableau de bord n'est pas en cours d'exécution.",
     "panel_stopped": "Tableau de bord arrêté.",
     "panel_url": "Tableau de bord accessible à l'adresse http://{host}:{port}",
+    "background_web_started": "Tableau de bord lancé en arrière-plan. Journal : {path}",
+    "background_web_failed": "Le tableau de bord s’est arrêté. Consultez le journal : {path}",
     "port_error": "Le port doit être compris entre 1 et 65535.",
     "preview_description": "Visionneuse du flux brut, sans détection.",
     "require_token_help": "Exige un token d'accès pour ouvrir le tableau de bord.",

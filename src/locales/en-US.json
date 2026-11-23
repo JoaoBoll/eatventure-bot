@@ -28,6 +28,8 @@
     "panel_not_running": "The dashboard is not running.",
     "panel_stopped": "Dashboard stopped.",
     "panel_url": "Dashboard available at http://{host}:{port}",
+    "background_web_started": "Dashboard launched in the background. Log: {path}",
+    "background_web_failed": "The dashboard did not stay running. Check the log at {path}.",
     "port_error": "The port must be between 1 and 65535.",
     "preview_description": "Raw stream viewer without detection.",
     "require_token_help": "Requires an access token to open the dashboard.",

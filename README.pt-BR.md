@@ -107,23 +107,23 @@ Habilita a conexão pela mesma rede Wi-Fi. Confirme com `adb devices` antes de r
 
 ### Painel web
 
-Com o ambiente virtual ativado, instale as dependências do painel e inicie-o:
+Com o ambiente virtual ativado, instale as dependências do painel:
 
 ```powershell
 python -m pip install -r requirements-web.txt
 ```
 
-Abra `http://localhost:8765` no mesmo computador. Para permitir acesso apenas local, use `nohup .venv/bin/python src/web.py --host 127.0.0.1 > /dev/null 2>&1 < /dev/null &`. O painel detecta os dispositivos autorizados pelo ADB e permite iniciar, parar e configurar os bots. Veja [docs/painel-web.md](docs/painel-web.md) para token de acesso, outra porta e operação pela rede local.
-
-Em um servidor Linux, use este comando para iniciar o painel em segundo plano:
+No Linux, inicie o painel em segundo plano:
 
 ```bash
-nohup .venv/bin/python src/web.py > /dev/null 2>&1 < /dev/null &
+python3 src/start-web.py
 ```
 
-O painel continua executando após encerrar a sessão SSH, sem salvar saída em arquivo. Use o botão **Encerrar painel** na interface para pará-lo. Para mantê-lo ativo também após reinicializações do servidor, use o serviço `systemd` descrito em [docs/painel-web.md](docs/painel-web.md).
+No Windows, execute `py src/start-web.py`. Com o ambiente virtual ativado, pode usar `python src/start-web.py` nos dois sistemas. O inicializador usa o `.venv` do projeto quando disponível e grava a saída em `logs/web.log`. No Linux, o painel continua rodando após encerrar a sessão SSH.
 
-Para encerrar pelo terminal:
+Abra `http://localhost:8765` no mesmo computador. Para permitir acesso apenas local, passe `--host 127.0.0.1` ao inicializador. O painel detecta os dispositivos autorizados pelo ADB e permite iniciar, parar e configurar os bots. O [guia do painel](docs/painel-web.md) explica como usar um token, escolher outra porta, acessar pela rede local e iniciar o painel após reinicializações com `systemd`.
+
+Para encerrar o painel, use **Encerrar painel** na interface ou execute:
 
 ```bash
 python src/stop-web.py
@@ -137,7 +137,7 @@ sudo apt install -y python3-venv
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements-web.txt
-nohup .venv/bin/python src/web.py > /dev/null 2>&1 < /dev/null &
+python src/start-web.py
 ```
 
 Se a versão do Python for instalada separadamente e o comando `venv` ainda falhar, instale o pacote correspondente, por exemplo `sudo apt install -y python3.14-venv`.

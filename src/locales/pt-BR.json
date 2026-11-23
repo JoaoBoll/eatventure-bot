@@ -28,6 +28,8 @@
     "panel_not_running": "O painel não está em execução.",
     "panel_stopped": "Painel encerrado.",
     "panel_url": "Painel disponível em http://{host}:{port}",
+    "background_web_started": "Painel iniciado em segundo plano. Log: {path}",
+    "background_web_failed": "O painel não permaneceu em execução. Consulte o log: {path}",
     "port_error": "A porta deve estar entre 1 e 65535.",
     "preview_description": "Visualizador do stream cru, sem detecção.",
     "require_token_help": "Exige token de acesso para abrir o painel.",

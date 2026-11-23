@@ -123,23 +123,23 @@ Enables a connection over the same Wi-Fi network. Confirm with `adb devices` bef
 
 ### Web control panel
 
-With the virtual environment activated, install the panel dependencies and start it:
+With the virtual environment activated, install the panel dependencies:
 
 ```powershell
 python -m pip install -r requirements-web.txt
 ```
 
-Open `http://localhost:8765` on the same computer. Use `nohup .venv/bin/python src/web.py --host 127.0.0.1 > /dev/null 2>&1 < /dev/null &` to allow local access only. The panel finds ADB-authorized devices and can start, stop and configure their bots. See [docs/painel-web.md](docs/painel-web.md) for access tokens, another port and LAN use.
-
-On a Linux server, use this command to start the panel in the background:
+On Linux, start the panel in the background:
 
 ```bash
-nohup .venv/bin/python src/web.py > /dev/null 2>&1 < /dev/null &
+python3 src/start-web.py
 ```
 
-The panel keeps running after the SSH session closes without saving output to a file. Use the **Encerrar painel** button in the interface to stop it. To keep it running after server reboots too, use the `systemd` service described in [docs/painel-web.md](docs/painel-web.md).
+On Windows, run `py src/start-web.py`. With the virtual environment activated, you can run `python src/start-web.py` on either system. The launcher uses the project's `.venv` when available and writes output to `logs/web.log`. On Linux, the panel keeps running after the SSH session closes.
 
-To stop it from the terminal:
+Open `http://localhost:8765` on the same computer. To allow local access only, pass `--host 127.0.0.1` to the launcher. The panel finds ADB-authorized devices and can start, stop and configure their bots. See [the panel guide](docs/painel-web.md) for access tokens, another port, LAN use and a `systemd` service that starts the panel after a reboot.
+
+To stop the panel, use **Encerrar painel** in the interface or run:
 
 ```bash
 python src/stop-web.py
@@ -153,7 +153,7 @@ sudo apt install -y python3-venv
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements-web.txt
-nohup .venv/bin/python src/web.py > /dev/null 2>&1 < /dev/null &
+python src/start-web.py
 ```
 
 If Python was installed separately and `venv` still fails, install its matching package, for example `sudo apt install -y python3.14-venv`.
