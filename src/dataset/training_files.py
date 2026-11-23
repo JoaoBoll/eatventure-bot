@@ -2,15 +2,14 @@
 
 import json
 from core.i18n import t
+from core.processes import file_lock
 import hashlib
 import os
 import shutil
 import sqlite3
 import tempfile
-import time
 import uuid
 from collections import Counter, defaultdict
-from contextlib import contextmanager
 from pathlib import Path
 
 from dataset.layout import (
@@ -20,47 +19,12 @@ from dataset.layout import (
 )
 
 
-@contextmanager
-def _file_lock(path, blocking=True):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a+b") as arquivo:
-        if os.name == "nt":
-            import msvcrt
-
-            # Pode bloquear além do EOF; ler o byte antes falha se outro acesso já o bloqueou.
-            while True:
-                try:
-                    arquivo.seek(0)
-                    msvcrt.locking(arquivo.fileno(), msvcrt.LK_NBLCK, 1)
-                    break
-                except OSError as error:
-                    if error.errno not in (11, 13, 36):
-                        raise
-                    if not blocking:
-                        raise BlockingIOError(t("messages.training_in_progress")) from error
-                    time.sleep(0.02)
-            try:
-                yield
-            finally:
-                arquivo.seek(0)
-                msvcrt.locking(arquivo.fileno(), msvcrt.LK_UNLCK, 1)
-        else:
-            import fcntl
-
-            flags = fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB)
-            fcntl.flock(arquivo.fileno(), flags)
-            try:
-                yield
-            finally:
-                fcntl.flock(arquivo.fileno(), fcntl.LOCK_UN)
-
-
 def index_lock(root):
-    return _file_lock(Path(root).resolve() / ".index.lock")
+    return file_lock(Path(root).resolve() / ".index.lock")
 
 
 def training_lock(root):
-    return _file_lock(Path(root).resolve() / ".training.lock", blocking=False)
+    return file_lock(Path(root).resolve() / ".training.lock", blocking=False)
 
 
 def _inside(path, root):

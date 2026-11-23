@@ -1,6 +1,42 @@
 """Consultas portáteis sobre processos do sistema."""
 
+from contextlib import contextmanager
 import os
+import time
+
+
+@contextmanager
+def file_lock(path, blocking=True):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+b") as file:
+        if os.name == "nt":
+            import msvcrt
+
+            while True:
+                try:
+                    file.seek(0)
+                    msvcrt.locking(file.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError as error:
+                    if error.errno not in (11, 13, 36):
+                        raise
+                    if not blocking:
+                        raise BlockingIOError(error.errno, error.strerror) from error
+                    time.sleep(0.02)
+            try:
+                yield
+            finally:
+                file.seek(0)
+                msvcrt.locking(file.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            flags = fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB)
+            fcntl.flock(file.fileno(), flags)
+            try:
+                yield
+            finally:
+                fcntl.flock(file.fileno(), fcntl.LOCK_UN)
 
 
 def _windows_process_alive(pid):

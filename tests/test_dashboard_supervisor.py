@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -158,6 +159,65 @@ def test_start_is_per_hardware_and_preserves_profile(tmp_path):
     assert options["env"]["EATVENTURE_SESSION_ID"]
     assert not options.get("shell")
     assert profile_path.read_text(encoding="utf-8") == original
+
+
+def test_start_waits_for_recorded_worker_before_clearing_runtime(tmp_path):
+    supervisor = _supervisor(tmp_path)
+    device = _device()
+    runtime = supervisor.state_root / "runtime"
+    runtime.mkdir(parents=True)
+    key = hashlib.sha256(device["id"].encode()).hexdigest()
+    status_file = runtime / f"{key}.status.json"
+    stop_file = runtime / f"{key}.stop"
+    session_id = "a" * 32
+    status_file.write_text(json.dumps({
+        "device_id": device["id"], "session_id": session_id, "pid": 12345,
+    }), encoding="utf-8")
+
+    def finish_worker(pid, timeout):
+        assert pid == 12345
+        assert status_file.is_file()
+        assert stop_file.read_text(encoding="utf-8") == session_id
+        return True
+
+    process = Mock(pid=23456)
+    process.poll.return_value = None
+    with (
+        patch("dashboard.supervisor.process_alive", return_value=True),
+        patch("dashboard.supervisor._wait_for_worker_exit", side_effect=finish_worker) as wait,
+        patch("dashboard.supervisor.subprocess.Popen", return_value=process),
+        patch("dashboard.supervisor.threading.Thread"),
+        patch.object(supervisor, "_validate_device"),
+    ):
+        started = supervisor.start(device["id"])
+
+    assert started["pid"] == 23456
+    wait.assert_called_once()
+    assert not status_file.exists()
+    assert not stop_file.exists()
+
+
+def test_stale_worker_pid_is_not_killed_after_identity_mismatch(tmp_path):
+    supervisor = _supervisor(tmp_path)
+    device = _device()
+    status_file = tmp_path / "old.status.json"
+    stop_file = tmp_path / "old.stop"
+    status_file.write_text(json.dumps({
+        "device_id": device["id"], "session_id": "a" * 32, "pid": 12345,
+    }), encoding="utf-8")
+
+    with (
+        patch("dashboard.supervisor.process_alive", return_value=True),
+        patch("dashboard.supervisor._wait_for_worker_exit", return_value=False),
+        patch.object(supervisor, "_recorded_worker_matches", return_value=False) as identity,
+        patch("dashboard.supervisor.subprocess.run") as run,
+        patch("dashboard.supervisor.os.kill") as kill,
+    ):
+        supervisor._stop_recorded_worker(status_file, stop_file, device)
+
+    identity.assert_called_once()
+    run.assert_not_called()
+    kill.assert_not_called()
 
 
 def test_linux_start_creates_a_separate_process_session(tmp_path):

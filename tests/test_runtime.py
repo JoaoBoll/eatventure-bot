@@ -2,8 +2,11 @@
 
 import sys
 import unittest
-from contextlib import ExitStack
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack, nullcontext
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from threading import Event
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -11,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 import main
 import main_layouts
+from core.device_session import device_session
 
 
 class RuntimeTests(unittest.TestCase):
@@ -91,6 +95,8 @@ class RuntimeTests(unittest.TestCase):
             stack.enter_context(patch.dict(main.os.environ, {"EATVENTURE_SESSION_ID": ""}))
             stack.enter_context(patch.object(main, "DATASET_SAVE", True))
             stack.enter_context(patch.object(main.devices, "resolver", return_value="device"))
+            stack.enter_context(patch.object(main.devices, "hardware_serial", return_value="hardware"))
+            stack.enter_context(patch.object(main, "device_session", return_value=nullcontext(lambda: False)))
             for name in ("ScreenCapture", "Detector", "VisionWorker", "ActionManager", "StateMachine", "BatteryMonitor", "run_loop"):
                 stack.enter_context(patch.object(main, name))
             stack.enter_context(patch.object(main.cv2, "destroyAllWindows"))
@@ -102,6 +108,10 @@ class RuntimeTests(unittest.TestCase):
 
     def test_falha_de_inicializacao_nao_abre_espelho(self):
         with patch.object(main.devices, "resolver", return_value="device"), patch.object(
+            main.devices, "hardware_serial", return_value="hardware"
+        ), patch.object(
+            main, "device_session", return_value=nullcontext(lambda: False)
+        ), patch.object(
             main, "SHOW_SCRCPY", True
         ), patch.object(main, "Detector", side_effect=RuntimeError("templates")), patch.object(
             main, "start_scrcpy"
@@ -109,6 +119,27 @@ class RuntimeTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "templates"):
                 main.main([])
         start_scrcpy.assert_not_called()
+
+    def test_nova_sessao_aguarda_a_anterior_para_o_mesmo_aparelho(self):
+        requested = Event()
+        with TemporaryDirectory() as directory, ThreadPoolExecutor() as pool, patch(
+            "core.device_session.logger.info", side_effect=lambda *args: requested.set(),
+        ):
+            path = Path(directory)
+
+            def replacement():
+                with device_session(path, "hardware", timeout=2) as should_stop:
+                    return should_stop()
+
+            with device_session(path, "hardware") as should_stop:
+                incoming = pool.submit(replacement)
+                self.assertTrue(requested.wait(timeout=2))
+                self.assertTrue(should_stop())
+                self.assertFalse(incoming.done())
+                with device_session(path, "outra-unidade") as other_should_stop:
+                    self.assertFalse(other_should_stop())
+
+            self.assertFalse(incoming.result(timeout=2))
 
 
 if __name__ == "__main__":

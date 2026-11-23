@@ -3,6 +3,7 @@
 import random
 from core.i18n import t
 import re
+import shlex
 import socket
 import subprocess
 import threading
@@ -13,7 +14,7 @@ import posixpath
 import av
 import cv2
 
-from core import log
+from core import devices, log
 from core.metrics import RateMeter
 from core.config import (
     CAPTURE_CONNECT_TIMEOUT,
@@ -30,6 +31,9 @@ from core.config import (
 )
 
 logger = log.get("capture")
+_PROCESS_PREFIX = "eatventure-scrcpy-"
+_PROCESS_NAME = re.compile(rf"{_PROCESS_PREFIX}(legacy-)?([0-7][0-9a-f]{{7}})")
+_SERVER_CLASS = "com.genymobile.scrcpy.Server"
 
 
 class ScreenCapture:
@@ -426,6 +430,119 @@ class ScreenCapture:
 
         return comando + list(args)
 
+    def _cleanup_adb(self, *args, serial=None):
+        command = self._adb(*args) if serial is None else [ADB_PATH, "-s", serial, *args]
+        return subprocess.run(
+            command, capture_output=True, text=True, check=True, timeout=10.0,
+        ).stdout
+
+    @staticmethod
+    def _proc_has(pid, token, field="cmdline"):
+        return f"tr '\\000' '\\n' 2>/dev/null < /proc/{pid}/{field} | grep -Fqx -- {shlex.quote(token)}"
+
+    def _previous_server_processes(self, owned_jar, legacy_jar, scids):
+        try:
+            output = self._cleanup_adb("shell", "ps", "-A", "-o", "PID,ARGS")
+        except subprocess.CalledProcessError:
+            # O toolbox de Android antigo só oferece o formato padrão de ps.
+            output = self._cleanup_adb("shell", "ps")
+
+        for line in output.splitlines():
+            fields = line.split()
+            if len(fields) < 2:
+                continue
+            if re.fullmatch(r"[1-9]\d*", fields[0]):
+                pid, args = fields[0], fields[1:]
+            elif fields[0] == "shell" and re.fullmatch(r"[1-9]\d*", fields[1]):
+                name = fields[-1]
+                if _PROCESS_NAME.fullmatch(name) or name == _SERVER_CLASS:
+                    pid, args = fields[1], [name]
+                elif posixpath.basename(name) in {"app_process", "app_process32", "app_process64"}:
+                    pid = fields[1]
+                    args = self._cleanup_adb(
+                        "shell", f"tr '\\000' '\\n' 2>/dev/null < /proc/{pid}/cmdline || :",
+                    ).splitlines()
+                else:
+                    continue
+            else:
+                continue
+            if not args:
+                continue
+
+            named = _PROCESS_NAME.fullmatch(args[0])
+            if named:
+                if not named[1]:
+                    scids.add(named[2])
+                yield pid, self._proc_has(pid, args[0])
+                continue
+            if _SERVER_CLASS not in args:
+                continue
+            scid = next((arg[5:] for arg in args if arg.startswith("scid=")), None)
+            if scid in scids:
+                yield pid, f"{self._proc_has(pid, _SERVER_CLASS)} && {self._proc_has(pid, f'scid={scid}')}"
+                continue
+
+            # Uma versão anterior pode ter apagado o JAR sem encerrar o processo.
+            for classpath in self._cleanup_adb(
+                "shell", f"tr '\\000' '\\n' 2>/dev/null < /proc/{pid}/environ | grep '^CLASSPATH=' || :",
+            ).splitlines():
+                jar = classpath.removeprefix("CLASSPATH=")
+                match = owned_jar.fullmatch(jar)
+                if match or jar == legacy_jar:
+                    if match and scid == match[1]:
+                        scids.add(scid)
+                    yield pid, f"{self._proc_has(pid, _SERVER_CLASS)} && {self._proc_has(pid, classpath, 'environ')}"
+                    break
+
+    def cleanup_previous_sessions(self, hardware=None):
+        """Encerra servidores e forwards do projeto, inclusive em aliases verificados."""
+        if not self.serial:
+            return
+
+        jar = type(self).DEVICE_JAR
+        base, extension = posixpath.splitext(jar)
+        owned_jar = re.compile(rf"{re.escape(base)}-([0-7][0-9a-f]{{7}}){re.escape(extension)}")
+        jar_glob = f"{shlex.quote(base)}-*{shlex.quote(extension)}"
+        try:
+            output = self._cleanup_adb(
+                "shell",
+                f"for jar in {shlex.quote(jar)} {jar_glob}; do "
+                "if [ -f \"$jar\" ]; then printf '%s\\n' \"$jar\"; fi; done",
+            )
+            jars = [path for path in output.splitlines() if path == jar or owned_jar.fullmatch(path)]
+            scids = {match[1] for path in jars if (match := owned_jar.fullmatch(path))}
+            for pid, owns_process in self._previous_server_processes(owned_jar, jar, scids):
+                self._cleanup_adb(
+                    "shell",
+                    f"if {owns_process}; then kill -TERM {pid} 2>/dev/null || :; "
+                    f"for step in 1 2 3 4 5; do if ! ( {owns_process} ); then break; fi; sleep 0.1; done; "
+                    f"if {owns_process}; then kill -KILL {pid}; fi; fi",
+                )
+
+            if scids:
+                sockets = {f"localabstract:scrcpy_{scid}" for scid in scids}
+                same_device = {self.serial: True}
+                for line in self._cleanup_adb("forward", "--list").splitlines():
+                    fields = line.split()
+                    if len(fields) != 3:
+                        continue
+                    serial, port, remote = fields
+                    if remote not in sockets or not re.fullmatch(r"tcp:[1-9]\d{0,4}", port):
+                        continue
+                    if serial == self.serial:
+                        self._cleanup_adb("forward", "--remove", port)
+                        continue
+                    if serial not in same_device:
+                        same_device[serial] = bool(hardware and devices.hardware_serial(serial) == hardware)
+                    if same_device[serial]:
+                        self._cleanup_adb("forward", "--remove", port, serial=serial)
+
+            if jars:
+                self._cleanup_adb("shell", "rm -f -- " + " ".join(map(shlex.quote, jars)))
+        except (OSError, subprocess.SubprocessError) as error:
+            detail = getattr(error, "stderr", "") or str(error)
+            raise RuntimeError(t("messages.capture_previous_cleanup_failed", error=detail.strip())) from error
+
     def _push_server(self):
 
         if not self.SERVER_PATH:
@@ -519,7 +636,8 @@ class ScreenCapture:
 
             "app_process",
             "/",
-            "com.genymobile.scrcpy.Server",
+            f"--nice-name={_PROCESS_PREFIX}{'legacy-' if version < (2, 0) else ''}{self.scid:08x}",
+            _SERVER_CLASS,
             self.SERVER_VERSION,
             *options,
         )

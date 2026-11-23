@@ -80,6 +80,7 @@ from core import devices
 from core.app_guard import EatventureGuard
 from core.battery import BatteryMonitor
 from core.block_regions import load_block_regions
+from core.device_session import device_session
 from core.state_machine import StateMachine
 from core.status import StatusPanel, formata_bateria
 from dataset.recorder import DatasetRecorder
@@ -88,6 +89,64 @@ from vision.template_updater import DefaultTemplateScanner
 from vision.worker import EngineWorker, VisionWorker
 
 logger = log.get("main")
+
+
+def terminate_previous_scrcpy(device_id):
+    if os.name == "nt":
+        command = (
+            "$serial = $env:EATVENTURE_CLEANUP_SERIAL; "
+            "Get-CimInstance Win32_Process -Filter \"Name = 'scrcpy.exe'\" "
+            "-ErrorAction SilentlyContinue | "
+            "Where-Object { $_.CommandLine -and $_.CommandLine.Contains($serial, [StringComparison]::OrdinalIgnoreCase) } | "
+            "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
+        )
+        environment = os.environ.copy()
+        environment["EATVENTURE_CLEANUP_SERIAL"] = device_id
+        try:
+            subprocess.run(
+                ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=8,
+                check=False,
+                env=environment,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+        except (OSError, subprocess.SubprocessError) as error:
+            logger.warning(t("messages.capture_previous_cleanup_failed", error=str(error)))
+        return
+
+    try:
+        output = subprocess.run(
+            ["ps", "-eo", "pid=,args="],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=5,
+            check=False,
+        ).stdout
+    except (OSError, subprocess.SubprocessError) as error:
+        logger.warning(t("messages.capture_previous_cleanup_failed", error=str(error)))
+        return
+
+    executable = os.path.basename(SCRCPY_PATH)
+    for line in output.splitlines():
+        fields = line.strip().split(None, 1)
+        if len(fields) != 2:
+            continue
+        pid_text, command_line = fields
+        if not pid_text.isdigit():
+            continue
+        if os.path.basename(command_line.split()[0]) != executable:
+            continue
+        if device_id not in command_line:
+            continue
+        try:
+            os.kill(int(pid_text), 9)
+        except (ProcessLookupError, PermissionError, OSError):
+            continue
 
 
 def start_scrcpy(device_id):
@@ -207,6 +266,7 @@ def run_loop(
     app_guard=None,
     recorder=None,
     engine_worker=None,
+    session_should_stop=None,
 ):
 
     last_version = 0
@@ -253,6 +313,8 @@ def run_loop(
 
     while True:
 
+        if session_should_stop is not None and session_should_stop():
+            break
         if runtime is not None:
             if runtime.should_stop():
                 break
@@ -470,6 +532,16 @@ def main(argv=None, runtime=None):
 
         return 1
 
+    hardware = devices.hardware_serial(device_id)
+    with device_session(
+        config.PROJECT_ROOT / "local" / "device-sessions", hardware or config.DEVICE_PROFILE_ID or device_id,
+        cancelled=runtime.should_stop if runtime is not None else None,
+    ) as session_should_stop:
+        if session_should_stop is not None:
+            return _run_device(args, runtime, device_id, hardware, session_should_stop)
+
+
+def _run_device(args, runtime, device_id, hardware, session_should_stop):
     windows = [
         name
         for name, enabled in (
@@ -549,6 +621,13 @@ def main(argv=None, runtime=None):
 
     try:
 
+        if session_should_stop() or (runtime is not None and runtime.should_stop()):
+            return
+        terminate_previous_scrcpy(device_id)
+        capture.cleanup_previous_sessions(hardware=hardware)
+        if session_should_stop() or (runtime is not None and runtime.should_stop()):
+            return
+
         if SHOW_SCRCPY:
             scrcpy_process = start_scrcpy(device_id)
 
@@ -584,6 +663,7 @@ def main(argv=None, runtime=None):
             app_guard=app_guard,
             recorder=recorder,
             engine_worker=engine_worker,
+            session_should_stop=session_should_stop,
         )
 
     except KeyboardInterrupt:

@@ -53,6 +53,58 @@ class CaptureTests(unittest.TestCase):
                 capture.start()
         stop.assert_called_once()
 
+    def test_limpa_apenas_sessoes_antigas_do_bot_no_serial_selecionado(self):
+        capture = ScreenCapture("device")
+
+        def adb(*args, serial=None):
+            if args[0] == "shell" and args[1].startswith("for jar"):
+                return (
+                    "/data/local/tmp/eatventure-server-00000001.jar\n"
+                    "/data/local/tmp/eatventure-server-diferente.jar\n"
+                    "/data/local/tmp/scrcpy-server-00000002.jar\n"
+                )
+            if args[:2] == ("shell", "ps"):
+                return (
+                    "PID ARGS\n"
+                    "101 app_process / com.genymobile.scrcpy.Server 4.1 scid=00000001\n"
+                    "102 app_process / com.genymobile.scrcpy.Server 4.1 scid=00000002\n"
+                    "103 eatventure-scrcpy-00000003\n"
+                    "104 eatventure-scrcpy-legacy-00000004\n"
+                    "105 app_process / com.genymobile.scrcpy.Server 4.1 scid=00000005\n"
+                )
+            if args == ("forward", "--list"):
+                return (
+                    "device tcp:39001 localabstract:scrcpy_00000001\n"
+                    "device tcp:39002 localabstract:scrcpy_00000002\n"
+                    "device tcp:39003 localabstract:scrcpy_00000003\n"
+                    "device tcp:39004 localabstract:scrcpy\n"
+                    "device tcp:39005 localabstract:scrcpy_00000005\n"
+                    "other-device tcp:39999 localabstract:scrcpy_00000001\n"
+                    "device-wifi tcp:39998 localabstract:scrcpy_00000001\n"
+                )
+            if args[0] == "shell" and args[1].startswith("tr "):
+                if "/proc/105/environ" in args[1]:
+                    return "CLASSPATH=/data/local/tmp/eatventure-server-00000005.jar\n"
+                return "CLASSPATH=/data/local/tmp/scrcpy-server.jar\n"
+            return ""
+
+        with patch.object(capture, "_cleanup_adb", side_effect=adb) as run, patch.object(
+            screen.devices, "hardware_serial", side_effect=lambda serial: "physical-a" if serial == "device-wifi" else "physical-b",
+        ):
+            capture.cleanup_previous_sessions(hardware="physical-a")
+
+        commands = [call.args for call in run.call_args_list]
+        signals = [args[1] for args in commands if args[0] == "shell" and "kill -TERM" in args[1]]
+        self.assertEqual(len(signals), 4)
+        for pid in (101, 103, 104, 105):
+            self.assertTrue(any(f"kill -TERM {pid} " in command for command in signals))
+        self.assertEqual(
+            [args[2] for args in commands if args[:2] == ("forward", "--remove")],
+            ["tcp:39001", "tcp:39003", "tcp:39005", "tcp:39998"],
+        )
+        run.assert_any_call("forward", "--remove", "tcp:39998", serial="device-wifi")
+        self.assertEqual(commands[-1], ("shell", "rm -f -- /data/local/tmp/eatventure-server-00000001.jar"))
+
     def test_conexao_sem_dados_fecha_socket_ao_expirar(self):
         candidate = Mock()
         candidate.recv.side_effect = socket.timeout
@@ -173,6 +225,8 @@ class CaptureTests(unittest.TestCase):
                 comando = popen.call_args.args[0]
                 posicao_servidor = comando.index("com.genymobile.scrcpy.Server")
                 self.assertEqual(comando[posicao_servidor + 1], versao)
+                prefix = "eatventure-scrcpy-" if moderno else "eatventure-scrcpy-legacy-"
+                self.assertEqual(comando[posicao_servidor - 1], f"--nice-name={prefix}00000001")
                 self.assertIn("tunnel_forward=true", comando)
                 self.assertIn("control=false", comando)
                 self.assertIn("cleanup=false", comando)

@@ -24,6 +24,7 @@ from core import config, log
 from core.i18n import SUPPORTED_LOCALES, Text, localized, t
 from core.block_regions import migrate_legacy_blocks
 from core.preview import FramePreview, preview_paths
+from core.processes import process_alive
 
 
 logger = log.get("dashboard.supervisor")
@@ -39,6 +40,28 @@ MAX_LOG_LINE_BYTES = 4096
 
 def _iso_time(value):
     return datetime.fromtimestamp(value, timezone.utc).isoformat()
+
+
+def _read_worker_status(path):
+    try:
+        with path.open("r", encoding="utf-8") as stream:
+            raw = stream.read(_MAX_STATUS_BYTES + 1)
+        if len(raw) <= _MAX_STATUS_BYTES:
+            status = json.loads(raw)
+            if isinstance(status, dict):
+                return status
+    except (OSError, ValueError):
+        pass
+    return {}
+
+
+def _wait_for_worker_exit(pid, timeout):
+    deadline = time.monotonic() + timeout
+    while process_alive(pid):
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.1)
+    return True
 
 
 def _wifi(serial):
@@ -760,13 +783,7 @@ class BotSupervisor:
         if run is None or (not allow_finished and run.process.poll() is not None):
             return {}
         try:
-            with run.status_file.open("r", encoding="utf-8") as stream:
-                raw = stream.read(_MAX_STATUS_BYTES + 1)
-            if len(raw) > _MAX_STATUS_BYTES:
-                return {}
-            status = json.loads(raw)
-            if not isinstance(status, dict):
-                return {}
+            status = _read_worker_status(run.status_file)
             updated_at = float(status.get("updated_at", 0))
             now = time.time()
             worker_pid = status.get("pid")
@@ -1005,6 +1022,100 @@ class BotSupervisor:
             raise RuntimeError(output or t("messages.adb_connection_unconfirmed"))
         self.devices.invalidate()
 
+    def _recorded_worker_matches(self, pid, session_id, status_file, device, updated_at):
+        worker = self.root / "src" / "web_worker.py"
+        if os.name == "nt":
+            command = (
+                "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new(); "
+                f"$p = Get-CimInstance Win32_Process -Filter 'ProcessId = {pid}' -ErrorAction Stop; "
+                "if ($p) { $started = [DateTimeOffset]::new($p.CreationDate).ToUnixTimeMilliseconds(); "
+                "ConvertTo-Json -InputObject @($p.ExecutablePath, $p.CommandLine, $started) -Compress }"
+            )
+            try:
+                result = subprocess.run(
+                    ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command],
+                    stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8",
+                    timeout=5, check=True, creationflags=subprocess.CREATE_NO_WINDOW,
+                )
+                if not result.stdout.strip():
+                    return False
+                executable, command_line, started_ms = json.loads(result.stdout)
+                if (
+                    not isinstance(executable, str) or not isinstance(command_line, str)
+                    or type(started_ms) is not int or not isinstance(updated_at, (int, float))
+                    or not math.isfinite(updated_at)
+                ):
+                    raise ValueError("process identity unavailable")
+            except (OSError, OverflowError, TypeError, ValueError, subprocess.SubprocessError) as error:
+                raise RuntimeError(t("messages.bot_stop_failed")) from error
+
+            if started_ms > updated_at * 1000 or not Path(executable).name.casefold().startswith(("python", "pypy")):
+                return False
+            arguments = re.match(r'(?:"[^"]+"|\S+)\s+(.*)', command_line)
+            if arguments is None:
+                return False
+            worker_prefix = subprocess.list2cmdline(["-u", str(worker), "--device"])
+            arguments = arguments[1].casefold()
+            if not arguments.startswith(worker_prefix.casefold() + " "):
+                return False
+            for serial in {device["serial"], *device["aliases"]}:
+                prefix = subprocess.list2cmdline(["-u", str(worker), "--device", serial]).casefold()
+                if arguments == prefix or arguments.startswith(prefix + " "):
+                    return True
+            raise RuntimeError(t("messages.bot_stop_failed"))
+
+        proc = Path("/proc") / str(pid)
+        try:
+            argv = (proc / "cmdline").read_bytes().split(b"\0")
+            if argv[1:4] != [b"-u", os.fsencode(worker), b"--device"]:
+                return False
+            environ = set((proc / "environ").read_bytes().split(b"\0"))
+        except (FileNotFoundError, ProcessLookupError):
+            return False
+        except OSError as error:
+            raise RuntimeError(t("messages.bot_stop_failed")) from error
+        return {
+            os.fsencode(f"EATVENTURE_DEVICE_ID={device['id']}"),
+            os.fsencode(f"EATVENTURE_STATUS_FILE={status_file}"),
+            os.fsencode(f"EATVENTURE_SESSION_ID={session_id}"),
+        } <= environ
+
+    def _stop_recorded_worker(self, status_file, stop_file, device):
+        status = _read_worker_status(status_file)
+        pid, session_id = status.get("pid"), status.get("session_id")
+        if (
+            status.get("device_id") != device["id"] or status.get("state") == "encerrado"
+            or not isinstance(session_id, str) or re.fullmatch(r"[0-9a-f]{32}", session_id) is None
+            or not process_alive(pid)
+        ):
+            return
+
+        # O token também identifica a execução antiga quando a porta ADB mudou.
+        stop_file.write_text(session_id, encoding="utf-8")
+        if _wait_for_worker_exit(pid, timeout=6):
+            return
+        identity = (pid, session_id, status_file, device, status.get("updated_at"))
+        if not self._recorded_worker_matches(*identity):
+            return
+
+        try:
+            if os.name == "nt":
+                subprocess.run(
+                    ["taskkill", "/PID", str(pid), "/T", "/F"],
+                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    timeout=5, check=False, creationflags=subprocess.CREATE_NO_WINDOW,
+                )
+            elif os.getpgid(pid) == pid:
+                os.killpg(pid, signal.SIGKILL)
+            else:
+                os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            return
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise RuntimeError(t("messages.bot_stop_failed")) from error
+        if not _wait_for_worker_exit(pid, timeout=3) and self._recorded_worker_matches(*identity):
+            raise RuntimeError(t("messages.bot_stop_failed"))
+
     def _start(self, device_id, restart_attempt=0):
         device = self._resolve(device_id)
         device_id = device["id"]
@@ -1049,6 +1160,7 @@ class BotSupervisor:
             status_file = runtime / f"{key}.status.json"
             stop_file = runtime / f"{key}.stop"
             pause_file = runtime / f"{key}.pause"
+            self._stop_recorded_worker(status_file, stop_file, device)
             for path in (status_file, stop_file, pause_file):
                 path.unlink(missing_ok=True)
             session_id = uuid.uuid4().hex

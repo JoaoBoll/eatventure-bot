@@ -60,6 +60,14 @@ def _propriedade(serial, nome):
     return resultado.stdout.strip() or None
 
 
+def hardware_serial(serial):
+    for name in ("ro.serialno", "ro.boot.serialno"):
+        value = _propriedade(serial, name)
+        if value and value.lower() not in {"unknown", "null"}:
+            return value
+    return None
+
+
 def descrever(seriais):
     """[(serial, modelo, wifi, hardware)]; `hardware` é o ro.serialno, que revela entradas duplicadas do mesmo aparelho."""
 
@@ -72,7 +80,7 @@ def descrever(seriais):
                 serial,
                 _propriedade(serial, "ro.product.model"),
                 ":" in serial,
-                _propriedade(serial, "ro.serialno"),
+                hardware_serial(serial),
             )
         )
 
