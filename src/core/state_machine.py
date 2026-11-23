@@ -1075,7 +1075,14 @@ class StateMachine:
         self._food_fail_count = 0
 
     def _find(self, detections, category):
-        """Primeira detecção da categoria. Sem refiltragem por threshold aqui de propósito: já existiu um segundo threshold neste método, divergente do detector, e o escolhido era o primeiro em ordem alfabética de arquivo, não o melhor."""
+        """Seleciona entre as detecções já aprovadas pelo detector."""
+
+        if category == "up_upgrade":
+            return min(
+                (detection for detection in detections if detection["category"] == category),
+                key=lambda detection: (detection["y"] + detection["height"] // 2, -detection["confidence"]),
+                default=None,
+            )
 
         for detection in detections:
 

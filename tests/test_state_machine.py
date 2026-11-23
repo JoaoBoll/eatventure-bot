@@ -7,6 +7,7 @@ de estado e prioridade sem esperar em tempo real.
 import sys
 import time
 from pathlib import Path
+from unittest.mock import Mock
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -309,6 +310,24 @@ def test_upgrade_permanece_enquanto_houver_item():
 
     assert actions.actions[-1] == "close", actions.actions
     assert machine.state == sm.NORMAL, machine.state
+
+
+def test_upgrade_prioriza_o_botao_mais_acima():
+    machine, actions, clock = build()
+    actions.execute = Mock(wraps=actions.execute)
+    machine._enter(sm.UPGRADE)
+    clock.advance(STATE_ENTRY_SETTLE[sm.UPGRADE] + 0.01)
+
+    inferior = detection("up_upgrade", confidence=0.99, y=800)
+    superior = detection("up_upgrade", confidence=0.93, y=400)
+    machine.update([inferior, superior])
+
+    actions.execute.assert_called_once_with("upgrade_item", superior)
+
+    clock.advance(max(machine.action_cooldown, machine.action_settle) + 0.01)
+    machine.update([inferior])
+
+    actions.execute.assert_called_with("upgrade_item", inferior)
 
 
 def test_upgrade_nao_fecha_no_meio_da_animacao():
