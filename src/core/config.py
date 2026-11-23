@@ -123,7 +123,7 @@ else:
 
 CAPTURE_CONNECT_TIMEOUT = 12.0
 CAPTURE_START_TIMEOUT = 6.0
-CAPTURE_MAX_FPS = 60
+CAPTURE_MAX_FPS = 30
 CAPTURE_SOFTWARE_ENCODER = False
 
 
@@ -154,7 +154,8 @@ AI_WINDOW_POSITION = (600, 50)
 
 SCRCPY_EXTRA_ARGS = [
     "--capture-orientation", "90",
-    "--no-audio"
+    "--no-audio",
+    "--max-fps", str(CAPTURE_MAX_FPS),
 ]
 if SCRCPY_VIDEO_ENCODER:
     SCRCPY_EXTRA_ARGS.extend(("--video-encoder", SCRCPY_VIDEO_ENCODER))
@@ -303,7 +304,7 @@ CATEGORY_COLOR_THRESHOLDS = {
     "delivery": 0.99,
     "engine": 0.95,
     "close": 0.95,
-    "gray_coin": 0.90,
+    "gray_coin": 0.99,
 }
 
 
@@ -336,6 +337,7 @@ VISION_FAILURE_LIMIT = 5
 # apenas na thread de aprendizado, sem busca duplicada na visão principal.
 LEARN_RESOLUTION_TEMPLATES = True
 TEMPLATE_REFRESH_INTERVAL = 2.0
+TEMPLATE_DISCOVERY_INTERVAL = 0.1
 
 # Recortes aprendidos entram em uso imediatamente na memória. O disco só
 # recebe checkpoints periódicos, reduzindo escrita repetida no SSD.
@@ -372,7 +374,7 @@ UPGRADE_ITEM_CLICKS = 5
 UPGRADE_FOOD_PRESS = 4.0
 # Freio para não manter o dedo preso quando o painel foi aberto por engano
 # ou os sinais cinza não foram reconhecidos.
-UPGRADE_FOOD_MAX_HOLD = 15.0
+UPGRADE_FOOD_MAX_HOLD = 30.0
 # Depois de iniciar o toque, o indicador while_up_food precisa confirmar que
 # o botão continua ativo; sem ele, solta antes do limite máximo.
 UPGRADE_FOOD_CONFIRM_GRACE = 2.0

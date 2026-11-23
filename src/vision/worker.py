@@ -111,6 +111,10 @@ class VisionWorker:
     def set_frame(self, frame, timestamp=None):
         """Frame bruto sem processamento. Detector reescala templates por resolução."""
 
+        discover = getattr(self.detector, "queue_template_discovery", None)
+        if discover is not None and frame is not None:
+            discover(frame)
+
         with self.frame_lock:
 
             self.latest_raw_frame = frame
@@ -287,13 +291,6 @@ class VisionWorker:
             raw_frame,
             categories,
         )
-        discovery_sequence = self.detector.queue_template_discovery(
-            raw_frame,
-            categories,
-        )
-        if discovery_sequence is not None:
-            for detection in detections:
-                detection["_learn_sequence"] = discovery_sequence
         if monitor_categories and monitor_request > self._monitor_result:
             monitored = self.detector.detect(
                 raw_frame,

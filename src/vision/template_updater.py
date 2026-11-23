@@ -8,6 +8,10 @@ class DefaultTemplateScanner(Detector):
     def __init__(self, parent):
         self._parent = parent
         self._parent_defaults_generation = -1
+        self._discovery_selection = None
+        self._discovery_cursors = [0, 0]
+        self._discovery_round = 0
+        self.discovery_missing = True
         super().__init__(
             threshold=parent.threshold,
             color_threshold=parent.color_threshold,
@@ -45,7 +49,44 @@ class DefaultTemplateScanner(Detector):
             self.load_templates()
 
     def _templates_for(self, frame_width, frame_height):
-        return self._defaults_for(frame_width, frame_height)
+        return self._defaults_for(frame_width, frame_height, self._discovery_selection)
 
     def detect(self, frame, categories=None, exhaustive=False):
         return super().detect(frame, categories=categories, exhaustive=exhaustive)
+
+    def detect_discovery(self, frame):
+        self._maybe_reload_templates()
+        height, width = frame.shape[:2]
+        with self._parent._learn_lock:
+            known = {
+                (category, self._base_name(template["name"]))
+                for category, templates in self._parent._resolution_templates.get((width, height), {}).items()
+                for template in templates
+            }
+
+        groups = [[], []]
+        for template in self.templates:
+            identity = (template["category"], self._base_name(template["name"]))
+            groups[identity in known].append(template)
+
+        self.discovery_missing = bool(groups[0])
+
+        # Reserva rodadas para atualizar os templates já conhecidos.
+        group_index = int(self._discovery_round % 3 == 2)
+        self._discovery_round += 1
+        if not groups[group_index]:
+            group_index = 1 - group_index
+        group = groups[group_index]
+        if not group:
+            return [], ()
+
+        start = self._discovery_cursors[group_index] % len(group)
+        count = min(4, len(group))
+        selected = [group[(start + offset) % len(group)] for offset in range(count)]
+        self._discovery_cursors[group_index] = (start + count) % len(group)
+        categories = tuple(dict.fromkeys(template["category"] for template in selected))
+        self._discovery_selection = selected
+        try:
+            return self.detect(frame, categories=categories, exhaustive=True), categories
+        finally:
+            self._discovery_selection = None

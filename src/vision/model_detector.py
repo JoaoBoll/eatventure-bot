@@ -234,7 +234,7 @@ class ContinuousDetector(Detector):
         if full_teacher_scan:
             teacher = super().detect(frame, None, exhaustive=True)
         else:
-            teacher = super().detect(frame, categories, exhaustive=True)
+            teacher = super().detect(frame, categories, exhaustive=False)
 
         learned = self._model_detections(model, frame, categories) if model is not None else []
         merged = self._suppress([*teacher, *learned])

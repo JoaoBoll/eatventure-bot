@@ -501,6 +501,8 @@ class ScreenCapture:
 
         version = self._resolve_server_version()
         options = ["tunnel_forward=true", "control=false", "cleanup=false"]
+        if CAPTURE_MAX_FPS:
+            options.append(f"max_fps={CAPTURE_MAX_FPS}")
         if CAPTURE_SOFTWARE_ENCODER:
             options.append("video_encoder=c2.android.avc.encoder")
         if version >= (2, 0):

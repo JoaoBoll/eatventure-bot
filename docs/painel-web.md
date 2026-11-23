@@ -207,3 +207,9 @@ python -m pip install pytest httpx
 python -m pytest -q tests/test_device_profiles.py tests/test_dashboard_supervisor.py tests/test_dashboard_api.py tests/test_dashboard_stream.py tests/test_dashboard_logs.py tests/test_web_runtime.py tests/test_web_preview.py tests/test_web_worker.py tests/test_dashboard_runtime_flow.py tests/test_web_cli.py
 node --test tests/dashboard_ui.test.cjs
 ```
+
+### Hist?rico entre voos
+
+No bot?o **Dados** de cada dispositivo, a primeira aba mostra um gr?fico dos intervalos entre dois `fly` e os dez registros mais recentes, com data de in?cio, dura??o total e vers?o do projeto. `build` n?o inicia a contagem: o primeiro `fly` inicia o intervalo e o pr?ximo o encerra, iniciando outro. A dura??o inclui pausas durante a mesma execu??o; intervalos incompletos n?o s?o registrados nem continuados ap?s reiniciar o bot.
+
+O painel preserva os ?ltimos 1.000 intervalos por dispositivo em `local/reports/` (ou `reports/` dentro do diret?rio de estado configurado), incluindo a sess?o e a identifica??o do commit/branch no in?cio da execu??o. Execu??es com altera??es locais recebem essa indica??o. Registros anteriores usam a data de in?cio estimada e podem n?o ter vers?o registrada. A segunda aba mant?m os datasets por sess?o.

@@ -48,6 +48,15 @@
     "catalog_valid": "Catalogues valides : {count} clés dans les catalogues pt-BR, en-US et fr-FR."
   },
   "web": {
+    "execution_history": "Historique des ex?cutions",
+    "flight_history_hint": "Temps total entre deux Fly, pauses comprises. Le premier Fly d?marre le chronom?tre ; Build ne d?marre aucun intervalle.",
+    "latest_flights": "10 derniers vols",
+    "flight_started": "Date de d?but",
+    "flight_duration": "Dur?e",
+    "project_version": "Version du projet",
+    "flight_history_empty": "Aucun intervalle termin?. L?historique commence apr?s le deuxi?me Fly.",
+    "flight_chart": "Dur?e entre les vols",
+    "unknown_version": "Version non enregistr?e",
     "language_pt_code": "PT",
     "language_en_code": "EN",
     "language_fr_code": "FR",

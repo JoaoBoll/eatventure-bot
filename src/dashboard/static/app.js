@@ -55,6 +55,9 @@ let visionSource = "bot";
 let sessionLoading = false;
 let datasetSession = null;
 let datasetResolution = null;
+let datasetDeviceId = null;
+let dataTab = "history";
+let flightHistorySignature = null;
 let datasetOffset = 0;
 let datasetTotal = 0;
 let datasetGeneration = 0;
@@ -663,10 +666,10 @@ function renderDevice(device) {
   const resolution = datasetResolutionOf(device);
   const dataset = button(t("web.data_button"), "button ghost dataset-button", () => {
     const current = deviceById(device.id) || device;
-    openDatasets(current.session_id, datasetResolutionOf(current));
+    openDatasets(current);
   }, t("web.view_session_datasets"));
   dataset.setAttribute("aria-label", t("web.view_device_datasets", { value_1: deviceName(device) }));
-  dataset.disabled = !resolution && !device.session_id;
+  dataset.disabled = false;
   if (!resolution) dataset.title = t("web.last_session_resolution_hint");
   dataset.dataset.role = "dataset";
   footer.append(start, restart, dataset, settings, remove);
@@ -724,7 +727,7 @@ function updateDeviceMetrics(card, device) {
   else resolutionLabel?.remove();
   const name = title.querySelector(".device-name")?.textContent || deviceName(device);
   title.title = activeResolution ? `${name} (${activeResolution})` : name;
-  dataset.disabled = !resolution && !device.session_id;
+  dataset.disabled = false;
   dataset.title = resolution ? t("web.view_session_datasets") : t("web.last_session_resolution_hint");
   card.querySelector(".device-runtime").textContent = runtime(device);
   const botState = metric(device, "state") || metric(device, "estado");
@@ -741,6 +744,7 @@ function updateDeviceMetrics(card, device) {
     phaseHistoryLabel.textContent = t("web.phase_history_empty");
   }
   phaseHistoryLabel.hidden = !phaseHistoryLabel.textContent;
+  if (datasetDeviceId === device.id && $("dataset-dialog").open) renderFlightHistory(device);
   const updatedAt = numeric(metric(device, "updated_at"));
   const age = updatedAt === null ? null : Math.max(0, Math.floor(Date.now() / 1000 - updatedAt));
   const freshness = card.querySelector(".metrics-freshness");
@@ -2180,7 +2184,63 @@ function datasetDate(value) {
   return date && !Number.isNaN(date.getTime()) ? date.toLocaleString(locale) : t("web.unknown_date");
 }
 
-async function openDatasets(preferredSession = null, resolution = null) {
+function renderFlightHistory(device) {
+  const history = (metric(device, "historico_fases") || []).filter((entry) => Number.isFinite(entry.duration) && entry.duration >= 0);
+  const signature = JSON.stringify([device.id, locale, history]);
+  if (signature === flightHistorySignature) return;
+  flightHistorySignature = signature;
+  const rows = history.slice(-10).reverse().map((entry) => {
+    const row = node("tr");
+    const started = Number(entry.started_at ?? entry.ended_at - entry.duration);
+    row.append(node("td", "", datasetDate(started * 1000)), node("td", "mono", duration(entry.duration)), node("td", "mono", entry.version || t("web.unknown_version")));
+    return row;
+  });
+  $("flight-history-list").replaceChildren(...rows);
+  $("flight-history-empty").hidden = history.length > 0;
+  const chart = $("flight-history-chart");
+  chart.replaceChildren();
+  chart.hidden = !history.length;
+  if (!history.length) return;
+  const svgNode = (name, attributes = {}, text = null) => {
+    const element = document.createElementNS("http://www.w3.org/2000/svg", name);
+    for (const [key, value] of Object.entries(attributes)) element.setAttribute(key, value);
+    if (text !== null) element.textContent = text;
+    return element;
+  };
+  const svg = svgNode("svg", { viewBox: "0 0 900 250", role: "img", "aria-label": t("web.flight_chart") });
+  svg.append(svgNode("title", {}, t("web.flight_chart")));
+  const max = Math.max(1, ...history.map((entry) => entry.duration));
+  for (let tick = 0; tick <= 4; tick++) {
+    const y = 210 - tick * 46;
+    svg.append(svgNode("line", { x1: 90, x2: 875, y1: y, y2: y, class: "flight-chart-grid" }));
+    svg.append(svgNode("text", { x: 80, y: y + 4, "text-anchor": "end" }, duration(max * tick / 4)));
+  }
+  const points = history.map((entry, index) => [history.length === 1 ? 482 : 90 + index * 785 / (history.length - 1), 210 - entry.duration / max * 184]);
+  svg.append(svgNode("polyline", { points: points.map((point) => point.join(",")).join(" "), class: "flight-chart-line" }));
+  history.forEach((entry, index) => {
+    const point = svgNode("circle", { cx: points[index][0], cy: points[index][1], r: 4, class: "flight-chart-point" });
+    point.append(svgNode("title", {}, `${datasetDate((entry.started_at ?? entry.ended_at - entry.duration) * 1000)} · ${duration(entry.duration)} · ${entry.version || t("web.unknown_version")}`));
+    svg.append(point);
+  });
+  for (const index of history.length === 1 ? [0] : [0, history.length - 1]) {
+    const entry = history[index];
+    svg.append(svgNode("text", { x: points[index][0], y: 240, "text-anchor": history.length === 1 ? "middle" : index ? "end" : "start" }, datasetDate((entry.started_at ?? entry.ended_at - entry.duration) * 1000)));
+  }
+  chart.append(svg);
+}
+
+async function setDataTab(tab) {
+  dataTab = tab;
+  for (const name of ["history", "sessions"]) {
+    const selected = tab === name;
+    $(name === "history" ? "data-history-panel" : "data-sessions-panel").hidden = !selected;
+    const button = $(`data-${name}-tab`);
+    button.setAttribute("aria-selected", String(selected));
+    button.tabIndex = selected ? 0 : -1;
+  }
+  if (tab !== "sessions") return;
+  const preferredSession = datasetSession;
+  let resolution = datasetResolution;
   if ((typeof resolution !== "string" || !/^[1-9]\d*x[1-9]\d*$/.test(resolution)) && preferredSession) {
     try {
       const result = await api(`/api/datasets/sessions?session_id=${encodeURIComponent(preferredSession)}`);
@@ -2196,8 +2256,20 @@ async function openDatasets(preferredSession = null, resolution = null) {
   }
   datasetSession = preferredSession || null;
   datasetResolution = resolution;
-  $("dataset-dialog").showModal();
+  if (!$("dataset-dialog").open || dataTab !== "sessions") return;
   await refreshDatasetSessions(preferredSession);
+}
+
+function openDatasets(device) {
+  datasetDeviceId = device.id;
+  datasetSession = device.session_id || null;
+  datasetResolution = datasetResolutionOf(device);
+  $("data-device-name").textContent = deviceName(device);
+  clearDatasetSelection();
+  datasetSession = device.session_id || null;
+  renderFlightHistory(device);
+  setDataTab("history");
+  $("dataset-dialog").showModal();
 }
 
 async function refreshDatasetSessions(preferredSession = datasetSession) {
@@ -2314,6 +2386,8 @@ function closeDatasets() {
   datasetGeneration += 1;
   clearDatasetSelection();
   datasetResolution = null;
+  datasetDeviceId = null;
+  flightHistorySignature = null;
   $("dataset-dialog").close();
 }
 
@@ -2521,6 +2595,17 @@ $("connect-close").addEventListener("click", () => $("connect-dialog").close());
 $("connect-form").addEventListener("submit", connectAndroid);
 $("pair-submit").addEventListener("click", pairAndroid);
 $("dataset-close").addEventListener("click", closeDatasets);
+for (const tab of ["history", "sessions"]) {
+  const button = $(`data-${tab}-tab`);
+  button.addEventListener("click", () => setDataTab(tab));
+  button.addEventListener("keydown", (event) => {
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    const next = event.key === "Home" ? "history" : event.key === "End" ? "sessions" : tab === "history" ? "sessions" : "history";
+    setDataTab(next);
+    $(`data-${next}-tab`).focus();
+  });
+}
 $("dataset-dialog").addEventListener("cancel", (event) => { event.preventDefault(); closeDatasets(); });
 $("dataset-refresh").addEventListener("click", () => refreshDatasetSessions());
 $("dataset-more").addEventListener("click", () => selectDatasetSession(datasetSession, true));

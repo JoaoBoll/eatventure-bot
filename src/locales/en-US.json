@@ -48,6 +48,15 @@
     "catalog_valid": "Valid catalogs: {count} keys in pt-BR, en-US and fr-FR."
   },
   "web": {
+    "execution_history": "Execution history",
+    "flight_history_hint": "Total time between two Fly actions, including pauses. The first Fly starts the timer; Build does not start an interval.",
+    "latest_flights": "10 latest flights",
+    "flight_started": "Started at",
+    "flight_duration": "Duration",
+    "project_version": "Project version",
+    "flight_history_empty": "No completed intervals. History begins after the second Fly.",
+    "flight_chart": "Duration between flights",
+    "unknown_version": "Version not recorded",
     "brightness": "Brightness",
     "language_pt_code": "PT",
     "language_en_code": "EN",

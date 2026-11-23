@@ -33,6 +33,7 @@ from core.config import (
     ESCALA_UNICA_POR_TEMPLATE,
     LEARN_RESOLUTION_TEMPLATES,
     TEMPLATE_REFRESH_INTERVAL,
+    TEMPLATE_DISCOVERY_INTERVAL,
     TEMPLATE_PERSIST_INTERVAL,
     MAX_DETECTION_AGE,
     TEMPLATES_WATCH_INTERVAL,
@@ -209,6 +210,8 @@ class Detector:
         self._refresh_frame = None
         self._refresh_pending = False
         self._refresh_started_at = None
+        self._refresh_resolution = None
+        self._discovery_missing = True
         self._refresh_scanner = None
         # Última passada do atualizador, mantida apenas em memória para a
         # prévia web. Não participa da decisão do bot nem grava imagens.
@@ -1058,14 +1061,12 @@ class Detector:
                 variantes.setdefault((categoria, template["name"]), []).append(template)
 
         cacheados = {}
-        selecionados = {}
         for identidade in selecao:
             lista = anteriores.get(identidade, variantes.get(identidade, []))
-            selecionados[identidade] = lista
             if lista:
                 cacheados.setdefault(identidade[0], []).extend(lista)
 
-        self._default_variants_cache[chave] = selecionados
+        self._default_variants_cache[chave] = {**anteriores, **variantes}
         self._defaults_selection[chave] = selecao
         self._defaults_cache[chave] = cacheados
 
@@ -1255,39 +1256,41 @@ class Detector:
             if self._learn_stopping:
                 return None
 
+            resolution = (frame.shape[1], frame.shape[0])
+            if resolution != self._refresh_resolution:
+                self._refresh_resolution = resolution
+                self._discovery_missing = True
+                self._refresh_started_at = None
+
+            if self._refresh_pending:
+                return None
+
             self._learn_sequence += 1
             sequence = self._learn_sequence
 
             now = time.monotonic()
+            interval = (
+                TEMPLATE_DISCOVERY_INTERVAL
+                if self._discovery_missing else TEMPLATE_REFRESH_INTERVAL
+            )
             if (
-                not self._refresh_pending
-                and self._refresh_started_at is not None
-                and now - self._refresh_started_at < TEMPLATE_REFRESH_INTERVAL
+                self._refresh_started_at is not None
+                and now - self._refresh_started_at < interval
             ):
                 return sequence
 
-            # O atualizador percorre só os templates úteis ao estado que
-            # gerou este frame; não disputa CPU com a visão procurando toda
-            # a biblioteca em telas que nunca usariam aqueles itens.
             self._refresh_frame = (
                 frame.copy(), sequence,
                 None if categories is None else tuple(categories),
             )
-            if not self._refresh_pending:
-                self._refresh_pending = True
-                self._learn_queue.put_nowait(_REFRESH_FRAME)
+            self._refresh_pending = True
+            self._learn_queue.put_nowait(_REFRESH_FRAME)
 
             return sequence
 
-    def queue_template_discovery(self, frame, categories):
-        """Agenda descoberta apenas para a passada normal dirigida pelo estado."""
-
-        # `None` representa varredura ampla (coleta, monitoramento ou
-        # inicialização). Descoberta não deve usar isso: só o estado do bot
-        # decide quais categorias fazem sentido nesta tela.
-        if not categories:
-            return None
-        return self._queue_refresh_frame(frame, tuple(categories))
+    def queue_template_discovery(self, frame, categories=None):
+        """Agenda uma busca independente com o frame mais recente."""
+        return self._queue_refresh_frame(frame, None)
 
     def _refresh_defaults(self, frame, sequence, categories=None):
         if self._refresh_scanner is None:
@@ -1295,7 +1298,13 @@ class Detector:
 
             self._refresh_scanner = DefaultTemplateScanner(self)
 
-        detections = self._refresh_scanner.detect(frame, categories=categories, exhaustive=True)
+        if categories is None:
+            detections, categories = self._refresh_scanner.detect_discovery(frame)
+            with self._learn_queue_lock:
+                if self._refresh_resolution == (frame.shape[1], frame.shape[0]):
+                    self._discovery_missing = self._refresh_scanner.discovery_missing
+        else:
+            detections = self._refresh_scanner.detect(frame, categories=categories, exhaustive=True)
         with self._learn_queue_lock:
             self._refresh_preview = (
                 frame,

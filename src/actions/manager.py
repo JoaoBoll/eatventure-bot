@@ -20,6 +20,7 @@ from core.config import (
     SWIPE_X,
     SWIPE_Y,
     UPGRADE_FOOD_PRESS,
+    UPGRADE_FOOD_MAX_HOLD,
     UPGRADE_ITEM_CLICKS,
 )
 
@@ -58,7 +59,7 @@ ACTION_TABLE = {
 
     "upgrade_item": REPEAT,
 
-    "upgrade_food": PRESS_UNTIL_GRAY,
+    "upgrade_food": PRESS,
     "release_food_press": RELEASE,
 
     "gray_max": DISMISS,  # Fechar painel indesejado com tap
@@ -98,6 +99,7 @@ class ActionManager:
         # Quando a última ação terminou (settle é contado daqui, não da submissão)
         self.last_finished_at = 0.0
         self._held_touch = None
+        self._held_touch_started_at = None
 
     def start(self):
 
@@ -315,9 +317,14 @@ class ActionManager:
 
             try:
 
+                self._release_expired_touch()
                 job = self.queue.get(timeout=0.2)
 
             except queue.Empty:
+                continue
+
+            except Exception as error:
+                logger.exception(t("messages.action_error"), "release_food_press", error)
                 continue
 
             if job is None:
@@ -482,16 +489,33 @@ class ActionManager:
             y,
         )
 
-        if not self.android.touch_down(x, y):
-            return
-
         with self.busy_lock:
             self._held_touch = (x, y)
+            self._held_touch_started_at = time.monotonic()
+
+        # Um comando que falha pode já ter enviado DOWN ao aparelho.
+        try:
+            if not self.android.touch_down(x, y):
+                self._release_held_touch()
+        except Exception:
+            self._release_held_touch()
+            raise
+
+    def _release_expired_touch(self):
+        with self.busy_lock:
+            started_at = self._held_touch_started_at
+        if started_at is None:
+            return
+        elapsed = time.monotonic() - started_at
+        if elapsed >= UPGRADE_FOOD_MAX_HOLD:
+            logger.warning(t("messages.food_upgrade_max_hold"), elapsed)
+            self._release_held_touch()
 
     def _release_held_touch(self):
         with self.busy_lock:
             held_touch = self._held_touch
             self._held_touch = None
+            self._held_touch_started_at = None
 
         if held_touch is not None:
             self.android.touch_up(*held_touch)

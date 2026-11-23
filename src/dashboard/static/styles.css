@@ -438,6 +438,20 @@ dialog::backdrop { background: #05080dbf; backdrop-filter: blur(5px); }
 .dataset-heading h2 { margin-bottom: 4px; }
 .dataset-heading p:last-child { margin: 0; font-size: 12px; }
 .dataset-layout { display: grid; min-height: 0; flex: 1; grid-template-columns: 280px minmax(0, 1fr); }
+.data-tabs { display: flex; flex-shrink: 0; gap: 8px; padding: 12px 24px; border-bottom: 1px solid var(--border); }
+.data-tabs [aria-selected="true"] { background: var(--border); }
+.flight-history { padding: 20px 24px; overflow: auto; min-height: 0; }
+.flight-history > p { font-size: 13px; }
+.flight-history-chart { margin: 20px 0; border: 1px solid var(--border); border-radius: 10px; }
+.flight-history-chart svg { display: block; width: 100%; min-height: 170px; color: inherit; }
+.flight-history-chart text { fill: currentColor; font: 12px ui-sans-serif, sans-serif; }
+.flight-chart-grid { stroke: var(--border); }
+.flight-chart-line { fill: none; stroke: #739eff; stroke-width: 2; }
+.flight-chart-point { fill: #739eff; }
+.flight-history-table { overflow-x: auto; margin-top: 12px; }
+.flight-history-table table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.flight-history-table th, .flight-history-table td { padding: 12px; text-align: left; border-bottom: 1px solid var(--border); }
+.flight-history-table td { overflow-wrap: anywhere; }
 .dataset-sessions { min-height: 0; padding: 16px; overflow: auto; border-right: 1px solid var(--border); background: #111923; }
 .dataset-session-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
 .dataset-session-heading strong { font-size: 13px; }

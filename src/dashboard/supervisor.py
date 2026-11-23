@@ -30,8 +30,8 @@ logger = log.get("dashboard.supervisor")
 _ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _HOSTNAME = re.compile(r"(?=.{1,253}\Z)[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?\Z")
 _MAX_STATUS_BYTES = 128 * 1024
-_MAX_REPORT_BYTES = 16 * 1024
-_PHASE_HISTORY_LIMIT = 100
+_MAX_REPORT_BYTES = 1024 * 1024
+_PHASE_HISTORY_LIMIT = 1000
 MAX_LOG_LINES = 500
 MAX_LOG_BYTES = 1024 * 1024
 MAX_LOG_LINE_BYTES = 4096
@@ -410,6 +410,7 @@ class _Run:
     report_base: dict = field(default_factory=dict)
     dataset_base: dict = field(default_factory=dict)
     phase_history_seen: set = field(default_factory=set)
+    project_version: str = ""
 
 
 class BotSupervisor:
@@ -442,6 +443,23 @@ class BotSupervisor:
     def _report_path(self, device_id):
         key = hashlib.sha256(device_id.encode("utf-8")).hexdigest()
         return self.state_root / "reports" / f"{key}.json"
+
+    def _project_version(self):
+        def git(*args):
+            result = subprocess.run(
+                ["git", *args], cwd=self.root, capture_output=True,
+                text=True, timeout=3,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+            )
+            return result.stdout.strip() if result.returncode == 0 else ""
+
+        try:
+            commit = git("rev-parse", "--short=12", "HEAD")
+            branch = git("branch", "--show-current")
+            dirty = bool(git("status", "--porcelain", "--untracked-files=no"))
+            return f"{branch}@{commit}{' + alterações locais' if dirty else ''}" if commit else ""
+        except (OSError, subprocess.TimeoutExpired):
+            return ""
 
     def _report(self, device_id):
         report = self._reports.get(device_id)
@@ -504,15 +522,21 @@ class BotSupervisor:
             phase_id = entry.get("id")
             duration = entry.get("duration")
             ended_at = entry.get("ended_at")
+            started_at = entry.get("started_at")
             if (
                 type(phase_id) is int and phase_id > 0
                 and type(duration) in (int, float) and math.isfinite(duration) and duration >= 0
                 and type(ended_at) in (int, float) and math.isfinite(ended_at) and ended_at > 0
             ):
+                if type(started_at) not in (int, float) or not math.isfinite(started_at) or not 0 < started_at <= ended_at:
+                    started_at = ended_at - duration
                 history.append({
                     "id": phase_id,
                     "duration": duration,
+                    "started_at": started_at,
                     "ended_at": ended_at,
+                    "version": str(entry.get("version", ""))[:120],
+                    "session_id": str(entry.get("session_id", ""))[:64],
                 })
         return history
 
@@ -563,6 +587,8 @@ class BotSupervisor:
             if entry["id"] in run.phase_history_seen:
                 continue
             run.phase_history_seen.add(entry["id"])
+            entry["session_id"] = run.session_id
+            entry["version"] = run.project_version
             report["historico_fases"].append(entry)
             changed = True
         del report["historico_fases"][:-_PHASE_HISTORY_LIMIT]
@@ -1047,6 +1073,7 @@ class BotSupervisor:
                     command.append(argument)
             process_options = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {"start_new_session": True}
             started_at = time.time()
+            project_version = self._project_version()
             with self._lock:
                 if self._closing:
                     raise RuntimeError(t("messages.dashboard_stopping"))
@@ -1075,6 +1102,7 @@ class BotSupervisor:
                     stop_file, pause_file=pause_file,
                 )
                 run.restart_attempt = restart_attempt
+                run.project_version = project_version
                 run.detector_mode = profile["run"]["detector_mode"]
                 run.report_base = dict(self._report(device_id))
                 run.dataset_base = dataset_base

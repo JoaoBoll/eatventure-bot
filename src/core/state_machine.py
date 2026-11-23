@@ -26,7 +26,6 @@ from core.config import (
     SWIPE_START_DIRECTION,
     SWIPE_WAIT_FOR_NO_ACTION,
     SWIPE_WAITING_TIME,
-    UPGRADE_FOOD_CONFIRM_GRACE,
     UPGRADE_FOOD_MAX_HOLD,
     UP_FOOD_WAIT,
     VIEW_MOVING_ACTIONS,
@@ -51,21 +50,14 @@ HELPER = "HELPER"
 # As quatro primeiras fecham o que não deveria estar aberto,
 # antes de qualquer ação de jogo.
 #
-# up_food em NORMAL faz o MESMO que em FOOD (toque contínuo até
-# gray_max/gray_coin). Escolha deliberada contra dispensar o
-# painel: custa que, se o painel abrir sem querer, o bot gasta
-# moeda enquanto o toque estiver ativo. Consequência: "upgrade_food"
-# não está em DISMISS_ACTIONS, então a escada de fechamento não
-# vale aqui — o toque só é liberado pelos sinais cinza ou pelo
-# limite de segurança. Para voltar a dispensar, troque
-# por "dismiss" (coberto por
-# tests/test_pipeline.py::test_dismiss_toca_no_ponto_neutro).
+# up_food em NORMAL inicia o mesmo press limitado de FOOD e entra no
+# estado que verifica o resultado antes de tentar outro upgrade.
 NORMAL_RULES = [
     ("open_store", "open_store_click", None),
     ("close", "close", None),
     ("gray_max", "gray_max", None),
     ("gray_coin", "gray_coin", None),
-    ("up_food", "upgrade_food", None),
+    ("up_food", "upgrade_food", FOOD),
 
     ("plane", "plane", RENOVATE),
     ("build", "click", RENOVATE),
@@ -216,6 +208,7 @@ class StateMachine:
         # Uma fase começa quando o avião é pressionado. Só a próxima
         # pressão no avião fecha a duração anterior.
         self.phase_started_at = None
+        self.phase_started_wall = None
         self.phase_last = None
         self.phase_history = []
         self._phase_sequence = 0
@@ -283,14 +276,7 @@ class StateMachine:
         """Categorias do estado atual, em ordem de prioridade — filtro do detector (~264ms → ~16ms por passada em UPGRADE)."""
 
         if self.state == FOOD:
-            # Antes de iniciar, o único alvo é o botão que começa o upgrade.
-            # Depois do DOWN, procurar esse botão de novo pode reacertar um
-            # frame antigo e competir com o indicador de pressão contínua.
-            return (
-                ["gray_max", "gray_coin", "while_up_food"]
-                if self.up_food_wait_start is not None
-                else ["up_food"]
-            )
+            return ["gray_max", "gray_coin", "up_food"]
 
         rules = STATE_RULES.get(self.state, NORMAL_RULES)
 
@@ -359,6 +345,19 @@ class StateMachine:
             now - lag if frame_time is None else frame_time
         )
         self._lag = max(0.0, now - self._frame_time)
+
+        # Soltar o dedo não depende de uma detecção recente.
+        if (
+            self.state == FOOD
+            and self.up_food_wait_start is not None
+            and now - self.state_entered >= UPGRADE_FOOD_MAX_HOLD
+        ):
+            logger.warning(
+                t("messages.food_upgrade_max_hold"),
+                now - self.state_entered,
+            )
+            self._act("release_food_press", None, NORMAL)
+            return
 
         # Detecção velha: clicar com base num frame antigo
         # acerta onde o objeto ESTAVA.
@@ -555,6 +554,10 @@ class StateMachine:
 
             self._enter(next_state)
 
+        if action == "upgrade_food":
+            self.up_food_wait_start = self.last_action_time
+            self.while_up_food_seen_at = None
+
         # Depois do _enter (que não toca em _food_target): guarda
         # QUAL item entrou em FOOD, para _wait_or_give_up saber o
         # que ignorar se ele desistir.
@@ -644,6 +647,7 @@ class StateMachine:
             self.phase_history.append({
                 "id": self._phase_sequence,
                 "duration": duration,
+                "started_at": self.phase_started_wall,
                 "ended_at": time.time(),
             })
             del self.phase_history[:-PHASE_HISTORY_LIMIT]
@@ -654,6 +658,7 @@ class StateMachine:
             )
 
         self.phase_started_at = now
+        self.phase_started_wall = time.time()
 
     def summary(self):
         """O que interessa a quem olha a tela, num dict — nomes de negócio (voos, reformas), não de código."""
@@ -872,8 +877,7 @@ class StateMachine:
         if self.state == UPGRADE and self._find(detections or [], "up_upgrade") is not None:
             return False
 
-        # Depois que o toque contínuo de comida começou, apenas os sinais
-        # cinza podem encerrá-lo. O timeout não pode soltar no meio.
+        # O fluxo FOOD tem seu próprio limite de 30 s em update().
         if self.state == FOOD and self.up_food_wait_start is not None:
             return False
 
@@ -911,6 +915,10 @@ class StateMachine:
     def _food(self, detections):
         """Segura o botão de upgrade de comida e espera o próximo aparecer; sem próximo em UP_FOOD_WAIT, volta para NORMAL."""
 
+        # Só avalia o resultado após o press terminar e chegar um frame novo.
+        if not self._can_act():
+            return
+
         # Os sinais cinza encerram o toque antes de qualquer nova tentativa
         # de pressionar o botão de comida.
         for categoria, acao in (
@@ -928,35 +936,6 @@ class StateMachine:
 
                 return
 
-        if self.up_food_wait_start is not None:
-            now = time.monotonic()
-            held_for = now - self.up_food_wait_start
-            if held_for >= UPGRADE_FOOD_MAX_HOLD:
-                logger.warning(
-                    t("messages.food_upgrade_max_hold"),
-                    held_for,
-                )
-                self._act("release_food_press", None, NORMAL)
-                return
-
-            if self._find(detections, "while_up_food") is not None:
-                self.while_up_food_seen_at = now
-                return
-
-            confirmation_at = (
-                self.while_up_food_seen_at
-                if self.while_up_food_seen_at is not None
-                else self.up_food_wait_start
-            )
-            missing_for = now - confirmation_at
-            if missing_for >= UPGRADE_FOOD_CONFIRM_GRACE:
-                logger.warning(
-                    t("messages.food_upgrade_confirmation_missing"),
-                    missing_for,
-                )
-                self._act("release_food_press", None, NORMAL)
-            return
-
         up_food = self._find(detections, "up_food")
 
         if up_food is not None:
@@ -964,9 +943,6 @@ class StateMachine:
             if self._act("upgrade_food", up_food):
 
                 self._delay_exploration()
-
-                self.up_food_wait_start = time.monotonic()
-                self.while_up_food_seen_at = None
 
             return
 
