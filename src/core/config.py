@@ -299,14 +299,13 @@ CATEGORY_THRESHOLDS = {
     "delivery": 0.95,
     "helper": 0.95,
     "engine": 0.90,
-    "gray_coin": 0.88,
+    "gray_coin": 0.90,
 }
 
 CATEGORY_COLOR_THRESHOLDS = {
     "delivery": 0.99,
     "engine": 0.95,
-    "close": 0.95,
-    "gray_coin": 0.99,
+    "close": 0.95
 }
 
 
