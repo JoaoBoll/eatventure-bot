@@ -6,9 +6,14 @@ import json
 from pathlib import Path
 import re
 from string import Formatter
+import sys
 
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "src"))
+
+from core.i18n import DEFAULT_LOCALE, LOCALES, SUPPORTED_LOCALES  # noqa: E402
+
 FORMATTER = Formatter()
 
 
@@ -30,10 +35,10 @@ def percent_fields(text):
 
 def main():
     catalogs = {
-        language: flatten(json.loads((ROOT / "src/locales" / f"{language}.json").read_text(encoding="utf-8")))
-        for language in ("pt-BR", "en-US")
+        language: flatten(json.loads((LOCALES / f"{language}.json").read_text(encoding="utf-8")))
+        for language in SUPPORTED_LOCALES
     }
-    base = catalogs["pt-BR"]
+    base = catalogs[DEFAULT_LOCALE]
     errors = []
     for language, catalog in catalogs.items():
         for key in base.keys() ^ catalog.keys():
