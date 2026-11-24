@@ -217,7 +217,8 @@ class DetectorShutdownTests(unittest.TestCase):
             detector = vd.Detector()
             self.addCleanup(detector.stop)
             frame = np.zeros((8, 8, 3), dtype=np.uint8)
-            template = {"category": "synthetic", "name": "item_001.png", "width": 4, "height": 4}
+            template = {"category": "synthetic", "name": "item_001.png", "width": 4, "height": 4,
+                        "image": frame[:4, :4].copy(), "mask_valid": None}
             for confidence in (0.9, 0.95):
                 detector._queue_learn_candidate(frame, template, 0, 0, 8, 8, confidence)
 

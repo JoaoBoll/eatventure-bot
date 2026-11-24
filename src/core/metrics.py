@@ -55,7 +55,7 @@ class RateMeter:
 
 
 class DurationMeter:
-    """Média móvel exponencial de duração — barata (um float), sem histórico."""
+    """Média móvel e amostras recentes para percentis de duração."""
 
     def __init__(self, smoothing=0.2):
 
@@ -63,11 +63,15 @@ class DurationMeter:
 
         self.value = 0.0
 
+        self.samples = deque(maxlen=256)
+
         self.lock = threading.Lock()
 
     def add(self, duration):
 
         with self.lock:
+
+            self.samples.append(duration)
 
             if self.value <= 0.0:
 
@@ -84,6 +88,13 @@ class DurationMeter:
 
         with self.lock:
             return self.value
+
+    def percentiles(self):
+        with self.lock:
+            samples = sorted(self.samples)
+        if not samples:
+            return None, None
+        return samples[(len(samples) - 1) // 2], samples[(len(samples) * 95 - 1) // 100]
 
 
 def formata_duracao(segundos):

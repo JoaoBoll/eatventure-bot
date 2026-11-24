@@ -231,6 +231,7 @@
     "ai_model_label": "Modèle d'IA : {value_1}",
     "vision_failure_summary": "Vision : {value_1} - {value_2} échecs consécutifs {value_3}",
     "last_vision_success": " - dernière détection réussie il y a {value_1} s",
+    "detector_performance": "Médiane/p95 (ms) : décodage {value_6} · détecteur {value_1} · découverte {value_7} · image à détection {value_2} · image à envoi de l'action {value_3} · modèles {value_4} · balayage {value_5}",
     "reset_group": "Réinitialiser le groupe",
     "identity_and_run": "Identification et exécution",
     "device_name": "Nom de l'appareil",

@@ -26,6 +26,7 @@ class VisionWorker:
         # Inicializando para evitar AttributeError na primeira volta de _run
         self.latest_raw_frame = None
         self.latest_frame_time = 0.0
+        self.latest_frame_categories = None
 
         self.detections = []
         self.detections_time = 0.0
@@ -71,6 +72,8 @@ class VisionWorker:
 
         self.duration = DurationMeter()
 
+        self.latency = DurationMeter()
+
         self.rate = RateMeter()
 
     def start(self):
@@ -108,20 +111,25 @@ class VisionWorker:
             if not thread.is_alive() and self.thread is thread:
                 self.thread = None
 
-    def set_frame(self, frame, timestamp=None):
+    def set_frame(self, frame, timestamp=None, *, discovery_categories=None):
         """Frame bruto sem processamento. Detector reescala templates por resolução."""
 
         frame_time = time.monotonic() if timestamp is None else timestamp
+        with self.detection_lock:
+            categories = self.categories
         with self.frame_lock:
             self.latest_raw_frame = frame
             self.latest_frame_time = frame_time
+            self.latest_frame_categories = categories
             floor = self.frame_floor
             self.frame_lock.notify()
 
         if frame is not None and (not floor or frame_time > floor):
             discover = getattr(self.detector, "queue_template_discovery", None)
             if discover is not None:
-                discover(frame, timestamp=frame_time)
+                if discovery_categories is None:
+                    discovery_categories = categories
+                discover(frame, categories=discovery_categories, timestamp=frame_time)
 
     def set_frame_floor(self, timestamp):
         """Rejeita frames anteriores a este timestamp (estabilização pós-ação)."""
@@ -256,6 +264,7 @@ class VisionWorker:
 
             raw_frame = self.latest_raw_frame
             frame_time = self.latest_frame_time
+            categories = self.latest_frame_categories
 
             # Limpa para sinalizar que foi consumido.
             self.latest_raw_frame = None
@@ -277,9 +286,6 @@ class VisionWorker:
         self.waiting_settle = False
 
         with self.detection_lock:
-            categories = (
-                None if self.categories is None else self.categories
-            )
             monitor_categories = self.monitor_categories
             monitor_request = self._monitor_request
 
@@ -302,6 +308,9 @@ class VisionWorker:
         self.last_duration = time.monotonic() - started
 
         self.duration.add(self.last_duration)
+
+        if frame_time:
+            self.latency.add(max(0.0, time.monotonic() - frame_time))
 
         self.rate.tick()
 

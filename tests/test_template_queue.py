@@ -33,6 +33,7 @@ class TemplateQueueTests(unittest.TestCase):
         self.frame = np.ones((8, 8, 3), dtype=np.uint8)
         self.template = {
             "category": "box", "name": "8x8_item_001.png", "width": 4, "height": 4,
+            "image": np.ones((4, 4, 3), dtype=np.uint8), "mask_valid": None,
         }
         self.identity = ((8, 8), "box", "item_001.png")
 
@@ -42,7 +43,7 @@ class TemplateQueueTests(unittest.TestCase):
             0, 0, *key, confidence, sequence,
         )
 
-    def test_identical_pending_crop_is_reused_and_latest_lower_score_wins(self):
+    def test_pending_crop_keeps_highest_score(self):
         self.queue(1.0, 1)
         first = self.detector._learn_pending[self.identity]
 
@@ -53,13 +54,13 @@ class TemplateQueueTests(unittest.TestCase):
         self.assertEqual(self.detector._learn_queue.qsize(), 1)
         self.assertEqual(self.detector._learn_queue.unfinished_tasks, 1)
         self.assertIs(latest[3], first[3])
-        self.assertEqual(latest[4:], (0.95, 101))
+        self.assertEqual(latest[4:6], (1.0, 1))
 
     def test_changed_crop_is_copied_and_isolated_from_later_frame_changes(self):
         self.queue(sequence=1)
         first = self.detector._learn_pending[self.identity][3]
         self.frame.fill(2)
-        self.queue(sequence=2)
+        self.queue(0.96, sequence=2)
         latest = self.detector._learn_pending[self.identity][3]
         self.frame.fill(3)
 
@@ -68,23 +69,23 @@ class TemplateQueueTests(unittest.TestCase):
         np.testing.assert_array_equal(latest, np.full_like(latest, 2))
         self.assertEqual(self.detector._learn_queue.qsize(), 1)
 
-    def test_older_sequence_is_ignored_and_equal_sequence_uses_last_candidate(self):
-        self.queue(1.0, 20)
+    def test_better_candidate_wins_even_with_older_sequence(self):
+        self.queue(0.96, 20)
         pending = self.detector._learn_pending[self.identity]
         self.frame.fill(2)
         self.queue(0.95, 19)
         self.assertIs(self.detector._learn_pending[self.identity], pending)
 
-        self.queue(0.96, 20)
+        self.queue(1.0, 19)
         latest = self.detector._learn_pending[self.identity]
-        self.assertEqual(latest[4:], (0.96, 20))
+        self.assertEqual(latest[4:6], (1.0, 19))
         np.testing.assert_array_equal(latest[3], np.full((4, 4, 3), 2, dtype=np.uint8))
 
     def test_implicit_sequence_follows_explicit_sequence(self):
         self.queue(sequence=20)
         self.queue(0.96)
 
-        self.assertEqual(self.detector._learn_pending[self.identity][4:], (0.96, 21))
+        self.assertEqual(self.detector._learn_pending[self.identity][4:6], (0.96, 21))
 
     def test_identity_groups_base_name_but_separates_resolution_and_category(self):
         self.queue()
@@ -97,9 +98,9 @@ class TemplateQueueTests(unittest.TestCase):
         self.assertEqual(len(self.detector._learn_pending), 4)
 
     def test_stop_drains_latest_pending_candidates_and_direct_jobs(self):
-        self.queue(1.0, 1)
+        self.queue(0.95, 1)
         self.frame.fill(2)
-        self.queue(0.95, 2)
+        self.queue(1.0, 2)
         direct = ("box", "item_002.png", (8, 8), self.frame.copy(), 0.96)
         self.detector._learn_queue.put_nowait(direct)
         self.detector._process_learn_candidate = Mock()
@@ -109,7 +110,7 @@ class TemplateQueueTests(unittest.TestCase):
 
         calls = self.detector._process_learn_candidate.call_args_list
         self.assertEqual(len(calls), 2)
-        self.assertEqual(calls[0].args[4:], (0.95, 2))
+        self.assertEqual(calls[0].args[4:6], (1.0, 2))
         np.testing.assert_array_equal(calls[0].args[3], np.full((4, 4, 3), 2, dtype=np.uint8))
         self.assertEqual(calls[1].args, direct)
         self.assertEqual(self.detector._learn_pending, {})
@@ -143,8 +144,8 @@ class TemplateQueueTests(unittest.TestCase):
             release.set()
 
         self.assertTrue(self.detector.stop())
-        self.assertEqual([item[5] for item in processed], [1, 3])
-        np.testing.assert_array_equal(processed[-1][3], np.full((4, 4, 3), 3, dtype=np.uint8))
+        self.assertEqual([item[5] for item in processed], [1, 2])
+        np.testing.assert_array_equal(processed[-1][3], np.full((4, 4, 3), 2, dtype=np.uint8))
         self.assertEqual(self.detector._learn_pending, {})
         self.assertEqual(self.detector._learn_queue.unfinished_tasks, 0)
 

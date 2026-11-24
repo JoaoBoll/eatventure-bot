@@ -238,6 +238,25 @@ class TemplateEfficiencyTests(unittest.TestCase):
             self.assertEqual(search.call_count, 1)
             self.assertEqual(search.call_args.args[2]["escala"], 0.92)
 
+    def test_discovery_only_searches_categories_allowed_for_the_frame(self):
+        self.detector.templates = [self.template(category=name) for name in ("box", "up_food")]
+        self.cover()
+        scanner = DefaultTemplateScanner(self.detector)
+        self.addCleanup(scanner.stop)
+        frame = np.zeros((self.key[1], self.key[0], 3), dtype=np.uint8)
+
+        with patch.object(scanner, "_search", return_value=[]) as search:
+            _, searched = scanner.detect_discovery(frame, ("box",))
+            self.assertEqual(searched, ("box",))
+            self.assertTrue(scanner.discovery_missing)
+            self.assertEqual({call.args[2]["category"] for call in search.call_args_list}, {"box"})
+
+            search.reset_mock()
+            _, searched = scanner.detect_discovery(frame, ("up_food",))
+            self.assertEqual(searched, ("up_food",))
+            self.assertTrue(scanner.discovery_missing)
+            self.assertEqual({call.args[2]["category"] for call in search.call_args_list}, {"up_food"})
+
     def test_background_updates_all_covered_categories_even_after_a_match(self):
         self.detector.templates = [self.template(), self.template(category="food")]
         self.cover()
@@ -256,7 +275,7 @@ class TemplateEfficiencyTests(unittest.TestCase):
         self.assertEqual({item["category"] for item in detections}, {"box", "food"})
         self.assertEqual(scanner.last_searched, 2 * len(vd.TEMPLATE_SCALE_STEPS))
 
-    def test_identical_crop_skips_persistence_and_keeps_latest_accepted_metadata(self):
+    def test_identical_crop_skips_persistence_and_keeps_best_metadata(self):
         override = self.cover()
         fidelity_id = (self.key, "box", "item_001.png")
         self.detector._fidelity[fidelity_id] = 0.99
@@ -275,8 +294,8 @@ class TemplateEfficiencyTests(unittest.TestCase):
                 self.detector._process_learn_candidate(
                     "box", "item_001.png", self.key, self.image.copy(), confidence, sequence
                 )
-                self.assertEqual(self.detector._fidelity[fidelity_id], confidence)
-                self.assertEqual(self.detector._learned_sequence[fidelity_id], sequence)
+                self.assertEqual(self.detector._fidelity[fidelity_id], 0.99)
+                self.assertEqual(self.detector._learned_sequence[fidelity_id], 9)
 
             self.detector._process_learn_candidate(
                 "box", "item_001.png", self.key, self.image.copy(), 0.99, 10
@@ -284,8 +303,8 @@ class TemplateEfficiencyTests(unittest.TestCase):
 
         save_fidelity.assert_not_called()
         signature.assert_not_called()
-        self.assertEqual(self.detector._fidelity[fidelity_id], 0.95)
-        self.assertEqual(self.detector._learned_sequence[fidelity_id], 11)
+        self.assertEqual(self.detector._fidelity[fidelity_id], 0.99)
+        self.assertEqual(self.detector._learned_sequence[fidelity_id], 9)
         self.assertIs(self.detector._resolution_templates[self.key]["box"][0], override)
         self.assertIs(self.detector._scaled_cache[self.key], cached)
         self.assertIs(self.detector._ordem_cache[(self.key, "box")], order)

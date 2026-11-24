@@ -24,6 +24,7 @@ class TemplateWorkerTests(unittest.TestCase):
             patch.object(vd.Detector, "_reassina_overrides"),
             patch.object(cv2, "imread", side_effect=AssertionError("asset lido")),
             patch.object(vd, "TEMPLATE_REFRESH_INTERVAL", 0),
+            patch.object(vd, "TEMPLATE_DISCOVERY_INTERVAL", 0),
         ):
             item.start()
             self.addCleanup(item.stop)
@@ -46,7 +47,7 @@ class TemplateWorkerTests(unittest.TestCase):
         latest_sequence = self.detector._queue_refresh_frame(self.frame)
         self.frame.fill(3)
 
-        pending, sequence = self.detector._refresh_frame
+        pending, sequence, _, _ = self.detector._refresh_frame
         np.testing.assert_array_equal(pending, np.full_like(self.frame, 2))
         self.assertGreater(latest_sequence, first_sequence)
         self.assertEqual(sequence, latest_sequence)
@@ -85,6 +86,8 @@ class TemplateWorkerTests(unittest.TestCase):
         self.assertEqual(self.detector._learn_queue.qsize(), 1)
 
     def test_refresh_interval_limits_scans_without_losing_generation_order(self):
+        self.detector._refresh_context = self.frame.shape[:2]
+        self.detector._discovery_missing = False
         self.detector._refresh_started_at = 10.0
         with (
             patch.object(vd, "TEMPLATE_REFRESH_INTERVAL", 1.0),
@@ -108,7 +111,7 @@ class TemplateWorkerTests(unittest.TestCase):
         completed = threading.Event()
         seen = []
 
-        def refresh(frame, sequence):
+        def refresh(frame, sequence, *_):
             seen.append((frame.copy(), sequence, threading.get_ident()))
             if len(seen) == 1:
                 entered.set()
@@ -187,7 +190,7 @@ class TemplateWorkerTests(unittest.TestCase):
         completed = threading.Event()
         calls = []
 
-        def refresh(frame, sequence):
+        def refresh(frame, sequence, *_):
             calls.append(sequence)
             if len(calls) == 1:
                 raise RuntimeError("falha sintetica")
@@ -206,13 +209,13 @@ class TemplateWorkerTests(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         self.assertEqual(self.detector._learn_queue.unfinished_tasks, 0)
 
-    def test_old_background_result_cannot_replace_newer_foreground_generation(self):
+    def test_old_background_result_can_replace_with_better_fidelity(self):
         entered = threading.Event()
         release = threading.Event()
         enqueued = threading.Event()
         newer_crop = np.full_like(self.frame, 7)
 
-        def refresh(frame, sequence):
+        def refresh(frame, sequence, *_):
             entered.set()
             release.wait(2)
             self.detector._learn_queue.put_nowait(
@@ -221,10 +224,12 @@ class TemplateWorkerTests(unittest.TestCase):
             enqueued.set()
 
         self.detector._refresh_defaults = Mock(side_effect=refresh)
-        with (
-            patch.object(Path, "mkdir"),
-            patch.object(cv2, "imwrite", return_value=True) as write,
-        ):
+        def save(category, name, key, crop, confidence, sequence, mask):
+            item = self.detector._build_template(category, name, crop, mask, "override")
+            self.detector._resolution_templates[key] = {category: [item]}
+            self.detector._fidelity[(key, category, name)] = confidence
+
+        with patch.object(self.detector, "_write_learn_candidate", side_effect=save) as write:
             self.detector._learn_thread.start()
             try:
                 old_sequence = self.detector._queue_refresh_frame(self.frame)
@@ -238,10 +243,10 @@ class TemplateWorkerTests(unittest.TestCase):
             self.assertTrue(enqueued.wait(1), "busca nao entregou a candidata antiga")
             self.assertTrue(self.detector.stop())
 
-        write.assert_called_once()
+        self.assertEqual(write.call_count, 2)
         current = self.detector._resolution_templates[self.key]["box"][0]
-        np.testing.assert_array_equal(current["image"], newer_crop)
-        self.assertEqual(self.detector._fidelity[(self.key, "box", "item_001.png")], 0.95)
+        np.testing.assert_array_equal(current["image"], self.frame)
+        self.assertEqual(self.detector._fidelity[(self.key, "box", "item_001.png")], 1.0)
         self.assertEqual(self.detector._learn_queue.unfinished_tasks, 0)
 
     def test_real_background_scanner_generates_uncovered_template_from_synthetic_frame(self):
@@ -253,9 +258,13 @@ class TemplateWorkerTests(unittest.TestCase):
         key = (108, 240)
         written = threading.Event()
 
-        def save(*args):
+        def save(category, name, key, crop, confidence, sequence, mask):
+            item = self.detector._build_template(category, name, crop, mask, "override")
+            self.detector._resolution_templates[key] = {category: [item]}
+            identity = (key, category, name)
+            self.detector._fidelity[identity] = confidence
+            self.detector._learned_sequence[identity] = sequence
             written.set()
-            return True
 
         with patch.multiple(
             vd,
@@ -278,10 +287,7 @@ class TemplateWorkerTests(unittest.TestCase):
             ]
             self.detector._resolution_templates = {}
 
-            with (
-                patch.object(Path, "mkdir"),
-                patch.object(cv2, "imwrite", side_effect=save) as write,
-            ):
+            with patch.object(self.detector, "_write_learn_candidate", side_effect=save) as write:
                 self.detector._learn_thread.start()
                 sequence = self.detector._queue_refresh_frame(frame)
                 self.assertTrue(written.wait(2), "scanner nao gerou a atualizacao")

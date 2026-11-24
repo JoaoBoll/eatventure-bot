@@ -15,7 +15,7 @@ import av
 import cv2
 
 from core import devices, log
-from core.metrics import RateMeter
+from core.metrics import DurationMeter, RateMeter
 from core.config import (
     CAPTURE_CONNECT_TIMEOUT,
     CAPTURE_MAX_FPS,
@@ -71,6 +71,7 @@ class ScreenCapture:
 
         # Frames por segundo que o device está entregando.
         self.rate = RateMeter()
+        self.decode_duration = DurationMeter()
 
         # Intervalo mínimo entre frames publicados (capping FPS)
         self._min_interval = (
@@ -336,6 +337,8 @@ class ScreenCapture:
     def _decode(self, data):
         """Retorna False quando o stream terminou (EOF)."""
 
+        started = time.perf_counter()
+        decoded = 0
         try:
 
             for packet in self.codec.parse(data):
@@ -343,6 +346,7 @@ class ScreenCapture:
                 for frame in self.codec.decode(packet):
 
                     self._publish(frame)
+                    decoded += 1
 
         except av.error.EOFError:
 
@@ -354,6 +358,8 @@ class ScreenCapture:
 
             logger.warning(t("messages.h264_error"), error)
 
+        if decoded:
+            self.decode_duration.add((time.perf_counter() - started) / decoded)
         return True
 
     def _publish(self, frame):

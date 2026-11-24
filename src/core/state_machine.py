@@ -6,7 +6,7 @@ import time
 from collections import Counter
 
 from core import log
-from core.metrics import formata_duracao
+from core.metrics import DurationMeter, formata_duracao
 from core.config import (
     ACTION_COOLDOWN,
     ACTION_SETTLE,
@@ -48,10 +48,10 @@ HELPER = "HELPER"
 # (a primeira categoria encontrada é a única executada no
 # frame); next_state None mantém o estado atual.
 
-# As quatro primeiras fecham o que não deveria estar aberto,
-# antes de qualquer ação de jogo.
-#
-# up_food em NORMAL entra em FOOD para monitorar o toque contínuo.
+# As regras de NORMAL ainda permitem reagir a estes sinais quando uma
+# varredura sem filtro os fornece.
+FOOD_PANEL_CATEGORIES = frozenset({"gray_max", "gray_coin", "up_food"})
+
 NORMAL_RULES = [
     ("open_store", "open_store_click", None),
     ("close", "close", None),
@@ -142,6 +142,7 @@ class StateMachine:
         self.state_entered = time.monotonic()
 
         self.last_action_time = 0.0
+        self.action_latency = DurationMeter()
         self.last_meaningful_action_time = 0.0
         self.last_meaningful_action_wall = None
         self.action_cooldown = ACTION_COOLDOWN
@@ -287,6 +288,9 @@ class StateMachine:
         categories = []
 
         for category, _, _ in rules:
+
+            if self.state == NORMAL and category in FOOD_PANEL_CATEGORIES:
+                continue
 
             if category not in categories:
 
@@ -434,6 +438,12 @@ class StateMachine:
                 STATE_RULES.get(self.state, NORMAL_RULES),
             )
 
+            if not acted and any(item.get("_search_incomplete") for item in detections):
+                request_scan = getattr(self.detector, "request_full_scan", None)
+                if request_scan is not None:
+                    request_scan()
+                    return
+
             # Só NORMAL explora: nos outros estados estamos
             # dentro de um painel, e swipe atrapalharia.
             if self.state == NORMAL and (
@@ -523,6 +533,8 @@ class StateMachine:
         )
 
         self.last_action_time = time.monotonic()
+        if detection is not None and self._frame_time:
+            self.action_latency.add(max(0.0, self.last_action_time - self._frame_time))
 
         # `scroll_bottom` é seis swipes seguidos: move a vista
         # mais que qualquer swipe solto, e por isso merece a

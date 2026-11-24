@@ -132,15 +132,13 @@ class ContinuousDetector(Detector):
 
     mode = "continuous"
 
-    def __init__(self, *, block_regions=None, collecting=False):
+    def __init__(self, *, block_regions=None):
         super().__init__(block_regions=block_regions)
-        self.collecting = collecting
         self.model = None
         self.model_label = t("messages.waiting_resolution")
         self._model_path = None
         self._watcher = None
         self._next_model_check = 0.0
-        self._last_teacher_scan = 0.0
 
     @staticmethod
     def _path_for(width, height):
@@ -230,17 +228,8 @@ class ContinuousDetector(Detector):
         self._last_frame_size = (width, height)
         model = self._model_for(width, height)
 
-        # A varredura estreita mantém rótulos de ações confiáveis. Uma varredura
-        # global ocasional é a única que pode afirmar "tela sem item".
-        now = time.monotonic()
-        full_teacher_scan = categories is None or exhaustive
-        if self.collecting and now - self._last_teacher_scan >= config.AI_TEACHER_SCAN_INTERVAL:
-            full_teacher_scan = True
-            self._last_teacher_scan = now
-        if full_teacher_scan:
-            teacher = super().detect(frame, None, exhaustive=True)
-        else:
-            teacher = super().detect(frame, categories, exhaustive=False)
+        full_teacher_scan = categories is None
+        teacher = super().detect(frame, categories, exhaustive=exhaustive)
 
         learned = self._model_detections(model, frame, categories) if model is not None else []
         merged = self._suppress([*teacher, *learned])

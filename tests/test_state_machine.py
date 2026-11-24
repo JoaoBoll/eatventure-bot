@@ -866,7 +866,9 @@ def test_categorias_vem_na_ordem_da_prioridade():
     esperada = [
         category
         for category, _, _ in sm.NORMAL_RULES
+        if category not in {"gray_coin", "gray_max", "up_food"}
     ]
+    assert "accept_delivery" not in categorias
 
     assert categorias == esperada, categorias
 

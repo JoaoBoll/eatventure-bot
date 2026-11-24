@@ -218,6 +218,18 @@ python src/main_layouts.py
 
 Aprende e atualiza templates da resolução atual, sem realizar toques. Os elementos precisam estar visíveis no jogo para serem reconhecidos.
 
+A descoberta prioriza as categorias do estado atual e também percorre as demais
+em segundo plano. Um recorte só substitui o existente quando passa pela validação
+de cor e apresenta melhor fidelidade à referência. Recortes antigos são
+reavaliados quando surge um candidato; máscaras de transparência são preservadas.
+
+No painel do dispositivo, a visão informa mediana e p95 recentes da
+decodificação, detecção, descoberta e tempo até o envio da ação, além da
+cobertura de templates e do progresso da varredura. A contagem de tempo do
+frame começa após a decodificação, portanto não inclui a captura no aparelho
+nem o transporte pelo scrcpy. O intervalo padrão entre detecções é zero;
+perfis com um intervalo próprio mantêm o valor configurado.
+
 ```bash
 python src/main.py --layout-only
 ```

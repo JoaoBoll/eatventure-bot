@@ -228,6 +228,7 @@
     "ai_model_label": "Modelo de IA: {value_1}",
     "vision_failure_summary": "Visão: {value_1} · {value_2} falhas consecutivas{value_3}",
     "last_vision_success": " · última passada válida há {value_1}s",
+    "detector_performance": "Mediana/p95 (ms): decodificação {value_6} · detector {value_1} · descoberta {value_7} · frame até detecção {value_2} · frame até envio da ação {value_3} · templates {value_4} · varredura {value_5}",
     "reset_group": "Restaurar grupo",
     "identity_and_run": "Identificação e execução",
     "device_name": "Nome do dispositivo",

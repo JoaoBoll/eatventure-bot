@@ -922,6 +922,22 @@ function renderDetailStatus() {
   }
   const status = metric(device, "state") || metric(device, "estado");
   $("detail-status").replaceChildren(badge(device), node("span", "muted", [device.model, device.running ? displayCode("states", status) : null, device.running ? runtime(device) : null].filter(Boolean).join(" · ")));
+  const detectionTimes = metric(device, "detection_ms_p50_p95");
+  if (device.running && Array.isArray(detectionTimes) && detectionTimes[0] != null) {
+    const frameTimes = metric(device, "frame_to_detection_ms_p50_p95") || [];
+    const actionTimes = metric(device, "frame_to_action_ms_p50_p95") || [];
+    const decodeTimes = metric(device, "capture_decode_ms_p50_p95") || [];
+    const discoveryTimes = metric(device, "discovery_ms_p50_p95") || [];
+    const coverage = metric(device, "template_coverage") || [];
+    const progress = metric(device, "discovery_progress") || [];
+    const pair = (values) => values[0] == null ? "—" : `${Math.round(values[0])}/${Math.round(values[1])}`;
+    const fraction = (values) => values.length === 2 ? `${values[0]}/${values[1]}` : "—";
+    $("detail-status").append(node("span", "muted", t("web.detector_performance", {
+      value_1: pair(detectionTimes), value_2: pair(frameTimes), value_3: pair(actionTimes),
+      value_4: fraction(coverage), value_5: fraction(progress),
+      value_6: pair(decodeTimes), value_7: pair(discoveryTimes)
+    })));
+  }
   if (metric(device, "model")) $("detail-status").append(node("span", "muted", t("web.ai_model_label", { value_1: metric(device, "model") })));
   const visionError = metric(device, "vision_error");
   if (visionError) {

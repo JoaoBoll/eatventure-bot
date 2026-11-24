@@ -6,8 +6,10 @@ from functools import partial
 
 import json
 import math
+import os
 import queue
 import re
+import tempfile
 import threading
 import time
 
@@ -16,7 +18,7 @@ import numpy as np
 
 from core import config, log
 from core.device_profiles import template_key
-from core.metrics import formata_duracao
+from core.metrics import DurationMeter, formata_duracao
 from core.config import (
     CATEGORY_COLOR_THRESHOLDS,
     CATEGORY_MATCH_BUDGET,
@@ -166,6 +168,7 @@ class Detector:
         # Ordena a fila da categoria: quem bateu há pouco vem primeiro.
         self._quentes = {}
         self._limpar_prioridades = threading.Event()
+        self._full_scan_requested = threading.Event()
 
         # Ordem já montada por (resolução, categoria) e a versão do conjunto
         # quente que a gerou — reordenar 86 templates a cada frame custaria
@@ -188,8 +191,9 @@ class Detector:
         # nasceram na resolução do device).
         self._resolution_templates = {}
 
-        # Fidelidade do último recorte aprovado, sem exigir melhora histórica.
+        # Fidelidade do melhor recorte validado para cada identidade.
         self._fidelity = {}
+        self._persisted_fidelity = {}
         self._learned_sequence = {}
         self._last_template_persist = {}
         self._dirty_templates = {}
@@ -200,7 +204,7 @@ class Detector:
         # entre a thread de visão (detect) e a thread de aprendizado.
         self._learn_lock = threading.Lock()
 
-        # Uma entrada por identidade pendente mantém o último recorte sem
+        # Uma entrada por identidade pendente mantém o melhor recorte sem
         # acumular cópias enquanto a thread de aprendizado grava em disco.
         self._learn_queue = queue.Queue()
         self._learn_queue_lock = threading.Lock()
@@ -210,9 +214,12 @@ class Detector:
         self._refresh_frame = None
         self._refresh_pending = False
         self._refresh_started_at = None
-        self._refresh_resolution = None
+        self._refresh_context = None
+        self._refresh_context_sequence = 0
         self._discovery_missing = True
         self._refresh_scanner = None
+        self.discovery_duration = DurationMeter()
+        self.discovery_progress = (0, 0)
         # Última passada do atualizador, mantida apenas em memória para a
         # prévia web. Não participa da decisão do bot nem grava imagens.
         self._refresh_preview = None
@@ -320,6 +327,7 @@ class Detector:
         self._ordem_cache.clear()
         self._resolution_templates.clear()
         self._fidelity.clear()
+        self._persisted_fidelity.clear()
 
         self._overrides_versao += 1
 
@@ -735,9 +743,9 @@ class Detector:
 
             # Nome-base na chave: é a identidade que liga default e
             # override, e é o formato que os _fidelity.json já têm em disco.
-            self._fidelity[
-                (chave, categoria, self._base_name(nome))
-            ] = float(confianca)
+            identity = (chave, categoria, self._base_name(nome))
+            self._fidelity[identity] = float(confianca)
+            self._persisted_fidelity[identity] = float(confianca)
 
     def _save_fidelity(self, chave):
         """Persiste a fidelidade atual para diagnóstico."""
@@ -747,17 +755,19 @@ class Detector:
         with self._learn_lock:
             dados = {
                 f"{categoria}/{nome}": confianca
-                for (res, categoria, nome), confianca in self._fidelity.items()
+                for (res, categoria, nome), confianca in self._persisted_fidelity.items()
                 if res == chave
             }
 
+        temporary = None
         try:
-
-            self._fidelity_path(resolution_dir).write_text(
-                json.dumps(dados, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=resolution_dir, delete=False,
+            ) as output:
+                temporary = Path(output.name)
+                json.dump(dados, output, ensure_ascii=False, indent=2)
+            os.replace(temporary, self._fidelity_path(resolution_dir))
+            return True
         except OSError as error:
 
             logger.warning(
@@ -765,6 +775,10 @@ class Detector:
                 self._fidelity_path(resolution_dir),
                 error,
             )
+            return False
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
 
     def _load_template(self, category, image_path, origin):
 
@@ -1170,7 +1184,7 @@ class Detector:
         confidence,
         sequence=None,
     ):
-        """Entrega o último recorte por identidade sem acumular gravações."""
+        """Entrega o melhor recorte pendente por identidade."""
 
         chave = (frame_width, frame_height)
         categoria = template["category"]
@@ -1184,8 +1198,9 @@ class Detector:
         if template.get("origin", "default") != "default":
             return
 
-        if not self._threshold_for(categoria, nome) <= confidence <= 1.0:
+        if not self._threshold_for(categoria, nome) <= confidence <= 1.000001:
             return
+        confidence = min(confidence, 1.0)
 
         altura = template["height"]
         largura = template["width"]
@@ -1194,6 +1209,14 @@ class Detector:
 
         if crop.shape[:2] != (altura, largura):
             return
+
+        difference = cv2.absdiff(crop, template["image"]).max(axis=2)
+        valid = template["mask_valid"]
+        if valid is not None:
+            difference = difference[valid]
+        if not difference.size:
+            return
+        pending_fidelity = min(confidence, 1.0 - float(difference.mean()) / 255.0)
 
         try:
 
@@ -1210,7 +1233,7 @@ class Detector:
 
                 identity = (chave, categoria, nome)
                 pending = self._learn_pending.get(identity)
-                if pending is not None and sequence < pending[5]:
+                if pending is not None and pending_fidelity <= pending[7]:
                     return
 
                 if pending is not None and np.array_equal(crop, pending[3]):
@@ -1218,13 +1241,52 @@ class Detector:
                 else:
                     crop = crop.copy()
 
-                candidato = (categoria, nome, chave, crop, confidence, sequence)
+                candidato = (categoria, nome, chave, crop, confidence, sequence, template, pending_fidelity)
                 if pending is None:
                     self._learn_queue.put_nowait((_LEARN_CANDIDATE, identity))
                 self._learn_pending[identity] = candidato
 
         except queue.Full:
             pass
+
+    def _reference_for_crop(self, reference, crop):
+        height, width = crop.shape[:2]
+        if (width, height) == (reference["width"], reference["height"]):
+            return reference
+        interpolation = cv2.INTER_AREA if width < reference["width"] else cv2.INTER_LINEAR
+        image = cv2.resize(reference["image"], (width, height), interpolation=interpolation)
+        mask = reference["mask"]
+        if mask is not None:
+            mask = cv2.resize(mask, (width, height), interpolation=cv2.INTER_NEAREST)
+        return self._build_template(reference["category"], reference["name"], image, mask, "default")
+
+    def _crop_fidelity(self, crop, reference):
+        if crop.shape != reference["image"].shape:
+            return None
+        difference = cv2.absdiff(crop, reference["image"]).max(axis=2)
+        valid = reference["mask_valid"]
+        if valid is not None:
+            difference = difference[valid]
+        if not difference.size or difference.mean() > 24 or (difference > 48).mean() > 0.10:
+            return None
+        mask = reference["mask"]
+        _, crop_contrast = cv2.meanStdDev(crop, mask=mask)
+        _, reference_contrast = cv2.meanStdDev(reference["image"], mask=mask)
+        if crop_contrast.mean() < 0.60 * reference_contrast.mean():
+            return None
+        minimum_color = CATEGORY_COLOR_THRESHOLDS.get(reference["category"], self.color_threshold)
+        if self._color_similarity(crop, reference, 0, 0) < minimum_color:
+            return None
+        gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+        if mask is None:
+            score = cv2.matchTemplate(gray, reference["gray"], cv2.TM_CCOEFF_NORMED)[0, 0]
+        else:
+            score = cv2.matchTemplate(gray, reference["gray"], cv2.TM_CCORR_NORMED, mask=mask)[0, 0]
+        if not np.isfinite(score) or score < self._threshold_for(
+            reference["category"], self._base_name(reference["name"]),
+        ):
+            return None
+        return min(float(np.clip(score, 0.0, 1.0)), 1.0 - float(difference.mean()) / 255.0)
 
     def learn_action(self, frame, detection):
         """Aprende somente a detecção que originou uma ação executada."""
@@ -1256,15 +1318,14 @@ class Detector:
             if self._learn_stopping:
                 return None
 
-            resolution = (frame.shape[1], frame.shape[0])
-            if resolution != self._refresh_resolution:
-                self._refresh_resolution = resolution
+            categories = None if categories is None else tuple(categories)
+            context = frame.shape[:2]
+            if context != self._refresh_context:
+                self._refresh_context = context
+                self._refresh_context_sequence = self._learn_sequence + 1
                 self._discovery_missing = True
                 self._refresh_started_at = None
-
-            if self._refresh_pending:
-                return None
-
+                self._refresh_preview = None
             self._learn_sequence += 1
             sequence = self._learn_sequence
 
@@ -1274,53 +1335,51 @@ class Detector:
                 if self._discovery_missing else TEMPLATE_REFRESH_INTERVAL
             )
             if (
-                self._refresh_started_at is not None
+                not self._refresh_pending
+                and self._refresh_started_at is not None
                 and now - self._refresh_started_at < interval
             ):
                 return sequence
 
             self._refresh_frame = (
-                frame.copy(), sequence,
-                None if categories is None else tuple(categories),
-                now if timestamp is None else timestamp,
+                frame.copy(), sequence, categories, now if timestamp is None else timestamp,
             )
-            self._refresh_pending = True
-            self._learn_queue.put_nowait(_REFRESH_FRAME)
+            if not self._refresh_pending:
+                self._refresh_pending = True
+                self._learn_queue.put_nowait(_REFRESH_FRAME)
 
             return sequence
 
     def queue_template_discovery(self, frame, categories=None, *, timestamp=None):
         """Agenda uma busca independente com o frame mais recente."""
-        return self._queue_refresh_frame(frame, timestamp=timestamp)
+        return self._queue_refresh_frame(frame, categories, timestamp=timestamp)
 
     def _refresh_defaults(self, frame, sequence, categories=None, timestamp=None):
+        with self._learn_queue_lock:
+            if sequence < self._refresh_context_sequence:
+                return
         if self._refresh_scanner is None:
             from vision.template_updater import DefaultTemplateScanner
 
             self._refresh_scanner = DefaultTemplateScanner(self)
 
-        if categories is None:
-            detections, categories = self._refresh_scanner.detect_discovery(frame)
-            with self._learn_queue_lock:
-                if self._refresh_resolution == (frame.shape[1], frame.shape[0]):
-                    self._discovery_missing = self._refresh_scanner.discovery_missing
-        else:
-            detections = self._refresh_scanner.detect(frame, categories=categories, exhaustive=True)
+        started = time.monotonic()
+        detections, searched_categories = self._refresh_scanner.detect_discovery(frame, categories)
+        self.discovery_duration.add(time.monotonic() - started)
         with self._learn_queue_lock:
+            if sequence < self._refresh_context_sequence:
+                return
+            self._discovery_missing = self._refresh_scanner.discovery_missing
+            self.discovery_progress = getattr(self._refresh_scanner, "discovery_progress", (0, 0))
             self._refresh_preview = (
                 frame,
                 tuple(detection.copy() for detection in detections),
-                None if categories is None else tuple(categories),
+                searched_categories,
                 time.monotonic() if timestamp is None else timestamp,
             )
         height, width = frame.shape[:2]
-        learned = set()
         for detection in sorted(detections, key=lambda item: item["confidence"], reverse=True):
             template = detection["_template"]
-            identity = (template["category"], self._base_name(template["name"]))
-            if identity in learned:
-                continue
-            learned.add(identity)
             self._queue_learn_candidate(
                 frame, template,
                 detection["x"], detection["y"], width, height,
@@ -1341,7 +1400,14 @@ class Detector:
 
         while True:
 
-            item = self._learn_queue.get()
+            try:
+                item = self._learn_queue.get(timeout=1.0)
+            except queue.Empty:
+                try:
+                    self._flush_dirty_templates(due_only=True)
+                except Exception:
+                    logger.exception(t("messages.learning_candidate_error"))
+                continue
 
             try:
 
@@ -1373,6 +1439,11 @@ class Detector:
             finally:
                 self._learn_queue.task_done()
 
+            try:
+                self._flush_dirty_templates(due_only=True)
+            except Exception:
+                logger.exception(t("messages.learning_candidate_error"))
+
     def _process_learn_candidate(
         self,
         categoria,
@@ -1381,6 +1452,8 @@ class Detector:
         crop,
         confidence,
         sequence=None,
+        reference=None,
+        pending_fidelity=None,
     ):
 
         fidelity_id = (chave, categoria, nome)
@@ -1389,30 +1462,34 @@ class Detector:
             return
 
         with self._learn_lock:
-
-            if sequence is not None and sequence < self._learned_sequence.get(fidelity_id, -1):
-                return
-
             anterior = next((
                 template for template in self._resolution_templates.get(chave, {}).get(categoria, [])
                 if self._base_name(template["name"]) == nome
             ), None)
-            if anterior is not None and np.array_equal(anterior.get("image"), crop):
-                self._fidelity[fidelity_id] = confidence
-                if sequence is not None:
-                    self._learned_sequence[fidelity_id] = sequence
-                return
-
             self._learn_writing = True
 
         try:
-            self._write_learn_candidate(categoria, nome, chave, crop, confidence, sequence)
+            mask = None
+            if reference is not None:
+                confidence = self._crop_fidelity(crop, reference)
+                if confidence is None:
+                    return
+                mask = reference["mask"]
+                if anterior is not None:
+                    old_reference = self._reference_for_crop(reference, anterior["image"])
+                    old_score = self._crop_fidelity(anterior["image"], old_reference)
+                    if old_score is not None and confidence <= old_score + 1e-6:
+                        return
+            elif anterior is not None and confidence <= self._fidelity.get(fidelity_id, -1):
+                return
+
+            self._write_learn_candidate(categoria, nome, chave, crop, confidence, sequence, mask)
         finally:
             with self._learn_lock:
                 self._learn_writing = False
 
     def _write_learn_candidate(
-        self, categoria, nome, chave, crop, confidence, sequence, force=False,
+        self, categoria, nome, chave, crop, confidence, sequence, mask=None, force=False,
     ):
         fidelity_id = (chave, categoria, nome)
         frame_width, frame_height = chave
@@ -1420,7 +1497,7 @@ class Detector:
             categoria,
             nome,
             crop,
-            None,
+            mask,
             "override",
         )
         now = time.monotonic()
@@ -1445,7 +1522,7 @@ class Detector:
             self._ordem_cache.clear()
             self._overrides_versao += 1
             self._dirty_templates[fidelity_id] = (
-                categoria, nome, chave, crop, confidence, sequence,
+                categoria, nome, chave, crop, confidence, sequence, mask,
             )
             persist = force or (
                 now - self._last_template_persist.get(
@@ -1467,7 +1544,15 @@ class Detector:
 
         destino = destino_dir / nome
 
-        if not cv2.imwrite(str(destino), crop):
+        image = crop if mask is None else np.dstack((crop, mask))
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".png", dir=destino_dir, delete=False) as output:
+                temporary = Path(output.name)
+            if not cv2.imwrite(str(temporary), image):
+                raise OSError("template encoding failed")
+            os.replace(temporary, destino)
+        except OSError:
 
             logger.warning(
                 t("messages.learned_template_save_failed"),
@@ -1475,13 +1560,19 @@ class Detector:
             )
 
             return
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
 
-        self._save_fidelity(chave)
+        with self._learn_lock:
+            self._persisted_fidelity[fidelity_id] = confidence
+        saved_metadata = self._save_fidelity(chave)
         self._reassina_overrides()
 
         with self._learn_lock:
             self._last_template_persist[fidelity_id] = now
-            self._dirty_templates.pop(fidelity_id, None)
+            if saved_metadata is not False:
+                self._dirty_templates.pop(fidelity_id, None)
 
         logger.info(
             t("messages.override_threshold"),
@@ -1493,11 +1584,22 @@ class Detector:
             confidence,
         )
 
-    def _flush_dirty_templates(self):
+    def _flush_dirty_templates(self, due_only=False):
         with self._learn_lock:
-            pending = list(self._dirty_templates.values())
-        for candidate in pending:
-            self._write_learn_candidate(*candidate, force=True)
+            now = time.monotonic()
+            pending = [
+                candidate for identity, candidate in self._dirty_templates.items()
+                if not due_only or now - self._last_template_persist.get(identity, float("-inf"))
+                >= max(0.0, TEMPLATE_PERSIST_INTERVAL)
+            ]
+            self._learn_writing = bool(pending)
+        try:
+            for candidate in pending:
+                self._write_learn_candidate(*candidate, force=True)
+        finally:
+            if pending:
+                with self._learn_lock:
+                    self._learn_writing = False
 
     def _color_similarity(
         self,
@@ -1760,6 +1862,9 @@ class Detector:
     def reset_prioridades(self):
         self._limpar_prioridades.set()
 
+    def request_full_scan(self):
+        self._full_scan_requested.set()
+
     def _particao_quente(self, chave_categoria, lista, teto, agora):
         """(quentes, frios) da categoria. O prefixo quente é limitado a
         teto-2 nomes: sem essa folga, alguns falsos-positivos estáveis nas
@@ -1850,6 +1955,10 @@ class Detector:
 
     def detect(self, frame, categories=None, exhaustive=False):
         """Detecções aprovadas, ordenadas por confiança (maior primeiro). `categories` filtra a busca (permite a StateMachine procurar 2 templates em vez de 43)."""
+
+        if not exhaustive and self._full_scan_requested.is_set():
+            self._full_scan_requested.clear()
+            exhaustive = True
 
         if self._limpar_prioridades.is_set():
             self._limpar_prioridades.clear()
@@ -2231,6 +2340,10 @@ class Detector:
             )
 
         detections = self._suppress(detections)
+
+        incomplete = bool(self._parciais) or len(procuradas) < len(ordem)
+        for detection in detections:
+            detection["_search_incomplete"] = incomplete
 
         # Maior confiança primeiro: a StateMachine passa a
         # agir sobre o MELHOR match, não sobre o primeiro

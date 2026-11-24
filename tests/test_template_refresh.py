@@ -65,7 +65,7 @@ class TemplateRefreshTests(unittest.TestCase):
             confidence,
         )
 
-    def test_queue_keeps_only_latest_pending_candidate_within_category_range(self):
+    def test_queue_keeps_best_pending_candidate_within_category_range(self):
         self.detector._fidelity[self.fidelity_id] = 0.99
         confidences = (0.95, 0.95, 1.0, 0.97)
 
@@ -74,7 +74,7 @@ class TemplateRefreshTests(unittest.TestCase):
 
         self.assertEqual(self.detector._learn_queue.qsize(), 1)
         candidate = self.detector._learn_pending[self.fidelity_id]
-        self.assertEqual(candidate[4], confidences[-1])
+        self.assertEqual(candidate[4], max(confidences))
         self.assertEqual(candidate[:3], ("box", "item_001.png", self.key))
         self.image.fill(0)
         self.assertTrue(np.any(candidate[3]))
@@ -109,22 +109,24 @@ class TemplateRefreshTests(unittest.TestCase):
         for crop in (reference // 2, occluded, np.full_like(reference, 127)):
             self.assertEqual(scanner._color_similarity(crop, template, 0, 0), 0.0)
 
-    def test_refresh_uses_best_base_per_identity(self):
+    def test_refresh_queues_all_candidates_for_fidelity_comparison(self):
         from unittest.mock import Mock
 
         other = self.make_template("108x240_item_001.png")
         scanner = Mock()
-        scanner.detect.return_value = [
+        scanner.discovery_missing = False
+        scanner.detect_discovery.return_value = ([
             {"_template": self.template, "x": 0, "y": 0, "confidence": 0.96},
             {"_template": other, "x": 1, "y": 1, "confidence": 0.99},
-        ]
+        ], ("box",))
         self.detector._refresh_scanner = scanner
         with patch.object(self.detector, "_queue_learn_candidate") as queue:
             self.detector._refresh_defaults(self.image, 3, ["box"])
 
-        scanner.detect.assert_called_once_with(self.image, categories=["box"], exhaustive=True)
-        self.assertIs(queue.call_args.args[1], other)
-        self.assertEqual(queue.call_count, 1)
+        scanner.detect_discovery.assert_called_once_with(self.image, ["box"])
+        self.assertEqual(queue.call_count, 2)
+        self.assertIs(queue.call_args_list[0].args[1], other)
+        self.assertIs(queue.call_args_list[1].args[1], self.template)
 
     def test_queue_uses_global_threshold_for_category_without_override(self):
         template = self.make_template("item_001.png", category="synthetic")
@@ -134,34 +136,16 @@ class TemplateRefreshTests(unittest.TestCase):
         candidate = self.detector._learn_pending[(self.key, "synthetic", "item_001.png")]
         self.assertEqual(candidate[4], 0.90)
 
-    def test_processing_replaces_with_latest_valid_crop_even_when_score_drops(self):
+    def test_processing_keeps_current_crop_when_fidelity_drops(self):
+        current = self.make_template("item_001.png", origin="override")
+        self.detector._resolution_templates[self.key] = {"box": [current]}
         self.detector._fidelity[self.fidelity_id] = 0.99
-        other_resolution = (72, 160)
-        untouched_cache = {"synthetic": []}
-        self.detector._scaled_cache[other_resolution] = untouched_cache
-
-        with (
-            patch.object(Path, "mkdir") as mkdir,
-            patch.object(cv2, "imwrite", return_value=True) as write,
-        ):
-            for index, confidence in enumerate((0.95, 0.95, 1.0, 0.97)):
-                with self.subTest(confidence=confidence, index=index):
-                    crop = np.full_like(self.image, index + 1)
-                    self.detector._scaled_cache[self.key] = {"stale": []}
-                    self.detector._process_learn_candidate(
-                        "box", "item_001.png", self.key, crop, confidence
-                    )
-
-                    templates = self.detector._resolution_templates[self.key]["box"]
-                    self.assertEqual(len(templates), 1)
-                    self.assertEqual(templates[0]["origin"], "override")
-                    np.testing.assert_array_equal(templates[0]["image"], crop)
-                    self.assertEqual(self.detector._fidelity[self.fidelity_id], confidence)
-                    self.assertNotIn(self.key, self.detector._scaled_cache)
-                    self.assertIs(self.detector._scaled_cache[other_resolution], untouched_cache)
-
-            self.assertEqual(write.call_count, 4)
-            self.assertEqual(mkdir.call_count, 4)
+        with patch.object(self.detector, "_write_learn_candidate") as write:
+            self.detector._process_learn_candidate(
+                "box", "item_001.png", self.key, np.zeros_like(self.image), 0.95
+            )
+        write.assert_not_called()
+        self.assertIs(self.detector._resolution_templates[self.key]["box"][0], current)
 
     def test_processing_rejects_invalid_score_without_persistence(self):
         self.detector._fidelity[self.fidelity_id] = 0.98
@@ -180,24 +164,17 @@ class TemplateRefreshTests(unittest.TestCase):
             mkdir.assert_not_called()
             write.assert_not_called()
 
-    def test_older_generation_does_not_overwrite_newer_crop(self):
-        latest = np.full_like(self.image, 20)
+    def test_older_generation_can_win_with_better_fidelity(self):
+        current = self.make_template("item_001.png", origin="override")
+        self.detector._resolution_templates[self.key] = {"box": [current]}
+        self.detector._fidelity[self.fidelity_id] = 0.95
+        self.detector._learned_sequence[self.fidelity_id] = 20
         older = np.full_like(self.image, 19)
-        with (
-            patch.object(Path, "mkdir"),
-            patch.object(cv2, "imwrite", return_value=True) as write,
-        ):
-            self.detector._process_learn_candidate(
-                "box", "item_001.png", self.key, latest, 0.95, sequence=20
-            )
+        with patch.object(self.detector, "_write_learn_candidate") as write:
             self.detector._process_learn_candidate(
                 "box", "item_001.png", self.key, older, 1.0, sequence=19
             )
-
-        write.assert_called_once()
-        current = self.detector._resolution_templates[self.key]["box"][0]
-        np.testing.assert_array_equal(current["image"], latest)
-        self.assertEqual(self.detector._fidelity[self.fidelity_id], 0.95)
+        self.assertEqual(write.call_args.args[4:6], (1.0, 19))
 
     def test_failed_persistence_preserves_last_learned_template(self):
         previous = self.make_template("item_001.png", origin="override")
@@ -224,11 +201,10 @@ class TemplateRefreshTests(unittest.TestCase):
             self.detector._maybe_reload_templates()
             signature.assert_not_called()
             self.assertEqual(self.detector._fidelity[self.fidelity_id], 0.99)
-            return True
+            self.detector._fidelity[self.fidelity_id] = 0.95
 
         with (
-            patch.object(Path, "mkdir"),
-            patch.object(cv2, "imwrite", side_effect=write_in_progress),
+            patch.object(self.detector, "_write_learn_candidate", side_effect=write_in_progress),
             patch.object(vd, "TEMPLATES_WATCH_INTERVAL", 1.0),
             patch.object(vd.time, "monotonic", side_effect=(100.0, 102.0)),
             patch.object(
@@ -254,10 +230,7 @@ class TemplateRefreshTests(unittest.TestCase):
             signature.assert_called_once_with()
 
     def test_write_exception_releases_watcher_guard(self):
-        with (
-            patch.object(Path, "mkdir"),
-            patch.object(cv2, "imwrite", side_effect=OSError("falha simulada")),
-        ):
+        with patch.object(self.detector, "_write_learn_candidate", side_effect=OSError("falha simulada")):
             with self.assertRaisesRegex(OSError, "falha simulada"):
                 self.detector._process_learn_candidate(
                     "box", "item_001.png", self.key, self.image, 0.95

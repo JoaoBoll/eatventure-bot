@@ -275,10 +275,36 @@ def run_loop(
     resume_floor = 0.0
     current_resolution = None
     web_preview_time = window_preview_time = 0.0
+    metrics_at = 0.0
+    vision_metrics = {}
 
     def update_panel():
+        nonlocal metrics_at, vision_metrics
         if panel is not None or runtime is not None:
+            now = time.monotonic()
+            if now - metrics_at >= 0.5:
+                metrics_at = now
+                def percentiles(meter):
+                    if meter is None or not hasattr(meter, "percentiles"):
+                        return [None, None]
+                    return [None if value is None else round(value * 1000, 1)
+                            for value in meter.percentiles()]
+
+                vision_metrics = {
+                    "capture_decode_ms_p50_p95": percentiles(getattr(capture, "decode_duration", None)),
+                    "detection_ms_p50_p95": percentiles(getattr(vision, "duration", None)),
+                    "frame_to_detection_ms_p50_p95": percentiles(getattr(vision, "latency", None)),
+                    "frame_to_action_ms_p50_p95": percentiles(getattr(state_machine, "action_latency", None)),
+                    "discovery_ms_p50_p95": percentiles(getattr(detector, "discovery_duration", None)),
+                    "discovery_progress": getattr(detector, "discovery_progress", (0, 0)),
+                    "template_coverage": (
+                        detector.template_coverage() if hasattr(detector, "template_coverage") else None
+                    ),
+                    "searched": getattr(detector, "last_searched", 0),
+                    "searchable": getattr(detector, "last_total", 0),
+                }
             resumo = state_machine.summary()
+            resumo.update(vision_metrics)
             resumo["templates"] = detector.template_count()
             resumo["dados_sessao"] = recorder.stats()["saved"] if recorder is not None else 0
             resumo["vision_error"] = vision.last_error
@@ -307,6 +333,7 @@ def run_loop(
                 resumo,
                 extra=(
                     f"{vision.get_fps():.1f} fps"
+                    f" | {vision.get_duration() * 1000:.0f} ms"
                     f" | {formata_bateria(battery.get())}"
                 ),
                 misses=detector.miss_report(),
@@ -393,14 +420,14 @@ def run_loop(
         detections, lag, detect_frame, detect_time = [], 0.0, None, 0.0
         guard_blocking = False
         if not paused:
-            if VISION_FILTER_BY_STATE:
-                vision.set_categories(state_machine.wanted_categories())
-
             floor = state_machine.frame_floor()
             if resume_floor:
                 floor = max(floor, resume_floor)
             vision.set_frame_floor(floor)
-            vision.set_frame(frame, timestamp)
+            wanted_categories = state_machine.wanted_categories()
+            if VISION_FILTER_BY_STATE:
+                vision.set_categories(wanted_categories)
+            vision.set_frame(frame, timestamp, discovery_categories=wanted_categories)
             if engine_worker is not None:
                 engine_worker.set_frame(frame)
 
@@ -585,10 +612,7 @@ def _run_device(args, runtime, device_id, hardware, session_should_stop):
         detector = ModelDetector(block_regions=[*config.BLOCK_REGIONS, *terminal_blocks])
     elif args.detector == "continuous":
         from vision.model_detector import ContinuousDetector
-        detector = ContinuousDetector(
-            block_regions=[*config.BLOCK_REGIONS, *terminal_blocks],
-            collecting=recorder is not None,
-        )
+        detector = ContinuousDetector(block_regions=[*config.BLOCK_REGIONS, *terminal_blocks])
     else:
         detector = Detector(block_regions=[*config.BLOCK_REGIONS, *terminal_blocks])
     logger.info(t("messages.detection_mode"), args.detector)

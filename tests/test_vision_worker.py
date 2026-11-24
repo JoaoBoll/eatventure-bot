@@ -31,6 +31,7 @@ class VisionWorkerTests(unittest.TestCase):
         worker.set_categories(["close", "box"])
         worker.set_frame(anterior, timestamp=1.0)
         worker.set_frame(atual, timestamp=2.0)
+        worker.set_categories(["up_food"])
 
         worker._pass()
 

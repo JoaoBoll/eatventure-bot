@@ -1,5 +1,7 @@
 """Gera e atualiza templates por resolução a partir dos defaults."""
 
+from itertools import chain
+
 import cv2
 
 from vision.detector import Detector
@@ -11,8 +13,9 @@ class DefaultTemplateScanner(Detector):
         self._parent = parent
         self._parent_defaults_generation = -1
         self._discovery_selection = None
-        self._discovery_cursors = [0, 0]
+        self._discovery_seen = {}
         self._discovery_round = 0
+        self.discovery_progress = (0, 0)
         self.discovery_missing = True
         super().__init__(
             threshold=parent.threshold,
@@ -38,6 +41,8 @@ class DefaultTemplateScanner(Detector):
         self._defaults_cache.clear()
         self._default_variants_cache.clear()
         self._defaults_selection.clear()
+        self._discovery_seen.clear()
+        self._discovery_round = 0
         self._roi_cache.clear()
         self._escala_ativa.clear()
         self._sonda.clear()
@@ -83,39 +88,52 @@ class DefaultTemplateScanner(Detector):
 
         return super()._color_similarity(frame, template, x, y)
 
-    def detect_discovery(self, frame):
+    def detect_discovery(self, frame, categories=None):
         self._maybe_reload_templates()
         height, width = frame.shape[:2]
+        all_categories = tuple(self.by_category)
+        priority = all_categories if categories is None else tuple(dict.fromkeys(categories))
+        context = (width, height)
         with self._parent._learn_lock:
+            overrides = self._parent._resolution_templates.get((width, height), {})
             known = {
                 (category, self._base_name(template["name"]))
-                for category, templates in self._parent._resolution_templates.get((width, height), {}).items()
-                for template in templates
+                for category in all_categories
+                for template in overrides.get(category, ())
             }
 
-        groups = [[], []]
-        for template in self.templates:
-            identity = (template["category"], self._base_name(template["name"]))
-            groups[identity in known].append(template)
-
-        self.discovery_missing = bool(groups[0])
-
-        # Reserva rodadas para atualizar os templates já conhecidos.
-        group_index = int(self._discovery_round % 3 == 2)
-        self._discovery_round += 1
-        if not groups[group_index]:
-            group_index = 1 - group_index
-        group = groups[group_index]
-        if not group:
+        templates = list(chain.from_iterable(self.by_category.values()))
+        self.discovery_missing = any(
+            (item["category"], self._base_name(item["name"])) not in known
+            for item in templates
+        )
+        if not templates:
+            self.discovery_progress = (0, 0)
             return [], ()
 
-        start = self._discovery_cursors[group_index] % len(group)
-        count = min(4, len(group))
-        selected = [group[(start + offset) % len(group)] for offset in range(count)]
-        self._discovery_cursors[group_index] = (start + count) % len(group)
-        categories = tuple(dict.fromkeys(template["category"] for template in selected))
+        seen = self._discovery_seen.setdefault(context, {})
+        self._discovery_round += 1
+        # A rodada global impede que mudanças de estado escondam categorias.
+        pool = templates if self._discovery_round % 4 == 0 else [
+            item for item in templates if item["category"] in priority
+        ] or templates
+        missing = self._discovery_round % 3 != 0
+        group = [
+            item for item in pool
+            if ((item["category"], self._base_name(item["name"])) not in known) == missing
+        ] or pool
+
+        def identity(item):
+            return item["category"], item["name"]
+
+        selected = sorted(group, key=lambda item: seen.get(identity(item), 0))[:4]
+        for item in selected:
+            seen[identity(item)] = self._discovery_round
+        self.discovery_progress = (sum(identity(item) in seen for item in templates), len(templates))
+        selected_categories = {template["category"] for template in selected}
+        categories = tuple(category for category in all_categories if category in selected_categories)
         self._discovery_selection = selected
-        self._prefer_active_scale = True
+        self._prefer_active_scale = self._discovery_round % 5 != 0
         try:
             return self.detect(frame, categories=categories, exhaustive=True), categories
         finally:

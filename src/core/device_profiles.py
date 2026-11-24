@@ -42,7 +42,7 @@ SETTING_SPECS = {
     "color_threshold": _spec("COLOR_THRESHOLD", t("messages.color_threshold"), t("messages.detection"), "float", 0.0, 1.0, 0.01),
     "max_detection_age": _spec("MAX_DETECTION_AGE", t("messages.detection_validity"), t("messages.detection"), "float", 0.1, 60.0, 0.1),
     "vision_filter_by_state": _spec("VISION_FILTER_BY_STATE", t("messages.filter_by_game_state"), t("messages.detection"), "bool"),
-    "vision_interval": _spec("VISION_INTERVAL", t("messages.detection_interval"), t("messages.detection"), "float", 0.01, 10.0, 0.01),
+    "vision_interval": _spec("VISION_INTERVAL", t("messages.detection_interval"), t("messages.detection"), "float", 0.0, 10.0, 0.01),
     "capture_max_fps": _spec("CAPTURE_MAX_FPS", t("messages.fps_limit"), t("messages.capture"), "int", 1, 120, 1),
     "capture_software_encoder": _spec("CAPTURE_SOFTWARE_ENCODER", t("messages.software_video_encoder"), t("messages.capture"), "bool"),
     "learn_resolution_templates": _spec("LEARN_RESOLUTION_TEMPLATES", t("messages.learn_resolution_templates"), t("messages.templates"), "bool"),

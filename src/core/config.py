@@ -326,9 +326,6 @@ DETECTOR_MODE = "continuous"
 AI_MODEL = "auto"
 AI_SOURCE = "templates"
 AI_MIN_CONFIDENCE = 0.60
-# No modo contínuo, templates são o professor local. A leitura estreita ocorre
-# junto da visão normal e esta varredura global só confirma negativos.
-AI_TEACHER_SCAN_INTERVAL = 20.0
 AI_MODEL_POLL_INTERVAL = 2.0
 
 # Total de recuperações por execução; uma parada manual nunca é recuperada.
@@ -336,7 +333,7 @@ BOT_RESTART_LIMIT = 3
 BOT_RESTART_DELAY = 3.0
 VISION_FAILURE_LIMIT = 5
 
-# Guarda o último recorte aprovado; defaults já cobertos são atualizados
+# Guarda o melhor recorte validado; defaults já cobertos são atualizados
 # apenas na thread de aprendizado, sem busca duplicada na visão principal.
 LEARN_RESOLUTION_TEMPLATES = True
 TEMPLATE_REFRESH_INTERVAL = 2.0
@@ -399,7 +396,7 @@ SWIPE_DURATION_MS = 500
 
 # ==== VISION ====
 
-VISION_INTERVAL = 0.2
+VISION_INTERVAL = 0.0
 VISION_FILTER_BY_STATE = True
 VISION_PRIORITY_STOP = True
 MAX_DETECTION_AGE = 3.0

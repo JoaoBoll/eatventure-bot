@@ -228,6 +228,7 @@
     "ai_model_label": "AI model: {value_1}",
     "vision_failure_summary": "Vision: {value_1} · {value_2} consecutive failures{value_3}",
     "last_vision_success": " · last successful pass {value_1}s ago",
+    "detector_performance": "Median/p95 (ms): decoding {value_6} · detector {value_1} · discovery {value_7} · frame to detection {value_2} · frame to action submission {value_3} · templates {value_4} · scan {value_5}",
     "reset_group": "Reset group",
     "identity_and_run": "Identification and execution",
     "device_name": "Device name",
