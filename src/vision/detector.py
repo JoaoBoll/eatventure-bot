@@ -1426,6 +1426,7 @@ class Detector:
         # A detecção passa a usar o recorte novo imediatamente. Persistir é
         # apenas um checkpoint: não deve ficar escrevendo o SSD a cada frame.
         with self._learn_lock:
+            anterior = self._fidelity.get(fidelity_id)
             self._fidelity[fidelity_id] = confidence
             if sequence is not None:
                 self._learned_sequence[fidelity_id] = sequence
@@ -1472,35 +1473,6 @@ class Detector:
             )
 
             return
-
-        with self._learn_lock:
-
-            anterior = self._fidelity.get(fidelity_id)
-
-            self._fidelity[fidelity_id] = confidence
-            if sequence is not None:
-                self._learned_sequence[fidelity_id] = sequence
-
-            lista = self._resolution_templates.setdefault(
-                chave, {}
-            ).setdefault(categoria, [])
-
-            lista[:] = [
-                t
-                for t in lista
-                if self._base_name(t["name"]) != nome
-            ]
-
-            lista.append(novo)
-
-            # Cache mesclado desta resolução ficou velho: sem isto, a
-            # passada seguinte continuaria usando a versão antiga.
-            self._scaled_cache.pop(chave, None)
-
-            # A fila ordenada aponta para os templates do cache antigo.
-            self._ordem_cache.clear()
-
-            self._overrides_versao += 1
 
         self._save_fidelity(chave)
         self._reassina_overrides()
@@ -1911,9 +1883,6 @@ class Detector:
             )
 
         frame_height, frame_width = frame_gray.shape[:2]
-        # A descoberta é enfileirada pelo VisionWorker depois da passada
-        # normal, que é o único ponto com o estado atual do bot. Chamadas
-        # exaustivas (coleta, monitoramento e IA) nunca a disparam.
         learn_sequence = None
 
         chave = (frame_width, frame_height)

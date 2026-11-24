@@ -1,5 +1,7 @@
 """Gera e atualiza templates por resolução a partir dos defaults."""
 
+import cv2
+
 from vision.detector import Detector
 
 
@@ -53,6 +55,33 @@ class DefaultTemplateScanner(Detector):
 
     def detect(self, frame, categories=None, exhaustive=False):
         return super().detect(frame, categories=categories, exhaustive=exhaustive)
+
+    def _color_similarity(self, frame, template, x, y):
+        crop = frame[y:y + template["height"], x:x + template["width"]]
+        reference = template["image"]
+        if crop.shape != reference.shape:
+            return 0.0
+
+        # A correlação pode continuar alta sobre uma tela escurecida.
+        # Limita diferenças espalhadas e oclusões localizadas, como texto.
+        difference = cv2.absdiff(crop, reference).max(axis=2)
+        valid = template["mask_valid"]
+        if valid is not None:
+            difference = difference[valid]
+        if (
+            not difference.size
+            or difference.mean() > 24
+            or (difference > 48).mean() > 0.10
+        ):
+            return 0.0
+
+        mask = template["mask"]
+        _, crop_contrast = cv2.meanStdDev(crop, mask=mask)
+        _, reference_contrast = cv2.meanStdDev(reference, mask=mask)
+        if crop_contrast.mean() < 0.60 * reference_contrast.mean():
+            return 0.0
+
+        return super()._color_similarity(frame, template, x, y)
 
     def detect_discovery(self, frame):
         self._maybe_reload_templates()

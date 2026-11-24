@@ -92,6 +92,23 @@ class TemplateRefreshTests(unittest.TestCase):
 
         self.assertTrue(self.detector._learn_queue.empty())
 
+    def test_scanner_rejects_dark_occluded_and_flat_crops(self):
+        from vision.template_updater import DefaultTemplateScanner
+
+        scanner = DefaultTemplateScanner(self.detector)
+        self.addCleanup(scanner.stop)
+        reference = np.full((12, 10, 3), 107, dtype=np.uint8)
+        reference[:, 1::2] = 147
+        template = self.detector._build_template(
+            "box", "item_001.png", reference, None, "default"
+        )
+        occluded = reference.copy()
+        occluded[:2] = 255
+
+        self.assertAlmostEqual(scanner._color_similarity(reference, template, 0, 0), 1.0)
+        for crop in (reference // 2, occluded, np.full_like(reference, 127)):
+            self.assertEqual(scanner._color_similarity(crop, template, 0, 0), 0.0)
+
     def test_refresh_uses_best_base_per_identity(self):
         from unittest.mock import Mock
 

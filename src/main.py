@@ -483,14 +483,16 @@ def run_loop(
             preview_mode = runtime.preview.mode()
             if preview_mode == "template_discovery":
                 discovery = detector.template_discovery_preview()
-                # A busca de defaults é limitada para não disputar CPU com o
-                # bot. A prévia, porém, continua usando o frame atual: assim
-                # o modal permanece fluido entre duas análises consecutivas.
-                _, discovery_detections, categories = (
+                discovery_frame, discovery_detections, categories = (
                     discovery if discovery is not None else (None, (), None)
                 )
+                if (
+                    discovery_frame is not None
+                    and discovery_frame.shape[:2] != frame.shape[:2]
+                ):
+                    discovery_detections, categories = (), None
                 runtime.preview.submit(
-                    frame,
+                    discovery_frame if discovery_detections else frame,
                     partial(
                         render_template_discovery_frame,
                         detector=detector,
@@ -499,15 +501,18 @@ def run_loop(
                     ),
                 )
             else:
+                clean_preview = preview_mode in {"template", "clean"}
                 runtime.preview.submit(
-                    frame,
-                    None if preview_mode in {"template", "clean"} else partial(
+                    detect_frame if detections and not clean_preview else frame,
+                    None if clean_preview else partial(
                         render_ai_frame, detector=detector, detections=detections, stats=stats,
                     ),
                 )
 
         if SHOW_AI_VISION:
-            ai_frame = render_ai_frame(frame, detector, detections, stats)
+            ai_frame = render_ai_frame(
+                detect_frame if detections else frame, detector, detections, stats,
+            )
             cv2.imshow(AI_WINDOW_NAME, ai_frame)
             # ESC só chega aqui, é esta janela que recebe teclas.
             if cv2.waitKey(1) & 0xFF == 27:

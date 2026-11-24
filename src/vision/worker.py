@@ -111,19 +111,17 @@ class VisionWorker:
     def set_frame(self, frame, timestamp=None):
         """Frame bruto sem processamento. Detector reescala templates por resolução."""
 
-        discover = getattr(self.detector, "queue_template_discovery", None)
-        if discover is not None and frame is not None:
-            discover(frame)
-
+        frame_time = time.monotonic() if timestamp is None else timestamp
         with self.frame_lock:
-
             self.latest_raw_frame = frame
-
-            self.latest_frame_time = (
-                time.monotonic() if timestamp is None else timestamp
-            )
-
+            self.latest_frame_time = frame_time
+            floor = self.frame_floor
             self.frame_lock.notify()
+
+        if frame is not None and (not floor or frame_time > floor):
+            discover = getattr(self.detector, "queue_template_discovery", None)
+            if discover is not None:
+                discover(frame)
 
     def set_frame_floor(self, timestamp):
         """Rejeita frames anteriores a este timestamp (estabilização pós-ação)."""
