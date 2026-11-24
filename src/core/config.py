@@ -305,7 +305,9 @@ CATEGORY_THRESHOLDS = {
 CATEGORY_COLOR_THRESHOLDS = {
     "delivery": 0.99,
     "engine": 0.95,
-    "close": 0.95
+    "close": 0.95,
+    "food": 0.90,
+
 }
 
 
