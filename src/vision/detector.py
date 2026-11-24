@@ -1248,7 +1248,7 @@ class Detector:
             detection.get("_learn_sequence"),
         )
 
-    def _queue_refresh_frame(self, frame, categories=None):
+    def _queue_refresh_frame(self, frame, categories=None, *, timestamp=None):
         if not self.learn_resolution_templates:
             return None
 
@@ -1282,17 +1282,18 @@ class Detector:
             self._refresh_frame = (
                 frame.copy(), sequence,
                 None if categories is None else tuple(categories),
+                now if timestamp is None else timestamp,
             )
             self._refresh_pending = True
             self._learn_queue.put_nowait(_REFRESH_FRAME)
 
             return sequence
 
-    def queue_template_discovery(self, frame, categories=None):
+    def queue_template_discovery(self, frame, categories=None, *, timestamp=None):
         """Agenda uma busca independente com o frame mais recente."""
-        return self._queue_refresh_frame(frame, None)
+        return self._queue_refresh_frame(frame, timestamp=timestamp)
 
-    def _refresh_defaults(self, frame, sequence, categories=None):
+    def _refresh_defaults(self, frame, sequence, categories=None, timestamp=None):
         if self._refresh_scanner is None:
             from vision.template_updater import DefaultTemplateScanner
 
@@ -1310,6 +1311,7 @@ class Detector:
                 frame,
                 tuple(detection.copy() for detection in detections),
                 None if categories is None else tuple(categories),
+                time.monotonic() if timestamp is None else timestamp,
             )
         height, width = frame.shape[:2]
         learned = set()
@@ -1331,8 +1333,8 @@ class Detector:
         with self._learn_queue_lock:
             if self._refresh_preview is None:
                 return None
-            frame, detections, categories = self._refresh_preview
-            return frame, tuple(detection.copy() for detection in detections), categories
+            frame, detections, categories, timestamp = self._refresh_preview
+            return frame, tuple(detection.copy() for detection in detections), categories, timestamp
 
     def _learn_worker(self):
         """Gera e atualiza templates por resolução fora da visão principal."""
@@ -2024,6 +2026,22 @@ class Detector:
                 )
             )
 
+            escalas_preferidas = {}
+            escalas_confirmadas = set()
+            if self._prefer_active_scale and ESCALA_UNICA_POR_TEMPLATE:
+                # A descoberta recalibra com os acertos desta passada se a escala anterior falhar.
+                nomes = {template["nome_escala"] for template in fila}
+                for nome in nomes:
+                    ativa = escalas_ativas.pop(nome, None)
+                    if ativa is not None and agora - ativa[2] <= ESCALA_ATIVA_TTL:
+                        escalas_preferidas[nome] = ativa[0]
+                if escalas_preferidas:
+                    fila = sorted(
+                        fila,
+                        key=lambda template: template["escala"]
+                        != escalas_preferidas.get(template["nome_escala"]),
+                    )
+
             self.last_total += len(fila)
 
             # Itens distintos, não candidatos: MAX_MATCHES_PER_TEMPLATE
@@ -2035,6 +2053,9 @@ class Detector:
             olhados = 0
 
             for template in fila:
+                nome_escala = template.get("nome_escala")
+                if nome_escala in escalas_confirmadas:
+                    continue
 
                 if (
                     template["width"] > frame_width
@@ -2042,7 +2063,7 @@ class Detector:
                 ):
                     continue
 
-                if (not exaustiva or self._prefer_active_scale) and not self._na_escala_da_vez(
+                if not exaustiva and not self._na_escala_da_vez(
                     template,
                     escalas_ativas,
                     agora,
@@ -2056,9 +2077,13 @@ class Detector:
                 min_threshold = self._threshold_for(
                     category, template.get("nome_base") or template["name"],
                 )
+                coarse_frame = (
+                    coarse_for(template["coarse_scale"])
+                    if template["coarse_gray"] is not None else None
+                )
                 candidates = self._search(
                     frame_gray,
-                    coarse_for(template["coarse_scale"]),
+                    coarse_frame,
                     template,
                     min_threshold,
                     roi,
@@ -2085,6 +2110,12 @@ class Detector:
 
                     if color_similarity < min_color_threshold:
                         continue
+
+                    if (
+                        nome_escala in escalas_preferidas
+                        and template["escala"] == escalas_preferidas[nome_escala]
+                    ):
+                        escalas_confirmadas.add(nome_escala)
 
                     nome_base = template.get("nome_base")
 
@@ -2275,23 +2306,25 @@ class Detector:
         template_height = template["height"]
         template_width = template["width"]
 
+        # Cada pixel reduzido corresponde a 1 / scale pixels no original.
+        refine_slack = max(REFINE_SLACK, math.ceil(1 / scale))
         for coarse_x, coarse_y, _ in coarse_hits:
 
             estimated_x = int(coarse_x / scale)
             estimated_y = int(coarse_y / scale)
 
             window = (
-                max(roi[0], estimated_x - REFINE_SLACK),
-                max(roi[1], estimated_y - REFINE_SLACK),
+                max(roi[0], estimated_x - refine_slack),
+                max(roi[1], estimated_y - refine_slack),
                 min(
                     roi[2],
                     estimated_x + template_width
-                    + REFINE_SLACK,
+                    + refine_slack,
                 ),
                 min(
                     roi[3],
                     estimated_y + template_height
-                    + REFINE_SLACK,
+                    + refine_slack,
                 ),
             )
 

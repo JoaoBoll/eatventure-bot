@@ -115,7 +115,9 @@ class DefaultTemplateScanner(Detector):
         self._discovery_cursors[group_index] = (start + count) % len(group)
         categories = tuple(dict.fromkeys(template["category"] for template in selected))
         self._discovery_selection = selected
+        self._prefer_active_scale = True
         try:
             return self.detect(frame, categories=categories, exhaustive=True), categories
         finally:
+            self._prefer_active_scale = False
             self._discovery_selection = None

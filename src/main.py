@@ -274,6 +274,7 @@ def run_loop(
     pause_label = None
     resume_floor = 0.0
     current_resolution = None
+    web_preview_time = window_preview_time = 0.0
 
     def update_panel():
         if panel is not None or runtime is not None:
@@ -479,41 +480,42 @@ def run_loop(
             ),
         }
 
+        # Uma análise sem detecções ainda tem um frame próprio.
+        vision_frame, vision_time = (
+            (detect_frame, detect_time) if detect_frame is not None else (frame, timestamp)
+        )
         if web_vision:
             preview_mode = runtime.preview.mode()
+            preview_frame, preview_time, render = frame, timestamp, None
             if preview_mode == "template_discovery":
                 discovery = detector.template_discovery_preview()
-                discovery_frame, discovery_detections, categories = (
-                    discovery if discovery is not None else (None, (), None)
+                discovery_detections, categories = (), None
+                if discovery is not None and not paused:
+                    analyzed_frame, analyzed_detections, analyzed_categories, analyzed_time = discovery
+                    if analyzed_frame.shape[:2] == frame.shape[:2] and analyzed_time > resume_floor:
+                        preview_frame, preview_time = analyzed_frame, analyzed_time
+                        discovery_detections, categories = analyzed_detections, analyzed_categories
+                render = partial(
+                    render_template_discovery_frame,
+                    detector=detector,
+                    detections=discovery_detections,
+                    categories=categories,
                 )
-                if (
-                    discovery_frame is not None
-                    and discovery_frame.shape[:2] != frame.shape[:2]
-                ):
-                    discovery_detections, categories = (), None
-                runtime.preview.submit(
-                    discovery_frame if discovery_detections else frame,
-                    partial(
-                        render_template_discovery_frame,
-                        detector=detector,
-                        detections=discovery_detections,
-                        categories=categories,
-                    ),
-                )
-            else:
-                clean_preview = preview_mode in {"template", "clean"}
-                runtime.preview.submit(
-                    detect_frame if detections and not clean_preview else frame,
-                    None if clean_preview else partial(
-                        render_ai_frame, detector=detector, detections=detections, stats=stats,
-                    ),
+            elif preview_mode == "vision":
+                preview_frame, preview_time = vision_frame, vision_time
+                render = partial(
+                    render_ai_frame, detector=detector, detections=detections, stats=stats,
                 )
 
+            # O frame ao vivo pode ter sido enviado antes de terminar uma análise.
+            if preview_time >= web_preview_time and runtime.preview.submit(preview_frame, render):
+                web_preview_time = preview_time
+
         if SHOW_AI_VISION:
-            ai_frame = render_ai_frame(
-                detect_frame if detections else frame, detector, detections, stats,
-            )
-            cv2.imshow(AI_WINDOW_NAME, ai_frame)
+            if vision_time >= window_preview_time:
+                ai_frame = render_ai_frame(vision_frame, detector, detections, stats)
+                cv2.imshow(AI_WINDOW_NAME, ai_frame)
+                window_preview_time = vision_time
             # ESC só chega aqui, é esta janela que recebe teclas.
             if cv2.waitKey(1) & 0xFF == 27:
                 break

@@ -202,6 +202,42 @@ class TemplateEfficiencyTests(unittest.TestCase):
             self.assertTrue(scanner.detect(frame))
             self.assertEqual(scanner.last_searched, len(vd.TEMPLATE_SCALE_STEPS))
 
+    def test_discovery_reuses_a_scale_and_recalibrates_after_rejected_crop(self):
+        self.detector.templates = [self.template()]
+        scanner = DefaultTemplateScanner(self.detector)
+        self.addCleanup(scanner.stop)
+        frame = np.zeros((self.key[1], self.key[0], 3), dtype=np.uint8)
+        desired_scale = 1.08
+
+        def color_similarity(_frame, template, _x, _y):
+            return 1.0 if template["escala"] == desired_scale else 0.0
+
+        with (
+            patch.object(scanner, "_search", return_value=[(20, 40, 0.99)]) as search,
+            patch.object(scanner, "_color_similarity", side_effect=color_similarity),
+            patch.object(vd.time, "monotonic", return_value=10.0),
+        ):
+            detections, _ = scanner.detect_discovery(frame)
+            self.assertEqual(detections[0]["template_scale"], 1.08)
+            self.assertEqual(search.call_count, len(vd.TEMPLATE_SCALE_STEPS))
+
+            search.reset_mock()
+            scanner.detect_discovery(frame)
+            self.assertEqual(search.call_count, 1)
+            self.assertEqual(search.call_args.args[2]["escala"], 1.08)
+
+            desired_scale = 0.92
+            search.reset_mock()
+            detections, _ = scanner.detect_discovery(frame)
+            self.assertEqual(detections[0]["template_scale"], 0.92)
+            self.assertEqual(search.call_count, len(vd.TEMPLATE_SCALE_STEPS))
+            self.assertEqual(search.call_args_list[0].args[2]["escala"], 1.08)
+
+            search.reset_mock()
+            scanner.detect_discovery(frame)
+            self.assertEqual(search.call_count, 1)
+            self.assertEqual(search.call_args.args[2]["escala"], 0.92)
+
     def test_background_updates_all_covered_categories_even_after_a_match(self):
         self.detector.templates = [self.template(), self.template(category="food")]
         self.cover()

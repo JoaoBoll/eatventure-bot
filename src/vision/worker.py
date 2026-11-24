@@ -121,7 +121,7 @@ class VisionWorker:
         if frame is not None and (not floor or frame_time > floor):
             discover = getattr(self.detector, "queue_template_discovery", None)
             if discover is not None:
-                discover(frame)
+                discover(frame, timestamp=frame_time)
 
     def set_frame_floor(self, timestamp):
         """Rejeita frames anteriores a este timestamp (estabilização pós-ação)."""
