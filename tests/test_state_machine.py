@@ -22,6 +22,7 @@ from core.config import (                         # noqa: E402
     EXPLORATION_DELAY,
     EXPLORATION_DELAY_AFTER_ACTION,
     FOOD_MAX_ATTEMPTS,
+    FOOD_INDICATOR_POSITION_TOLERANCE,
     MAX_DETECTION_AGE,
     REPEATED_ACTION_WARNING,
     STATE_ENTRY_SETTLE,
@@ -483,7 +484,7 @@ def test_food_renova_o_toque_ate_o_sinal_cinza():
     first_confirmation = clock.now
 
     clock.advance(UPGRADE_FOOD_MAX_HOLD - (clock.now - started_at) - 0.1)
-    machine.update([detection("while_up_food")])
+    machine.update([detection("while_up_food", y=200 + FOOD_INDICATOR_POSITION_TOLERANCE + 1)])
     assert machine.while_up_food_seen_at == clock.now
     assert actions.food_confirmations == [first_confirmation, clock.now]
 
@@ -500,7 +501,7 @@ def test_food_renova_o_toque_ate_o_sinal_cinza():
     assert machine.state == sm.NORMAL, machine.state
 
 
-def test_food_solto_apos_quatro_segundos_sem_nova_confirmacao():
+def test_food_solto_apos_quatro_segundos_com_indicador_parado():
 
     machine, actions, clock = build()
 
@@ -512,7 +513,7 @@ def test_food_solto_apos_quatro_segundos_sem_nova_confirmacao():
     confirmed_at = clock.now
 
     clock.advance(0.2)
-    machine.update([detection("while_up_food")], frame_time=confirmed_at)
+    machine.update([detection("while_up_food", y=200 + FOOD_INDICATOR_POSITION_TOLERANCE)])
     assert actions.food_confirmations == [confirmed_at]
     assert machine.while_up_food_seen_at == confirmed_at
 
@@ -521,7 +522,7 @@ def test_food_solto_apos_quatro_segundos_sem_nova_confirmacao():
     assert machine.state == sm.FOOD
 
     clock.advance(0.2)
-    machine.update([detection("while_up_food")], frame_time=confirmed_at)
+    machine.update([detection("while_up_food")])
 
     assert actions.actions[-1] == "release_food_press", actions.actions
     assert machine.state == sm.FOOD, machine.state
@@ -530,6 +531,10 @@ def test_food_solto_apos_quatro_segundos_sem_nova_confirmacao():
     clock.advance(max(machine.action_cooldown, machine.action_settle) + 0.1)
     machine.update([detection("up_food")])
     assert actions.actions == ["upgrade_food", "release_food_press", "upgrade_food"]
+
+    clock.advance(max(machine.action_cooldown, machine.action_settle) + 0.1)
+    machine.update([detection("while_up_food")])
+    assert actions.food_confirmations == [confirmed_at, clock.now]
 
 
 def test_food_so_repete_com_up_food_em_frame_novo_apos_soltar():

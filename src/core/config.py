@@ -372,8 +372,9 @@ NMS_IOU = 0.35
 # ==== ACTIONS ====
 
 UPGRADE_ITEM_CLICKS = 5
-# Limite sem um frame novo que confirme while_up_food.
+# Limite sem avanço de posição de while_up_food.
 UPGRADE_FOOD_MAX_HOLD = FOOD_UPGRADE_HOLD_LIMIT
+FOOD_INDICATOR_POSITION_TOLERANCE = 3
 
 DISMISS_POINT = (10, 2200)
 GRAY_COIN_POINT = (1070, 250)

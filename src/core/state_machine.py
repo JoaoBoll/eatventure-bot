@@ -16,6 +16,7 @@ from core.config import (
     EXPLORATION_DELAY,
     EXPLORATION_DELAY_AFTER_ACTION,
     FOOD_IGNORE_IOU,
+    FOOD_INDICATOR_POSITION_TOLERANCE,
     FOOD_MAX_ATTEMPTS,
     MAX_DETECTION_AGE,
     MAX_SWIPES,
@@ -180,6 +181,7 @@ class StateMachine:
         # Cada toque espera a primeira confirmação de while_up_food.
         self.up_food_wait_start = None
         self.while_up_food_seen_at = None
+        self._while_up_food_position = None
         self._food_press_attempts = 0
 
         # Item de "food" atual, esperando up_food. Guardado aqui (e
@@ -349,6 +351,7 @@ class StateMachine:
         if retry:
             self.up_food_wait_start = None
             self.while_up_food_seen_at = None
+            self._while_up_food_position = None
             self.state_entered = self.last_action_time
         else:
             self._food_recovering = True
@@ -593,6 +596,7 @@ class StateMachine:
         if action == "upgrade_food":
             self.up_food_wait_start = self.last_action_time
             self.while_up_food_seen_at = None
+            self._while_up_food_position = None
             self._food_press_attempts += 1
 
         # Guarda o item para a recuperação caso o upgrade trave.
@@ -889,6 +893,7 @@ class StateMachine:
         # para o próximo.
         self.up_food_wait_start = None
         self.while_up_food_seen_at = None
+        self._while_up_food_position = None
         self._food_press_attempts = 0
         if previous_state == FOOD:
             self._food_target = None
@@ -974,14 +979,9 @@ class StateMachine:
                 return
 
         if self.up_food_wait_start is not None:
-            confirmed_at = self._food_confirmation_time()
-            if (
-                self._frame_time > confirmed_at
-                and self._find(detections, "while_up_food") is not None
-                and time.monotonic() - confirmed_at < UPGRADE_FOOD_MAX_HOLD
-                and self.action_manager.confirm_food_press(self._frame_time)
-            ):
-                self.while_up_food_seen_at = self._frame_time
+            indicator = self._find(detections, "while_up_food")
+            if indicator is not None:
+                self._confirm_food_progress(indicator)
             self.check_food_timeout()
             return
 
@@ -996,6 +996,27 @@ class StateMachine:
             return
 
         self._wait_or_give_up()
+
+    def _confirm_food_progress(self, indicator):
+        position = (
+            indicator["x"] + indicator["width"] // 2,
+            indicator["y"] + indicator["height"] // 2,
+        )
+        previous = self._while_up_food_position
+        if previous is not None and all(
+            abs(current - old) <= FOOD_INDICATOR_POSITION_TOLERANCE
+            for current, old in zip(position, previous)
+        ):
+            return
+
+        confirmed_at = self._food_confirmation_time()
+        if (
+            self._frame_time > confirmed_at
+            and time.monotonic() - confirmed_at < UPGRADE_FOOD_MAX_HOLD
+            and self.action_manager.confirm_food_press(self._frame_time)
+        ):
+            self.while_up_food_seen_at = self._frame_time
+            self._while_up_food_position = position
 
     def _new_point(self, detections):
         """Igual ao FOOD, mas basta um clique para liberar — não é long press."""
